@@ -1193,229 +1193,127 @@ class DataPreprocessor:
         """Process HumanEval dataset."""
         logger.info("Processing HumanEval dataset...")
         
-        # Define field mappings for different dataset structures
-        field_mappings = {
-            "prompt": ["prompt", "task_id", "question", "instruction", "function_name"],
-            "completion": ["canonical_solution", "solution", "test", "answer", "code", "content"]
-        }
+        # For HumanEval, we need a specialized approach since it has a specific format
+        # Direct approach without using dataset mappers that might drop examples
+        processed_examples = []
         
-        # For HumanEval, we need special handling for streaming mode
-        if streaming:
-            processed_examples = []
+        try:
+            # Get total samples for logging
+            if hasattr(dataset, "__len__"):
+                total_samples = len(dataset)
+                logger.info(f"Found {total_samples} examples in HumanEval dataset")
+            else:
+                total_samples = "unknown"
+                logger.info(f"Processing HumanEval dataset (streaming mode, unknown size)")
             
-            # Process each example individually using our safe iterator
-            for example in self._safe_dataset_iterator(dataset):
+            # Forced iteration approach for maximum compatibility
+            samples_processed = 0
+            
+            # Handle both streaming and non-streaming cases
+            iterator = iter(dataset)
+            while True:
                 try:
-                    # Handle non-dictionary examples first
-                    if not isinstance(example, dict):
-                        try:
-                            # Try to convert to string and use as completion
-                            example_str = str(example)
-                            processed = self.common_preprocessing(
-                                {"prompt": "Write a Python function", "completion": example_str},
-                                "prompt", "completion",
-                                streaming=True
-                            )
-                            processed_examples.append(processed)
-                            continue
-                        except Exception as e:
-                            logger.warning(f"Could not process non-dict example: {type(example)}, error: {e}")
-                            continue
+                    example = next(iterator)
                     
-                    # Handle the OpenAI HumanEval dataset format - direct structure detection
-                    if "task_id" in example and "prompt" in example:
-                        # Original OpenAI HumanEval format
+                    # Simple direct extraction of key fields
+                    if isinstance(example, dict):
                         prompt = example.get("prompt", "")
                         solution = example.get("canonical_solution", "")
+                        task_id = example.get("task_id", "")
                         
-                        if prompt and solution:
-                            processed = self.common_preprocessing(
-                                {"prompt": prompt, "completion": solution},
-                                "prompt", "completion",
-                                streaming=True
-                            )
-                            processed_examples.append(processed)
+                        # Skip empty examples
+                        if not prompt or not solution:
                             continue
-                    
-                    # Try alternate format with function_name and entry_point
-                    if "function_name" in example:
-                        func_name = example.get("function_name", "")
-                        entry_point = example.get("entry_point", func_name)
                         
-                        # Use test as solution if available, or canonical_solution
-                        solution = example.get("test", example.get("canonical_solution", ""))
+                        # For logging/debugging
+                        if samples_processed < 3:
+                            logger.debug(f"Example {samples_processed} - Task ID: {task_id}")
                         
-                        if func_name and solution:
-                            processed = self.common_preprocessing(
-                                {"prompt": f"Implement the Python function {func_name}", "completion": solution},
-                                "prompt", "completion",
-                                streaming=True
-                            )
-                            processed_examples.append(processed)
-                            continue
+                        processed = {
+                            "processed_text": f"User: {prompt.strip()}\nAssistant: {solution.strip()}",
+                            "length": len(prompt) + len(solution),
+                            "duplicates_removed": 0,
+                            "task_id": task_id
+                        }
+                        
+                        processed_examples.append(processed)
+                        samples_processed += 1
+                        
+                        # Log progress for large datasets
+                        if samples_processed % 50 == 0:
+                            logger.info(f"Processed {samples_processed} examples from HumanEval")
                     
-                    # Extract fields using standard utility method as fallback
-                    fields = self._extract_fields(example, field_mappings)
-                    
-                    # Handle case where we have neither prompt nor completion
-                    if "prompt" not in fields or "completion" not in fields:
-                        # Handle combined format with entry_point and test
-                        if "entry_point" in example and "test" in example:
-                            entry_point = example.get("entry_point", "")
-                            test_code = example.get("test", "")
-                            
-                            fields = {
-                                "prompt": f"Implement the function {entry_point}",
-                                "completion": test_code
-                            }
-                        else:
-                            # Last resort - look for any content field
-                            if any(k in example for k in ["content", "code", "source"]):
-                                content = example.get("content", example.get("code", example.get("source", "")))
-                                if content:
-                                    fields = {
-                                        "prompt": "Write a Python function",
-                                        "completion": content
-                                    }
-                                else:
-                                    logger.warning("Skipping example with missing prompt or solution")
-                                    continue
-                            else:
-                                logger.warning("Skipping example with missing prompt or solution")
-                                continue
-                    
-                    processed = self.common_preprocessing(
-                        {"prompt": fields["prompt"], "completion": fields["completion"]},
-                        "prompt", "completion",
-                        streaming=True
-                    )
-                    processed_examples.append(processed)
+                except StopIteration:
+                    break
                 except Exception as e:
                     logger.warning(f"Error processing example: {e}")
-                    logger.debug(traceback.format_exc())
                     continue
             
-            if not processed_examples:
-                logger.warning("No valid examples processed from HumanEval dataset")
-            else:
-                logger.info(f"Processed {len(processed_examples)} examples from HumanEval dataset")
+            # Final progress update
+            logger.info(f"Completed processing {samples_processed} examples from HumanEval dataset")
+            
+            # If we're in non-streaming mode and need to return a Dataset
+            if not streaming and hasattr(dataset, "__class__") and dataset.__class__.__name__ == "Dataset":
+                from datasets import Dataset as HFDataset
+                
+                # Create new Dataset with processed examples
+                if processed_examples:
+                    features = {"processed_text": [], "length": [], "task_id": []}
+                    
+                    for ex in processed_examples:
+                        features["processed_text"].append(ex["processed_text"])
+                        features["length"].append(ex["length"])
+                        features["task_id"].append(ex.get("task_id", ""))
+                    
+                    return HFDataset.from_dict(features)
+                else:
+                    # Create an empty dataset with the right structure as fallback
+                    return HFDataset.from_dict({
+                        "processed_text": [],
+                        "length": [],
+                        "task_id": []
+                    })
             
             return processed_examples
-        else:
-            # For non-streaming mode, we can use map with batch processing
+            
+        except Exception as e:
+            logger.error(f"Error in HumanEval processing: {e}")
+            logger.error(traceback.format_exc())
+            
+            # Last resort: try direct loading from Hugging Face
             try:
-                def process_sample(examples):
-                    # Ensure we have valid inputs
-                    if not isinstance(examples, dict):
-                        logger.warning(f"Expected dictionary, got {type(examples)}")
-                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                    
-                    # Get batch size
-                    batch_size = len(next(iter(examples.values()))) if examples and examples.values() else 0
-                    if batch_size == 0:
-                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                    
-                    prompts = []
-                    completions = []
-                    
-                    # Process each example in the batch
-                    for i in range(batch_size):
-                        try:
-                            # Extract a single example from the batch
-                            example = {k: v[i] if isinstance(v, list) and i < len(v) else v for k, v in examples.items()}
-                            
-                            # Extract fields using our utility method
-                            fields = self._extract_fields(example, field_mappings)
-                            
-                            # Handle combined entry_point and test case
-                            if "prompt" not in fields or "completion" not in fields:
-                                if "entry_point" in example and "test" in example:
-                                    entry_point = example.get("entry_point", "")
-                                    test_code = example.get("test", "")
-                                    
-                                    fields = {
-                                        "prompt": f"Implement the function {entry_point}",
-                                        "completion": test_code
-                                    }
-                            
-                            # Add to batch if we have valid fields
-                            if "prompt" in fields and "completion" in fields:
-                                prompts.append(fields["prompt"])
-                                completions.append(fields["completion"])
-                        except Exception as e:
-                            logger.warning(f"Error processing batch item {i}: {e}")
-                            continue
-                    
-                    # Skip if we couldn't extract any valid examples
-                    if not prompts or not completions:
-                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                    
-                    return self.common_preprocessing(
-                        {"prompt": prompts, "completion": completions},
-                        "prompt", "completion",
-                        streaming=streaming
-                    )
+                logger.info("Attempting to load HumanEval directly from Hugging Face")
                 
-                try:
-                    # Try to get column names from dataset if available
-                    column_names = dataset.column_names if hasattr(dataset, "column_names") else None
-                    
-                    processed = dataset.map(
-                        process_sample,
-                        batched=True,
-                        remove_columns=column_names if not streaming else None,
-                        batch_size=50 if streaming else None
-                    )
-                    
-                    # Log processing result
-                    if hasattr(processed, "__len__"):
-                        logger.info(f"Processed {len(processed)} examples from HumanEval dataset")
-                    
-                    return processed
-                except Exception as e:
-                    logger.warning(f"Error mapping HumanEval dataset: {e}")
-                    logger.debug(traceback.format_exc())
-                    # Try with smaller batch size
-                    logger.info("Retrying with smaller batch size...")
-                    return dataset.map(
-                        process_sample,
-                        batched=True,
-                        batch_size=10
-                    )
-            except Exception as e:
-                logger.error(f"Error processing HumanEval dataset: {e}")
-                logger.debug(traceback.format_exc())
-                # Fall back to individual processing
-                logger.info("Falling back to individual example processing...")
+                # This is a direct approach as fallback
+                from datasets import load_dataset
+                
+                hf_token = os.environ.get("HF_TOKEN")
+                raw_dataset = load_dataset("openai/openai_humaneval", token=hf_token)
                 
                 processed_examples = []
-                for i, example in enumerate(dataset):
+                for example in raw_dataset["test"]:
                     try:
-                        if isinstance(example, dict):
-                            # Basic format with simple fields
-                            prompt = example.get("prompt", "")
-                            solution = example.get("canonical_solution", "")
-                            
-                            if prompt and solution:
-                                processed = self.common_preprocessing(
-                                    {"prompt": prompt, "completion": solution},
-                                    "prompt", "completion",
-                                    streaming=True
-                                )
-                                processed_examples.append(processed)
-                        else:
-                            # Non-dictionary example
-                            processed = self.common_preprocessing(
-                                {"prompt": "Write a Python function", "completion": str(example)},
-                                "prompt", "completion",
-                                streaming=True
-                            )
-                            processed_examples.append(processed)
+                        prompt = example.get("prompt", "")
+                        solution = example.get("canonical_solution", "")
+                        task_id = example.get("task_id", "")
+                        
+                        processed = {
+                            "processed_text": f"User: {prompt.strip()}\nAssistant: {solution.strip()}",
+                            "length": len(prompt) + len(solution),
+                            "task_id": task_id
+                        }
+                        
+                        processed_examples.append(processed)
                     except Exception as inner_e:
-                        logger.warning(f"Error processing example {i}: {inner_e}")
-                        continue
+                        logger.warning(f"Error in fallback processing: {inner_e}")
                 
+                logger.info(f"Fallback approach processed {len(processed_examples)} examples")
                 return processed_examples
+                
+            except Exception as fallback_error:
+                logger.error(f"Fallback approach also failed: {fallback_error}")
+                # Return an empty result as last resort
+                return []
     
     def load_and_process_all_datasets(self, dataset_config: Dict, save_path: str) -> Dict[str, Dataset]:
         """Load and process all configured datasets."""
