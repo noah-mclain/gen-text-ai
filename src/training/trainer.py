@@ -1,8 +1,10 @@
 # Fix import order to ensure Unsloth optimizations are applied correctly
 try:
     from unsloth import FastLanguageModel
+    UNSLOTH_AVAILABLE = True
 except ImportError:
     print("Unsloth not installed. Install with: pip install unsloth")
+    UNSLOTH_AVAILABLE = False
 
 import os
 import json
@@ -25,10 +27,12 @@ from transformers import (
     DataCollatorForLanguageModeling,
     AutoTokenizer,
     AutoModelForCausalLM,
-    BitsAndBytesConfig
+    BitsAndBytesConfig,
+    set_seed
 )
+from huggingface_hub import login
 import peft
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
 
 # Try multiple import paths for dataset utilities
 try:
@@ -100,16 +104,24 @@ except (ImportError, ModuleNotFoundError):
 
 # Try multiple import paths for Google Drive utilities
 try:
-    from src.utils.drive_utils import save_model_to_drive
+    from src.utils.drive_utils import save_model_to_drive, get_drive_path, is_drive_mounted
 except (ImportError, ModuleNotFoundError):
     try:
-        from utils.drive_utils import save_model_to_drive
+        from utils.drive_utils import save_model_to_drive, get_drive_path, is_drive_mounted
     except (ImportError, ModuleNotFoundError):
         print("Warning: drive_utils not found. Creating fallback functions.")
         
         def save_model_to_drive(*args, **kwargs):
             """Fallback function when drive_utils is not available"""
             print("Google Drive integration not available - model not saved to drive.")
+            return False
+            
+        def get_drive_path(local_path, drive_base_path, fallback_path=None):
+            """Fallback for getting Google Drive path"""
+            return fallback_path or local_path
+            
+        def is_drive_mounted():
+            """Fallback for checking if drive is mounted"""
             return False
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
