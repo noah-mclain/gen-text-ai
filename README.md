@@ -207,7 +207,11 @@ Our pipeline supports a comprehensive set of evaluation metrics for code generat
 
 ## Running on Paperspace Gradient
 
-This pipeline is optimized to run seamlessly on Paperspace Gradient notebooks. Follow these steps:
+This pipeline has two options for running on Paperspace Gradient:
+
+### Option 1: Standard Approach (Local Storage)
+
+For basic usage with local storage on Paperspace:
 
 1. Create a new notebook with PyTorch runtime
 2. Select an A4000, A5000, or A6000 GPU instance (48GB+ VRAM recommended)
@@ -218,6 +222,20 @@ git clone https://github.com/yourusername/gen-text-ai.git
 cd gen-text-ai
 pip install -r requirements.txt
 ```
+
+### Option 2: Google Drive API Integration (Recommended)
+
+Since Paperspace doesn't support FUSE mounting, we provide a Google Drive API implementation for persistent storage:
+
+```bash
+# Install Google Drive API dependencies
+pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+# Run the memory-efficient pipeline with Drive API integration
+python main_api.py --mode all --streaming --no_cache --use_drive_api --credentials_path credentials.json
+```
+
+For detailed instructions on setting up and using the Google Drive API approach, see [PAPERSPACE.md](PAPERSPACE.md).
 
 ### Paperspace-Specific Configuration
 
