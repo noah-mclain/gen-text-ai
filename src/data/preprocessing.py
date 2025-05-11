@@ -598,14 +598,33 @@ class DataPreprocessor:
                 try:
                     logger.info(f"Attempting to load dataset {config['path']}")
                     
-                    dataset = load_dataset(
-                        config["path"], 
-                        name=config.get("name"), 
-                        split=config.get("split"),
-                        streaming=streaming,
-                        use_auth_token=os.environ.get("HF_TOKEN"),
-                        trust_remote_code=True
-                    )
+                    # Use token parameter instead of deprecated use_auth_token
+                    # For compatibility with both older and newer versions of the library, try both methods
+                    hf_token = os.environ.get("HF_TOKEN")
+                    try:
+                        # Try with the newer 'token' parameter first
+                        dataset = load_dataset(
+                            config["path"], 
+                            name=config.get("name"), 
+                            split=config.get("split"),
+                            streaming=streaming,
+                            token=hf_token,  # New parameter name
+                            trust_remote_code=True
+                        )
+                    except TypeError as e:
+                        # If the newer parameter didn't work, fall back to the older one
+                        if "got an unexpected keyword argument 'token'" in str(e):
+                            logger.warning("Falling back to deprecated 'use_auth_token' parameter")
+                            dataset = load_dataset(
+                                config["path"], 
+                                name=config.get("name"), 
+                                split=config.get("split"),
+                                streaming=streaming,
+                                use_auth_token=hf_token,  # Old parameter name
+                                trust_remote_code=True
+                            )
+                        else:
+                            raise
                     
                     logger.info(f"Successfully loaded dataset {dataset_name}")
                     
@@ -613,9 +632,18 @@ class DataPreprocessor:
                     logger.error(f"Missing dependency for loading dataset {dataset_name}: {str(e)}")
                     logger.error("Try installing additional dependencies if needed")
                     continue
-                    
+                
                 except Exception as e:
-                    logger.error(f"Error loading dataset {dataset_name}: {str(e)}")
+                    error_msg = str(e)
+                    if "is a gated dataset" in error_msg:
+                        logger.error(f"Dataset {config['path']} requires authentication. Make sure your HF_TOKEN has proper access rights.")
+                        logger.error("Visit the dataset page on Hugging Face and request access.")
+                    elif "doesn't exist on the Hub" in error_msg:
+                        logger.error(f"Dataset {config['path']} was not found on Hugging Face Hub.")
+                        logger.error("Check the dataset name and make sure it's correct.")
+                    else:
+                        logger.error(f"Error loading dataset {dataset_name}: {str(e)}")
+                    
                     logger.info(f"Skipping dataset {dataset_name}")
                     continue
                 

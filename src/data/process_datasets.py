@@ -31,8 +31,11 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                     drive_base_dir: Optional[str] = None, headless: bool = False):
     """Process datasets according to the configuration."""
     
-    # Check and update environment variable for credential-based authentication
-    if credentials_path and os.path.exists(credentials_path):
+    # Check for existing HF_TOKEN environment variable first
+    if os.environ.get("HF_TOKEN"):
+        logger.info("Found existing HF_TOKEN in environment variables")
+    # Only look in credentials if the token isn't already set
+    elif credentials_path and os.path.exists(credentials_path):
         try:
             with open(credentials_path, 'r') as f:
                 credentials = json.load(f)
@@ -82,20 +85,32 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
     output_dir = "data/processed"
     
     # Update output directory if using Drive API
+    drive_api = None
+    directory_ids = None
+    
     if use_drive_api:
         from utils.drive_api_utils import initialize_drive_api, setup_drive_directories
         
         logger.info("Initializing Google Drive API for dataset storage")
         drive_api = initialize_drive_api(credentials_path, headless=headless)
         
+        # Ensure drive_base_dir is a string and not a boolean or None
+        if drive_base_dir is None or drive_base_dir is True:
+            # Set a default value if None or True
+            drive_base_dir = "DeepseekCoder"
+            logger.warning(f"Invalid drive_base_dir provided, using default: {drive_base_dir}")
+        
         if drive_api and drive_api.authenticated:
             logger.info(f"Setting up directories in Google Drive under {drive_base_dir}")
-            directory_ids = setup_drive_directories(drive_api, drive_base_dir)
-            
-            if directory_ids and "data" in directory_ids and "processed" in directory_ids["data"]:
-                logger.info("Will save processed datasets to Google Drive")
-            else:
-                logger.error("Failed to set up Google Drive directories for datasets")
+            try:
+                directory_ids = setup_drive_directories(drive_api, drive_base_dir)
+                
+                if directory_ids and "data" in directory_ids:
+                    logger.info("Google Drive directories successfully set up")
+                else:
+                    logger.error("Failed to set up Google Drive directories for datasets")
+            except Exception as e:
+                logger.error(f"Error setting up Google Drive directories: {str(e)}")
     
     # Process the datasets
     processed_datasets = preprocessor.load_and_process_all_datasets(dataset_config, output_dir)
@@ -105,9 +120,18 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         from utils.drive_api_utils import save_to_drive
         
         logger.info("Uploading processed datasets to Google Drive")
-        if "data" in directory_ids and "processed" in directory_ids["data"]:
-            save_to_drive(drive_api, output_dir, directory_ids["data"]["processed"])
-            logger.info("Successfully processed and uploaded datasets")
+        try:
+            if "data" in directory_ids and "processed" in directory_ids:
+                save_to_drive(drive_api, output_dir, directory_ids["processed"])
+                logger.info("Successfully processed and uploaded datasets")
+            elif "preprocessed" in directory_ids:
+                # Fallback to the preprocessed key
+                save_to_drive(drive_api, output_dir, directory_ids["preprocessed"])
+                logger.info("Successfully processed and uploaded datasets to 'preprocessed' folder")
+            else:
+                logger.error("Could not find appropriate directory to upload processed datasets")
+        except Exception as e:
+            logger.error(f"Error uploading datasets to Google Drive: {str(e)}")
     
     logger.info(f"Processed {len(processed_datasets)} datasets")
 

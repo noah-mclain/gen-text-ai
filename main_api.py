@@ -144,6 +144,13 @@ def main():
     
     args = parser.parse_args()
     
+    # Check for HF_TOKEN environment variable
+    if os.environ.get("HF_TOKEN"):
+        logger.info("Using Hugging Face token from environment variables")
+    else:
+        logger.warning("HF_TOKEN environment variable not set. Some datasets might be inaccessible.")
+        logger.warning("Set your token using: export HF_TOKEN=your_huggingface_token")
+    
     # Ensure directories exist
     ensure_directories()
     
@@ -153,14 +160,24 @@ def main():
     
     if args.use_drive_api:
         logger.info("Initializing Google Drive API...")
+        
+        # Ensure drive_base_dir is a proper string
+        if args.drive_base_dir is True or args.drive_base_dir is None:
+            args.drive_base_dir = "DeepseekCoder"
+            logger.warning(f"Invalid drive_base_dir, using default: {args.drive_base_dir}")
+            
         drive_api = initialize_drive_api(args.credentials_path, headless=args.headless)
         
-        if drive_api.authenticated:
+        if drive_api and drive_api.authenticated:
             logger.info(f"Setting up directories in Google Drive under {args.drive_base_dir}")
-            directory_ids = setup_drive_directories(drive_api, args.drive_base_dir)
-            
-            if not directory_ids:
-                logger.error("Failed to set up Google Drive directories")
+            try:
+                directory_ids = setup_drive_directories(drive_api, args.drive_base_dir)
+                
+                if not directory_ids:
+                    logger.error("Failed to set up Google Drive directories")
+                    args.use_drive_api = False
+            except Exception as e:
+                logger.error(f"Error setting up Google Drive directories: {e}")
                 args.use_drive_api = False
         else:
             logger.error("Failed to authenticate with Google Drive API")
