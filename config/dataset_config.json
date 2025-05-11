@@ -1,0 +1,42 @@
+{
+  "codesearchnet": {
+    "path": "code-search-net",
+    "processor": "codesearchnet",
+    "split": "train"
+  },
+  "code_alpaca": {
+    "path": "sahil2801/CodeAlpaca-20k",
+    "processor": "code_alpaca",
+    "split": "train"
+  },
+  "instruct_code": {
+    "path": "ise-uiuc/InstructCode",
+    "processor": "instruct_code",
+    "split": "train"
+  },
+  "mbpp": {
+    "path": "mbpp",
+    "processor": "mbpp",
+    "split": "train"
+  },
+  "ds1000": {
+    "path": "Salesforce/ds-1000",
+    "processor": "ds1000"
+  },
+  "codeparrot": {
+    "path": "codeparrot/codeparrot-clean",
+    "processor": "codeparrot",
+    "split": "train"
+  },
+  "the_stack_python": {
+    "path": "bigcode/the-stack",
+    "name": "data",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "python"
+  },
+  "humaneval": {
+    "path": "openai_humaneval",
+    "processor": "humaneval"
+  }
+}

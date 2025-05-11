@@ -1,0 +1,12 @@
+[
+  "Write a Python function to calculate the Fibonacci sequence up to n terms.",
+  "Implement a binary search algorithm in Python.",
+  "Create a decorator that measures the execution time of a function.",
+  "Write a function to check if a string is a palindrome, ignoring spaces and punctuation.",
+  "Implement a Python class for a simple bank account with deposit and withdrawal methods.",
+  "Create a function that finds all prime numbers up to a given limit using the Sieve of Eratosthenes.",
+  "Write a generator function that yields the next number in the Pascal's Triangle.",
+  "Create a script that downloads and analyzes data from a CSV file using pandas.",
+  "Write a recursive function to calculate the greatest common divisor of two numbers.",
+  "Implement a simple caching mechanism using Python decorators."
+]

@@ -1,0 +1,93 @@
+{
+  "model": {
+    "base_model": "deepseek-ai/deepseek-coder-6.7b-base",
+    "use_unsloth": true,
+    "use_4bit": true,
+    "use_nested_quant": true,
+    "bnb_4bit_compute_dtype": "float16",
+    "use_gradient_checkpointing": true,
+    "flash_attention": true
+  },
+  "peft": {
+    "lora_alpha": 16,
+    "lora_dropout": 0.05,
+    "r": 32,
+    "bias": "none",
+    "task_type": "CAUSAL_LM",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "training": {
+    "output_dir": "models/deepseek-coder-finetune",
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 8,
+    "per_device_eval_batch_size": 8,
+    "gradient_accumulation_steps": 4,
+    "evaluation_strategy": "steps",
+    "eval_steps": 100,
+    "save_strategy": "steps",
+    "save_steps": 200,
+    "save_total_limit": 3,
+    "learning_rate": 2e-4,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.03,
+    "lr_scheduler_type": "cosine",
+    "logging_steps": 50,
+    "report_to": ["wandb", "tensorboard"],
+    "seed": 42,
+    "fp16": true,
+    "bf16": false,
+    "push_to_hub": false,
+    "use_deepspeed": true,
+    "max_grad_norm": 1.0,
+    "dataloader_num_workers": 8,
+    "group_by_length": true,
+    "optim": "adamw_torch"
+  },
+  "dataset": {
+    "max_length": 2048,
+    "dataset_weights": {
+      "codesearchnet": 1.0,
+      "code_alpaca": 2.0,
+      "instruct_code": 2.0,
+      "mbpp": 1.5,
+      "ds1000": 1.0,
+      "codeparrot": 0.5,
+      "the_stack_python": 0.5,
+      "humaneval": 2.0
+    },
+    "train_size": 0.9,
+    "val_size": 0.05,
+    "test_size": 0.05,
+    "streaming": true,
+    "use_cache": false,
+    "interleave_prob": 0.5,
+    "max_samples": {
+      "codesearchnet": 100000,
+      "code_alpaca": 20000,
+      "instruct_code": 50000,
+      "mbpp": 10000,
+      "ds1000": 10000,
+      "codeparrot": 50000,
+      "the_stack_python": 100000,
+      "humaneval": 10000
+    }
+  },
+  "hardware": {
+    "gpu": "A6000",
+    "vram_gb": 48,
+    "ram_gb": 45,
+    "cpu_cores": 8
+  },
+  "google_drive": {
+    "use_drive": true,
+    "base_dir": "DeepseekCoder"
+  }
+}
