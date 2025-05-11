@@ -68,13 +68,14 @@ export PYTHONPATH="/path/to/gen-text-ai:$PYTHONPATH"
 python scripts/authenticate_headless.py --credentials credentials.json
 ```
 
-With either option:
+With either option, you'll see the authentication process:
 
-1. A URL will be printed to the console. Copy this URL
-2. Open the URL in a browser on your local machine (not in Paperspace)
-3. Choose your Google account and grant the requested permissions
-4. Copy the authorization code displayed and paste it back into the Paperspace console
-5. The authentication token is now saved as `token.pickle` and will be reused for future sessions
+1. The script will generate and display an authorization URL
+2. Copy this URL and open it in a browser on your local machine (not in Paperspace)
+3. Log in with your Google account and grant the requested permissions
+4. You'll receive an authorization code on the consent screen
+5. Copy this code and paste it at the prompt in your Paperspace terminal
+6. The authentication token will be saved as `token.pickle` and reused for future sessions
 
 ## Running the Pipeline
 

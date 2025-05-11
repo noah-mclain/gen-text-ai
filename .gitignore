@@ -161,3 +161,4 @@ cython_debug/
 
 
 Google Cloud Credentials.json
+credentials.json

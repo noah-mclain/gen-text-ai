@@ -60,20 +60,28 @@ def authenticate_drive_api(credentials_path, token_path='token.pickle'):
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
-                # Use console flow for headless environments
+                # Create a flow instance with client secrets
                 flow = InstalledAppFlow.from_client_secrets_file(
                     credentials_path, SCOPES)
                 
+                # Get authorization URL for manual flow
+                auth_url = flow.authorization_url()[0]
+                
+                # Display instructions for manual authorization
                 logger.info("=" * 70)
                 logger.info("HEADLESS AUTHENTICATION REQUIRED")
-                logger.info("1. You will be shown a URL to open in your browser")
-                logger.info("2. Open this URL on your local machine")
-                logger.info("3. Log in and grant permissions")
-                logger.info("4. Copy the authorization code provided") 
-                logger.info("5. Paste the code back here")
+                logger.info("1. Go to the following URL in your browser:")
+                logger.info(f"\n{auth_url}\n")
+                logger.info("2. Log in and grant permissions")
+                logger.info("3. Copy the authorization code provided")
                 logger.info("=" * 70)
                 
-                creds = flow.run_console()
+                # Get the authorization code from user input
+                auth_code = input("Enter the authorization code: ").strip()
+                
+                # Exchange the authorization code for credentials
+                flow.fetch_token(code=auth_code)
+                creds = flow.credentials
             
             # Save the credentials for the next run
             with open(token_path, 'wb') as token:
