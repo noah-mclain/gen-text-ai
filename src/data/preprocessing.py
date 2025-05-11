@@ -57,7 +57,8 @@ class DataPreprocessor:
                 unique_pairs[pair_key] = True
                 deduplicated_texts.append(text)
         
-        logger.info(f"Removed {len(filtered_texts) - len(deduplicated_texts)} duplicate examples")
+        # Calculate duplicates removed but don't log it (will be aggregated later)
+        duplicates_removed = len(filtered_texts) - len(deduplicated_texts)
         
         # For streaming mode, process in smaller batches to save memory
         if streaming:
@@ -67,7 +68,7 @@ class DataPreprocessor:
             
             # Handle empty filtered_texts
             if not deduplicated_texts:
-                return {"processed_text": [], "length": []}
+                return {"processed_text": [], "length": [], "duplicates_removed": duplicates_removed}
             
             for i in range(0, len(deduplicated_texts), batch_size):
                 batch = deduplicated_texts[i:i+batch_size]
@@ -85,11 +86,11 @@ class DataPreprocessor:
                 if hasattr(self.tokenizer, "cache_clear"):
                     self.tokenizer.cache_clear()
                 
-            return {"processed_text": deduplicated_texts, "length": all_lengths}
+            return {"processed_text": deduplicated_texts, "length": all_lengths, "duplicates_removed": duplicates_removed}
         else:
             # Handle empty filtered_texts for non-streaming mode too
             if not deduplicated_texts:
-                return {"processed_text": [], "length": []}
+                return {"processed_text": [], "length": [], "duplicates_removed": duplicates_removed}
                 
             # Tokenize and truncate to max length for non-streaming mode
             tokenized = self.tokenizer(
@@ -100,7 +101,7 @@ class DataPreprocessor:
                 return_length=True
             )
             
-            return {"processed_text": deduplicated_texts, "length": tokenized["length"]}
+            return {"processed_text": deduplicated_texts, "length": tokenized["length"], "duplicates_removed": duplicates_removed}
     
     def process_codesearchnet(self, dataset: Union[Dataset, DatasetDict], 
                              streaming: bool = False, language: str = None) -> Union[Dataset, DatasetDict]:
@@ -887,6 +888,9 @@ class DataPreprocessor:
                 os.makedirs(save_path, exist_ok=True)
                 save_path_for_dataset = os.path.join(save_path, f"{dataset_name}_processed")
                 
+                # Track total duplicates removed
+                total_duplicates_removed = 0
+                
                 # For streaming datasets we need to materialize and convert to non-streaming format
                 if streaming:
                     logger.info(f"Materializing streaming dataset {dataset_name} (taking {max_samples} samples)...")
@@ -910,6 +914,9 @@ class DataPreprocessor:
                                 if isinstance(example, dict) and "processed_text" in example and "length" in example:
                                     collected_data["processed_text"].append(example["processed_text"])
                                     collected_data["length"].append(example["length"])
+                                    # Track duplicate counts
+                                    if "duplicates_removed" in example:
+                                        total_duplicates_removed += example["duplicates_removed"]
                                     count += 1
                             except Exception as e:
                                 logger.warning(f"Error collecting example: {e}")
@@ -932,6 +939,9 @@ class DataPreprocessor:
                                         if example["processed_text"] and isinstance(example["processed_text"], str):
                                             collected_data["processed_text"].append(example["processed_text"])
                                             collected_data["length"].append(example["length"])
+                                            # Track duplicate counts
+                                            if "duplicates_removed" in example:
+                                                total_duplicates_removed += example["duplicates_removed"]
                                             count += 1
                                         else:
                                             logger.warning(f"Skipping example with empty or non-string processed_text field")
@@ -967,6 +977,9 @@ class DataPreprocessor:
                                     if isinstance(example, dict) and "processed_text" in example and "length" in example:
                                         collected_data["processed_text"].append(example["processed_text"])
                                         collected_data["length"].append(example["length"])
+                                        # Track duplicate counts
+                                        if "duplicates_removed" in example:
+                                            total_duplicates_removed += example["duplicates_removed"]
                                         count += 1
                             except Exception as backup_error:
                                 logger.error(f"Backup collection method also failed: {backup_error}")
@@ -986,10 +999,19 @@ class DataPreprocessor:
                     processed_datasets[dataset_name] = materialized_dataset
                     
                 else:
-                    # For non-streaming datasets, save directly
+                    # For non-streaming datasets, count duplicates removed
+                    # We can't directly access the duplicate counts in the processed dataset
+                    # because HuggingFace Datasets don't preserve custom attributes
+                    # This would require changing how we store metadata in the dataset
+                    
+                    # Save dataset
                     processed_dataset.save_to_disk(save_path_for_dataset)
                     logger.info(f"Saved processed dataset to {save_path_for_dataset}")
                     processed_datasets[dataset_name] = processed_dataset
+                
+                # Log the total number of duplicates removed
+                if total_duplicates_removed > 0:
+                    logger.info(f"Removed {total_duplicates_removed} duplicate examples from dataset {dataset_name}")
                 
                 logger.info(f"Successfully processed and saved {dataset_name}")
             
