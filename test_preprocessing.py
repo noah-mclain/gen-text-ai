@@ -4,8 +4,18 @@ import logging
 from datasets import load_dataset
 from src.data.preprocessing import DataPreprocessor
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging to be more concise
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'  # Shorter time format
+)
 logger = logging.getLogger(__name__)
+
+# Reduce verbose output from Hugging Face
+logging.getLogger("datasets").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("transformers").setLevel(logging.WARNING)
 
 def test_preprocessing(dataset_name, processor_name, max_samples=10):
     """Test preprocessing on a small sample of data."""
@@ -39,16 +49,18 @@ def test_preprocessing(dataset_name, processor_name, max_samples=10):
         else:
             dataset_path = dataset_name
             
-        # Always use streaming mode to avoid batch processing errors
-        logger.info(f"Loading dataset with split: {split} in streaming mode (trust_remote_code={trust_remote_code})")
+        # Always use streaming mode to avoid batch processing errors and minimize memory usage
+        logger.info(f"Loading dataset with streaming mode (trust_remote_code={trust_remote_code})")
         dataset = load_dataset(
             dataset_path, 
             streaming=True, 
             split=split,
-            trust_remote_code=trust_remote_code
+            trust_remote_code=trust_remote_code,
+            # Minimize caching to avoid RAM/VRAM usage
+            use_auth_token=os.environ.get("HF_TOKEN")
         )
             
-        logger.info(f"Successfully loaded dataset with streaming mode")
+        logger.info(f"Successfully loaded dataset")
         
         # Find appropriate processor method
         processor_func = getattr(preprocessor, f"process_{processor_name}")
@@ -59,15 +71,24 @@ def test_preprocessing(dataset_name, processor_name, max_samples=10):
         
         # For streaming mode, process a few examples
         count = 0
+        successful = 0
+        
+        # Only show a minimal number of examples to avoid cluttering the terminal
         for example in processed_dataset:
             if count >= max_samples:
                 break
-            if isinstance(example, dict) and "processed_text" in example:
-                if count < 3:  # Show only first 3 examples to keep output readable
-                    logger.info(f"Example {count}: {example['processed_text'][:100]}...")
+                
             count += 1
             
-        logger.info(f"Successfully processed {count} examples in streaming mode")
+            if isinstance(example, dict) and "processed_text" in example:
+                successful += 1
+                # Only show the first example to minimize output
+                if successful == 1:
+                    # Show just a brief preview
+                    preview = example["processed_text"][:80] + "..." if len(example["processed_text"]) > 80 else example["processed_text"]
+                    logger.info(f"Example: {preview}")
+            
+        logger.info(f"Successfully processed {successful}/{count} examples")
         logger.info("Test completed successfully")
         return True
         
@@ -82,8 +103,13 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default="humaneval", help="Dataset to test")
     parser.add_argument("--processor", type=str, default="humaneval", help="Processor type to use")
     parser.add_argument("--max_samples", type=int, default=10, help="Maximum samples to process")
+    parser.add_argument("--quiet", action="store_true", help="Reduce logging output")
     
     args = parser.parse_args()
+    
+    # Set even more minimal logging if quiet mode is enabled
+    if args.quiet:
+        logging.basicConfig(level=logging.WARNING)
     
     success = test_preprocessing(
         args.dataset, 

@@ -15,12 +15,16 @@ This document summarizes the improvements made to the data preprocessing workflo
    - Added memory monitoring using `psutil`
    - Implemented proactive garbage collection when memory usage is high
    - Added tokenizer cache clearing to reduce memory pressure
+   - **NEW**: Added GPU VRAM monitoring and optimization using PyTorch when available
+   - **NEW**: Added incremental saving to minimize memory usage for large datasets
 
 3. **Progress Tracking**
 
    - Added tqdm progress bars for better visibility during processing
    - Improved logging with timestamps and log levels
    - Added periodic status updates and memory usage reporting
+   - **NEW**: Reduced terminal output by consolidating progress information
+   - **NEW**: Single-line updates for progress bars to avoid terminal flooding
 
 4. **Unified Field Extraction**
 
@@ -33,6 +37,7 @@ This document summarizes the improvements made to the data preprocessing workflo
    - Added the `_safe_dataset_iterator` method for reliable dataset iteration
    - Implemented proper limits and error counting to avoid infinite loops
    - Added protection against malformed data
+   - **NEW**: Optimized to minimize memory footprint during iteration
 
 6. **Input Validation**
 
@@ -44,6 +49,44 @@ This document summarizes the improvements made to the data preprocessing workflo
    - Enhanced handling of streaming datasets with better batching
    - Fixed the "object of type 'int' has no len()" error in streaming mode
    - Improved memory efficiency for large datasets
+   - **NEW**: Forced streaming mode to minimize RAM/VRAM usage
+   - **NEW**: Split large datasets into smaller chunks to avoid OOM errors
+
+## VRAM Optimization
+
+1. **GPU Memory Management**
+
+   - Added detection of GPU availability via PyTorch
+   - Implemented monitoring of allocated and reserved VRAM
+   - Added automatic `torch.cuda.empty_cache()` calls to free VRAM when needed
+   - Segregated system RAM and GPU VRAM monitoring for better resource allocation
+
+2. **Minimized Memory Footprint**
+
+   - Implemented incremental processing with periodic garbage collection
+   - Added chunked dataset saving to avoid loading entire datasets into memory
+   - Optimized tokenization to process in smaller batches
+   - Limited the number of examples held in memory at any time
+
+3. **Minimal Caching**
+   - Disabled dataset caching when possible to reduce disk and memory usage
+   - Implemented direct streaming from source to avoid redundant data loading
+   - Used minimal intermediate storage during processing
+
+## Reduced Terminal Output
+
+1. **Consolidated Progress Information**
+
+   - Used single-line progress updates instead of multiple progress bars
+   - Reduced frequency of log messages during normal operation
+   - Implemented filtered error logging to avoid terminal flooding
+   - Added cleaner timestamps and more concise formats
+
+2. **Focused Reporting**
+   - Only reported critical memory usage information
+   - Provided summary statistics instead of verbose processing details
+   - Added quiet mode for minimal terminal output
+   - Reduced duplicate error messages
 
 ## Dataset-Specific Improvements
 
@@ -80,22 +123,25 @@ Added a test script (`test_preprocessing.py`) that:
 - Verifies streaming mode functionality
 - Handles dataset-specific configurations
 - Validates output format and content
+- **NEW**: Includes a quiet mode to reduce terminal output
+- **NEW**: Uses streaming mode by default to minimize memory usage
 
 ## Usage
 
 The improved preprocessing workflow can be tested using:
 
 ```bash
-python test_preprocessing.py --dataset [dataset_name] --processor [processor_name]
+python test_preprocessing.py --dataset [dataset_name] --processor [processor_name] [--quiet]
 ```
 
 Where:
 
 - `dataset_name`: humaneval, mbpp, codesearchnet, instruct_code, the_stack
 - `processor_name`: humaneval, mbpp, codesearchnet, instruct_code, the_stack
+- `--quiet`: Optional flag to reduce terminal output
 
 Example:
 
 ```bash
-python test_preprocessing.py --dataset humaneval --processor humaneval
+python test_preprocessing.py --dataset humaneval --processor humaneval --quiet
 ```
