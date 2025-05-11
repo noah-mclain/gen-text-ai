@@ -1,41 +1,118 @@
+# Fix import order to ensure Unsloth optimizations are applied correctly
+try:
+    from unsloth import FastLanguageModel
+except ImportError:
+    print("Unsloth not installed. Install with: pip install unsloth")
+
 import os
 import json
 import logging
-import sys
-from pathlib import Path
-from typing import Dict, List, Optional, Union, Any
-
 import torch
+import sys
+from typing import Dict, List, Union, Optional, Any, Tuple
+from datasets import Dataset, DatasetDict, concatenate_datasets
 import numpy as np
+from datetime import datetime
+
+# Add project root to path for absolute imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+# Import other libraries after unsloth
+import transformers
 from transformers import (
-    AutoModelForCausalLM, 
-    AutoTokenizer,
     TrainingArguments,
     Trainer,
     DataCollatorForLanguageModeling,
-    set_seed
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig
 )
-from datasets import Dataset, DatasetDict
-from peft import (
-    LoraConfig, 
-    get_peft_model, 
-    prepare_model_for_kbit_training,
-    TaskType
-)
-from huggingface_hub import login, HfFolder
+import peft
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
+# Try multiple import paths for dataset utilities
 try:
-    from unsloth import FastLanguageModel
-    UNSLOTH_AVAILABLE = True
-except ImportError:
-    UNSLOTH_AVAILABLE = False
+    # Absolute import
+    from src.data.dataset_utils import load_processed_datasets, combine_datasets, create_train_val_test_split
+except (ImportError, ModuleNotFoundError):
+    try:
+        # Relative import from project root
+        from data.dataset_utils import load_processed_datasets, combine_datasets, create_train_val_test_split
+    except (ImportError, ModuleNotFoundError):
+        try:
+            # Relative import within package
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from data.dataset_utils import load_processed_datasets, combine_datasets, create_train_val_test_split
+        except (ImportError, ModuleNotFoundError):
+            print("Warning: dataset_utils not found. Creating fallback functions.")
+            
+            # Create minimal fallback functions to prevent crashes
+            def load_processed_datasets(data_dir, max_samples=None):
+                """Fallback function for loading datasets"""
+                print(f"Using fallback dataset loader for directory: {data_dir}")
+                from datasets import load_from_disk
+                datasets = {}
+                
+                if not os.path.exists(data_dir):
+                    print(f"Warning: Data directory {data_dir} does not exist.")
+                    return {}
+                
+                for entry in os.listdir(data_dir):
+                    path = os.path.join(data_dir, entry)
+                    if os.path.isdir(path) and entry.endswith("_processed"):
+                        name = entry.replace("_processed", "")
+                        try:
+                            dataset = load_from_disk(path)
+                            if isinstance(dataset, Dataset) or isinstance(dataset, DatasetDict):
+                                datasets[name] = dataset
+                                print(f"Loaded dataset {name} from {path} with {len(dataset)} examples")
+                        except Exception as e:
+                            print(f"Failed to load dataset {name}: {str(e)}")
+                
+                return datasets
+            
+            def combine_datasets(datasets, weights=None, seed=42):
+                """Fallback function to combine datasets"""
+                if not datasets:
+                    print("No datasets to combine")
+                    return None
+                    
+                dataset_list = list(datasets.values())
+                combined = dataset_list[0]
+                for ds in dataset_list[1:]:
+                    combined = concatenate_datasets([combined, ds])
+                
+                return combined
+                
+            def create_train_val_test_split(dataset, train_size=0.8, val_size=0.1, test_size=0.1, seed=42):
+                """Fallback function to split dataset"""
+                if not dataset:
+                    return None, None, None
+                    
+                splits = dataset.train_test_split(test_size=val_size + test_size, seed=seed)
+                train_dataset = splits['train']
+                
+                # Further split the test into validation and test
+                remaining_size = val_size / (val_size + test_size)
+                val_test_splits = splits['test'].train_test_split(test_size=remaining_size, seed=seed)
+                
+                return train_dataset, val_test_splits['test'], val_test_splits['train']
 
-# Add parent directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.dataset_utils import load_processed_datasets, combine_datasets, create_train_val_test_split
-from utils.drive_utils import is_drive_mounted, get_drive_path
+# Try multiple import paths for Google Drive utilities
+try:
+    from src.utils.drive_utils import save_model_to_drive
+except (ImportError, ModuleNotFoundError):
+    try:
+        from utils.drive_utils import save_model_to_drive
+    except (ImportError, ModuleNotFoundError):
+        print("Warning: drive_utils not found. Creating fallback functions.")
+        
+        def save_model_to_drive(*args, **kwargs):
+            """Fallback function when drive_utils is not available"""
+            print("Google Drive integration not available - model not saved to drive.")
+            return False
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class DeepseekFineTuner:

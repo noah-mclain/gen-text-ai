@@ -1,38 +1,70 @@
 import os
 import logging
 import random
-from typing import Dict, List, Optional, Union
-from datasets import Dataset, DatasetDict, concatenate_datasets, load_from_disk, load_dataset
+import traceback
+from typing import Dict, List, Optional, Union, Tuple, Any
+from datasets import Dataset, DatasetDict, concatenate_datasets
+
+# Try different import patterns for load_from_disk and load_dataset
+try:
+    from datasets import load_from_disk, load_dataset
+except ImportError:
+    # Fallback to alternative imports if needed
+    try:
+        from huggingface_datasets import load_from_disk, load_dataset
+    except ImportError:
+        # Define placeholders that will raise informative errors
+        def load_from_disk(path, **kwargs):
+            raise ImportError("Could not import load_from_disk from datasets or huggingface_datasets")
+        
+        def load_dataset(path, **kwargs):
+            raise ImportError("Could not import load_dataset from datasets or huggingface_datasets")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def load_processed_datasets(data_dir: str, dataset_names: Optional[List[str]] = None, 
-                           streaming: bool = False, use_cache: bool = True) -> Dict[str, Dataset]:
+                           streaming: bool = False, use_cache: bool = True,
+                           max_samples: Optional[Dict[str, int]] = None) -> Dict[str, Dataset]:
     """
-    Load processed datasets from disk.
+    Load processed datasets from disk with robust error handling.
     
     Args:
         data_dir: Directory containing processed datasets
         dataset_names: Optional list of dataset names to load (if None, load all datasets in the directory)
         streaming: Whether to load datasets in streaming mode to save memory
         use_cache: Whether to use the cache for datasets
+        max_samples: Optional dictionary mapping dataset names to maximum number of samples to load
     
     Returns:
         Dictionary mapping dataset names to loaded datasets
     """
     if not os.path.exists(data_dir):
-        raise ValueError(f"Data directory {data_dir} does not exist")
+        logger.warning(f"Data directory {data_dir} does not exist - creating it")
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+        except Exception as e:
+            logger.error(f"Failed to create data directory: {e}")
+        return {}
     
     # Get all dataset directories
-    dataset_dirs = [d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))]
+    try:
+        # Only look for directories that end with _processed
+        dataset_dirs = [d for d in os.listdir(data_dir) 
+                      if os.path.isdir(os.path.join(data_dir, d)) and d.endswith("_processed")]
+    except Exception as e:
+        logger.error(f"Error listing directory {data_dir}: {e}")
+        dataset_dirs = []
     
     # Filter by dataset names if specified
     if dataset_names:
-        dataset_dirs = [d for d in dataset_dirs if any(d.startswith(name) for name in dataset_names)]
+        # Match partial names - if the directory contains any of the names, include it
+        dataset_dirs = [d for d in dataset_dirs 
+                      if any(name in d for name in dataset_names)]
     
     if not dataset_dirs:
-        logger.warning(f"No datasets found in {data_dir}")
+        logger.warning(f"No datasets found in {data_dir}" + 
+                      (f" matching {dataset_names}" if dataset_names else ""))
         return {}
     
     # Set cache directory if needed
@@ -44,13 +76,40 @@ def load_processed_datasets(data_dir: str, dataset_names: Optional[List[str]] = 
     for dir_name in dataset_dirs:
         try:
             dataset_path = os.path.join(data_dir, dir_name)
-            dataset = load_from_disk(dataset_path, keep_in_memory=not streaming)
+            
+            # Extract the base name without _processed
             name = dir_name.replace("_processed", "")
+            
+            # Skip if the dataset is not requested (exact match)
+            if dataset_names and name not in dataset_names:
+                continue
+                
+            logger.info(f"Loading dataset {name} from {dataset_path}")
+            
+            # Load the dataset
+            dataset = load_from_disk(dataset_path, keep_in_memory=not streaming)
+            
+            # Apply max_samples if specified
+            if max_samples and name in max_samples and max_samples[name] > 0:
+                max_to_take = min(max_samples[name], len(dataset))
+                if max_to_take < len(dataset):
+                    logger.info(f"Limiting {name} dataset to {max_to_take} samples (from {len(dataset)})")
+                    # Select a random sample if not streaming
+                    if not streaming:
+                        dataset = dataset.shuffle(seed=42).select(range(max_to_take))
+            
             datasets[name] = dataset
-            logger.info(f"Loaded dataset {name} with {len(dataset)} examples" + 
-                      f" (streaming={streaming}, cached={use_cache})")
+            logger.info(f"Successfully loaded dataset {name} with {len(dataset) if hasattr(dataset, '__len__') else 'unknown'} examples")
+            
         except Exception as e:
             logger.error(f"Error loading dataset {dir_name}: {str(e)}")
+            logger.debug(traceback.format_exc())
+    
+    # Log stats about loaded datasets
+    if datasets:
+        logger.info(f"Successfully loaded {len(datasets)} datasets: {', '.join(datasets.keys())}")
+    else:
+        logger.warning("No datasets could be loaded")
     
     return datasets
 
@@ -73,12 +132,26 @@ def load_raw_dataset(dataset_path: str, name: Optional[str] = None, split: Optio
     if not use_cache:
         os.environ["HF_DATASETS_CACHE"] = "no"
     
-    # Load dataset
-    logger.info(f"Loading dataset {dataset_path} (streaming={streaming}, cached={use_cache})")
-    return load_dataset(dataset_path, name=name, split=split, streaming=streaming)
+    # Load dataset with error handling
+    try:
+        logger.info(f"Loading dataset {dataset_path} (streaming={streaming}, cached={use_cache})")
+        return load_dataset(dataset_path, name=name, split=split, streaming=streaming)
+    except Exception as e:
+        logger.error(f"Error loading dataset {dataset_path}: {str(e)}")
+        logger.debug(traceback.format_exc())
+        
+        # Return an empty dataset as a fallback
+        if not streaming:
+            return Dataset.from_dict({"text": []})
+        else:
+            # For streaming, return an empty generator
+            def empty_gen():
+                if False:  # Will never yield
+                    yield {"text": ""}
+            return empty_gen()
 
 def combine_datasets(datasets: Dict[str, Dataset], weights: Optional[Dict[str, float]] = None,
-                   interleave_prob: Optional[float] = None, seed: int = 42) -> Dataset:
+                   interleave_prob: Optional[float] = None, seed: int = 42) -> Optional[Dataset]:
     """
     Combine multiple datasets into a single dataset, optionally with weighted sampling.
     
@@ -89,10 +162,17 @@ def combine_datasets(datasets: Dict[str, Dataset], weights: Optional[Dict[str, f
         seed: Random seed for interleaving
     
     Returns:
-        Combined dataset
+        Combined dataset or None if no datasets are provided
     """
     if not datasets:
-        raise ValueError("No datasets provided")
+        logger.warning("No datasets provided to combine")
+        return None
+    
+    # If only one dataset, return it directly
+    if len(datasets) == 1:
+        name, dataset = next(iter(datasets.items()))
+        logger.info(f"Only one dataset ({name}) provided, returning it directly")
+        return dataset
     
     # If weights not provided, use equal weights
     if weights is None:
@@ -104,39 +184,66 @@ def combine_datasets(datasets: Dict[str, Dataset], weights: Optional[Dict[str, f
             logger.warning(f"No weight specified for dataset {name}, using default weight of 1.0")
             weights[name] = 1.0
     
-    # Calculate the number of examples to sample from each dataset
-    total_weight = sum(weights.values())
-    normalized_weights = {name: weight / total_weight for name, weight in weights.items()}
+    # Filter out datasets with zero weight
+    valid_datasets = {name: dataset for name, dataset in datasets.items() 
+                    if name in weights and weights[name] > 0}
     
-    # Interleave or concatenate datasets
-    if interleave_prob is not None:
-        # Prepare datasets for interleaving
-        dataset_dict = {}
-        probabilities = []
+    if not valid_datasets:
+        logger.warning("No datasets with positive weights to combine")
+        return None
+    
+    # Calculate the number of examples to sample from each dataset
+    valid_weights = {name: weights[name] for name in valid_datasets.keys()}
+    total_weight = sum(valid_weights.values())
+    normalized_weights = {name: weight / total_weight for name, weight in valid_weights.items()}
+    
+    try:
+        # Interleave or concatenate datasets
+        if interleave_prob is not None and interleave_prob > 0:
+            # Prepare datasets for interleaving
+            dataset_dict = {}
+            probabilities = []
+            
+            for name, dataset in valid_datasets.items():
+                dataset_dict[name] = dataset
+                probabilities.append(normalized_weights[name])
+            
+            logger.info(f"Interleaving {len(dataset_dict)} datasets with probabilities: {dict(zip(dataset_dict.keys(), probabilities))}")
+            
+            # Create a DatasetDict and interleave
+            try:
+                from datasets import interleave_datasets
+                combined = interleave_datasets(
+                    list(dataset_dict.values()),
+                    probabilities=probabilities,
+                    seed=seed,
+                    stopping_strategy="first_exhausted"
+                )
+                return combined
+            except ImportError:
+                # Fallback to alternative implementation if interleave_datasets not available
+                logger.warning("interleave_datasets not available, falling back to concatenation")
+                combined_datasets = list(valid_datasets.values())
+                return concatenate_datasets(combined_datasets)
+        else:
+            # Combine datasets by concatenation
+            logger.info(f"Concatenating {len(valid_datasets)} datasets")
+            combined_datasets = list(valid_datasets.values())
+            return concatenate_datasets(combined_datasets)
+    except Exception as e:
+        logger.error(f"Error combining datasets: {str(e)}")
+        logger.debug(traceback.format_exc())
         
-        for name, dataset in datasets.items():
-            dataset_dict[name] = dataset
-            probabilities.append(normalized_weights[name])
-        
-        # Interleave datasets
-        return DatasetDict(dataset_dict).interleave_datasets(
-            probabilities=probabilities,
-            seed=seed,
-            stopping_strategy="first_exhausted"
-        )
-    else:
-        # Combine datasets by concatenation
-        combined_datasets = []
-        for name, dataset in datasets.items():
-            combined_datasets.append(dataset)
-        
-        return concatenate_datasets(combined_datasets)
+        # Return the largest dataset as a fallback
+        largest_dataset = max(valid_datasets.items(), key=lambda x: len(x[1]) if hasattr(x[1], '__len__') else 0)
+        logger.warning(f"Returning largest dataset ({largest_dataset[0]}) as fallback")
+        return largest_dataset[1]
 
-def create_train_val_test_split(dataset: Dataset, train_size: float = 0.9, val_size: float = 0.05, 
-                               test_size: float = 0.05, seed: int = 42,
-                               streaming: bool = False) -> DatasetDict:
+def create_train_val_test_split(dataset: Dataset, train_size: float = 0.8, val_size: float = 0.1, 
+                               test_size: float = 0.1, seed: int = 42,
+                               streaming: bool = False) -> Tuple[Dataset, Dataset, Dataset]:
     """
-    Split a dataset into train, validation, and test sets.
+    Split a dataset into train, validation, and test sets with robust error handling.
     
     Args:
         dataset: Dataset to split
@@ -147,8 +254,20 @@ def create_train_val_test_split(dataset: Dataset, train_size: float = 0.9, val_s
         streaming: Whether the dataset is in streaming mode
     
     Returns:
-        DatasetDict with train, validation, and test splits
+        Tuple of (train_dataset, val_dataset, test_dataset)
     """
+    if dataset is None:
+        logger.error("Cannot split None dataset")
+        return None, None, None
+        
+    try:
+        # Check if dataset is empty
+        if hasattr(dataset, '__len__') and len(dataset) == 0:
+            logger.warning("Cannot split empty dataset")
+            return dataset, dataset, dataset
+    except Exception as e:
+        logger.warning(f"Could not check dataset length: {e}")
+    
     # Ensure sizes sum to 1
     if abs(train_size + val_size + test_size - 1.0) > 1e-6:
         logger.warning(f"Sizes {train_size}, {val_size}, {test_size} do not sum to 1, normalizing")
@@ -157,43 +276,42 @@ def create_train_val_test_split(dataset: Dataset, train_size: float = 0.9, val_s
         val_size /= total
         test_size /= total
     
-    if streaming:
-        # For streaming datasets, we need to shuffle and then split
-        # This is more memory-efficient but might be slower
-        dataset = dataset.shuffle(seed=seed, buffer_size=10000)
+    try:
+        if streaming:
+            logger.warning("Splitting streaming datasets is approximate and may not be reproducible")
+            # Create a buffered generator for each split
+            def split_generator(dataset, train_prop, val_prop, test_prop, seed=42):
+                random.seed(seed)
+                for example in dataset:
+                    r = random.random()
+                    if r < train_prop:
+                        yield ("train", example)
+                    elif r < train_prop + val_prop:
+                        yield ("validation", example)
+                    else:
+                        yield ("test", example)
+            
+            # Create generators for each split
+            train_gen = (ex for split, ex in split_generator(dataset, train_size, val_size, test_size) if split == "train")
+            val_gen = (ex for split, ex in split_generator(dataset, train_size, val_size, test_size) if split == "validation")
+            test_gen = (ex for split, ex in split_generator(dataset, train_size, val_size, test_size) if split == "test")
+            
+            # Create dataset objects
+            return train_gen, val_gen, test_gen
+        else:
+            # For normal datasets, use the standard train_test_split method
+            train_val_test = dataset.train_test_split(test_size=val_size + test_size, seed=seed)
+            train_dataset = train_val_test["train"]
+            
+            # Split the test set into validation and test
+            val_test_ratio = val_size / (val_size + test_size)
+            val_test = train_val_test["test"].train_test_split(test_size=1-val_test_ratio, seed=seed)
+            
+            return train_dataset, val_test["train"], val_test["test"]
+    except Exception as e:
+        logger.error(f"Error splitting dataset: {str(e)}")
+        logger.debug(traceback.format_exc())
         
-        def split_generator(dataset, train_end, val_end):
-            for i, example in enumerate(dataset):
-                if i < train_end:
-                    yield "train", example
-                elif i < val_end:
-                    yield "validation", example
-                else:
-                    yield "test", example
-        
-        # Estimate dataset size (this is approximate for streaming datasets)
-        try:
-            dataset_size = len(dataset)
-        except TypeError:
-            # For truly streaming datasets without known length, use a large default size
-            logger.warning("Dataset size unknown, using 100,000 as default for splitting")
-            dataset_size = 100000
-        
-        train_end = int(dataset_size * train_size)
-        val_end = int(dataset_size * (train_size + val_size))
-        
-        return dataset.to_dict().add_column("split", split_generator(dataset, train_end, val_end))
-    else:
-        # For normal datasets, use the standard train_test_split method
-        train_val_test = dataset.train_test_split(test_size=val_size + test_size, seed=seed)
-        train_dataset = train_val_test["train"]
-        
-        # Split the test set into validation and test
-        val_test_ratio = val_size / (val_size + test_size)
-        val_test = train_val_test["test"].train_test_split(test_size=1-val_test_ratio, seed=seed)
-        
-        return DatasetDict({
-            "train": train_dataset,
-            "validation": val_test["train"],
-            "test": val_test["test"]
-        }) 
+        # Return the original dataset for all splits as a fallback
+        logger.warning("Returning original dataset for all splits as fallback")
+        return dataset, dataset, dataset

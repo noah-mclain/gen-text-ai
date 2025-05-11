@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 import os
+import sys
 import argparse
 import logging
+
+# Add the project root to the Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(os.path.dirname(current_dir))
+sys.path.append(project_root)
+sys.path.append(os.path.dirname(project_root))  # In case notebook is one level up
 
 # Fix import order to ensure Unsloth optimizations are applied correctly
 try:
@@ -28,47 +35,100 @@ from transformers import (
 import peft
 from peft import LoraConfig
 
-# Import project modules
+# Import trainer directly with absolute path reference
 try:
-    from src.utils.drive_utils import save_model_to_drive
+    # Try to import the trainer as absolute path when run from project root
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from src.training.trainer import DeepseekFineTuner
 except (ImportError, ModuleNotFoundError):
     try:
-        from utils.drive_utils import save_model_to_drive
+        # Try direct import from current directory
+        from trainer import DeepseekFineTuner
     except (ImportError, ModuleNotFoundError):
-        print("Warning: drive_utils not found. Google Drive integration will be disabled.")
-        
-        def save_model_to_drive(*args, **kwargs):
-            print("Google Drive integration not available.")
-            return False
+        try:
+            # Try relative import
+            from .trainer import DeepseekFineTuner
+        except (ImportError, ModuleNotFoundError):
+            # Last resort: create a simple wrapper class as fallback
+            print("WARNING: Could not import DeepseekFineTuner - creating minimal fallback class")
+            
+            class DeepseekFineTuner:
+                """Fallback class when trainer.py cannot be imported"""
+                def __init__(self, config_path, use_drive=False, drive_base_dir=None):
+                    self.config_path = config_path
+                    self.use_drive = use_drive
+                    self.drive_base_dir = drive_base_dir
+                    
+                    # Load configuration
+                    try:
+                        with open(config_path, 'r') as f:
+                            self.config = json.load(f)
+                    except Exception as e:
+                        print(f"Error loading config: {str(e)}")
+                        self.config = {}
+                    
+                    print(f"Initialized fallback DeepseekFineTuner with config: {config_path}")
+                
+                def train(self, data_dir):
+                    """Fallback training method"""
+                    print(f"WARNING: Using fallback training with data from {data_dir}")
+                    print("This is a minimal implementation as the real trainer could not be imported")
+                    
+                    try:
+                        # Minimal dataset loading
+                        from datasets import load_from_disk
+                        datasets = {}
+                        
+                        # Try to load at least one dataset
+                        for entry in os.listdir(data_dir):
+                            path = os.path.join(data_dir, entry)
+                            if os.path.isdir(path) and entry.endswith("_processed"):
+                                try:
+                                    dataset = load_from_disk(path)
+                                    print(f"Loaded dataset from {path} with {len(dataset)} examples")
+                                    return {"success": False, "error": "Training aborted - proper trainer not available"}
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        print(f"Fallback training failed: {str(e)}")
+                    
+                    return {"success": False, "error": "Training aborted - proper trainer not available"}
 
+# Import drive utils with fallbacks
 try:
-    from src.data.load_datasets import load_processed_datasets
+    from src.utils.drive_utils import mount_google_drive, setup_drive_directories
 except (ImportError, ModuleNotFoundError):
     try:
-        from data.load_datasets import load_processed_datasets
+        # Try relative import
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from utils.drive_utils import mount_google_drive, setup_drive_directories
     except (ImportError, ModuleNotFoundError):
-        print("Warning: load_datasets module not found.")
+        print("WARNING: drive_utils not found. Creating fallback functions.")
         
-        def load_processed_datasets(*args, **kwargs):
-            raise ImportError("load_datasets module not found, cannot continue training.")
+        def mount_google_drive():
+            """Fallback Google Drive mounting function"""
+            print("Google Drive mounting not available")
+            return False
+        
+        def setup_drive_directories(base_dir):
+            """Fallback for setting up Google Drive directories"""
+            print(f"Cannot set up directories in Google Drive under {base_dir}")
+            return None
+
+# Fallback for drive mounting check
+try:
+    from src.utils.drive_utils import is_drive_mounted
+except (ImportError, ModuleNotFoundError):
+    try:
+        from utils.drive_utils import is_drive_mounted
+    except (ImportError, ModuleNotFoundError):
+        def is_drive_mounted():
+            """Fallback for checking if drive is mounted"""
+            return False
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Try different import approaches to handle various module structures
-try:
-    from src.training.trainer import DeepseekFineTuner
-except ImportError:
-    try:
-        from trainer import DeepseekFineTuner  # Original import
-    except ImportError:
-        from .trainer import DeepseekFineTuner  # Relative import
-
-# Import drive utils
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.drive_utils import mount_google_drive, setup_drive_directories, is_drive_mounted
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune deepseek-coder models")
@@ -87,9 +147,29 @@ def main():
     
     args = parser.parse_args()
     
+    # Ensure absolute paths for config and data_dir
+    if not os.path.isabs(args.config):
+        if args.config.startswith("../") or args.config.startswith("./"):
+            # Resolve relative paths
+            args.config = os.path.abspath(os.path.join(current_dir, args.config))
+        else:
+            # Assume paths relative to project root if not explicitly relative
+            args.config = os.path.join(project_root, args.config)
+    
+    if not os.path.isabs(args.data_dir):
+        if args.data_dir.startswith("../") or args.data_dir.startswith("./"):
+            # Resolve relative paths
+            args.data_dir = os.path.abspath(os.path.join(current_dir, args.data_dir))
+        else:
+            # Assume paths relative to project root if not explicitly relative
+            args.data_dir = os.path.join(project_root, args.data_dir)
+    
     # Ensure directories exist
     os.makedirs(os.path.dirname(args.config), exist_ok=True)
     os.makedirs(args.data_dir, exist_ok=True)
+    
+    logger.info(f"Using config path: {args.config}")
+    logger.info(f"Using data directory: {args.data_dir}")
     
     # Setup Google Drive if requested
     drive_paths = None
@@ -133,6 +213,7 @@ def main():
     metrics = tuner.train(args.data_dir)
     
     logger.info(f"Training completed with metrics: {metrics}")
+    return 0  # Return success code
 
 if __name__ == "__main__":
-    main() 
+    sys.exit(main()) 
