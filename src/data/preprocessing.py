@@ -1206,8 +1206,24 @@ class DataPreprocessor:
             # Process each example individually using our safe iterator
             for example in self._safe_dataset_iterator(dataset):
                 try:
+                    # Handle non-dictionary examples first
+                    if not isinstance(example, dict):
+                        try:
+                            # Try to convert to string and use as completion
+                            example_str = str(example)
+                            processed = self.common_preprocessing(
+                                {"prompt": "Write a Python function", "completion": example_str},
+                                "prompt", "completion",
+                                streaming=True
+                            )
+                            processed_examples.append(processed)
+                            continue
+                        except Exception as e:
+                            logger.warning(f"Could not process non-dict example: {type(example)}, error: {e}")
+                            continue
+                    
                     # Handle the OpenAI HumanEval dataset format - direct structure detection
-                    if isinstance(example, dict) and "task_id" in example and "prompt" in example:
+                    if "task_id" in example and "prompt" in example:
                         # Original OpenAI HumanEval format
                         prompt = example.get("prompt", "")
                         solution = example.get("canonical_solution", "")
@@ -1222,7 +1238,7 @@ class DataPreprocessor:
                             continue
                     
                     # Try alternate format with function_name and entry_point
-                    if isinstance(example, dict) and "function_name" in example:
+                    if "function_name" in example:
                         func_name = example.get("function_name", "")
                         entry_point = example.get("entry_point", func_name)
                         
@@ -1243,19 +1259,8 @@ class DataPreprocessor:
                     
                     # Handle case where we have neither prompt nor completion
                     if "prompt" not in fields or "completion" not in fields:
-                        # For the case where each example is directly a string
-                        if not isinstance(example, dict):
-                            try:
-                                fields = {
-                                    "prompt": "Write a Python function",
-                                    "completion": str(example)
-                                }
-                            except:
-                                logger.warning(f"Could not process example: {type(example)}")
-                                continue
-                        
                         # Handle combined format with entry_point and test
-                        elif "entry_point" in example and "test" in example:
+                        if "entry_point" in example and "test" in example:
                             entry_point = example.get("entry_point", "")
                             test_code = example.get("test", "")
                             
@@ -1265,7 +1270,7 @@ class DataPreprocessor:
                             }
                         else:
                             # Last resort - look for any content field
-                            if isinstance(example, dict) and any(k in example for k in ["content", "code", "source"]):
+                            if any(k in example for k in ["content", "code", "source"]):
                                 content = example.get("content", example.get("code", example.get("source", "")))
                                 if content:
                                     fields = {
@@ -1287,10 +1292,13 @@ class DataPreprocessor:
                     processed_examples.append(processed)
                 except Exception as e:
                     logger.warning(f"Error processing example: {e}")
+                    logger.debug(traceback.format_exc())
                     continue
             
             if not processed_examples:
                 logger.warning("No valid examples processed from HumanEval dataset")
+            else:
+                logger.info(f"Processed {len(processed_examples)} examples from HumanEval dataset")
             
             return processed_examples
         else:
@@ -1303,7 +1311,7 @@ class DataPreprocessor:
                         return {"processed_text": [], "length": [], "duplicates_removed": 0}
                     
                     # Get batch size
-                    batch_size = len(next(iter(examples.values()))) if examples else 0
+                    batch_size = len(next(iter(examples.values()))) if examples and examples.values() else 0
                     if batch_size == 0:
                         return {"processed_text": [], "length": [], "duplicates_removed": 0}
                     
@@ -1312,27 +1320,31 @@ class DataPreprocessor:
                     
                     # Process each example in the batch
                     for i in range(batch_size):
-                        # Extract a single example from the batch
-                        example = {k: v[i] if isinstance(v, list) and i < len(v) else v for k, v in examples.items()}
-                        
-                        # Extract fields using our utility method
-                        fields = self._extract_fields(example, field_mappings)
-                        
-                        # Handle combined entry_point and test case
-                        if "prompt" not in fields or "completion" not in fields:
-                            if "entry_point" in example and "test" in example:
-                                entry_point = example.get("entry_point", "")
-                                test_code = example.get("test", "")
-                                
-                                fields = {
-                                    "prompt": f"Implement the function {entry_point}",
-                                    "completion": test_code
-                                }
-                        
-                        # Add to batch if we have valid fields
-                        if "prompt" in fields and "completion" in fields:
-                            prompts.append(fields["prompt"])
-                            completions.append(fields["completion"])
+                        try:
+                            # Extract a single example from the batch
+                            example = {k: v[i] if isinstance(v, list) and i < len(v) else v for k, v in examples.items()}
+                            
+                            # Extract fields using our utility method
+                            fields = self._extract_fields(example, field_mappings)
+                            
+                            # Handle combined entry_point and test case
+                            if "prompt" not in fields or "completion" not in fields:
+                                if "entry_point" in example and "test" in example:
+                                    entry_point = example.get("entry_point", "")
+                                    test_code = example.get("test", "")
+                                    
+                                    fields = {
+                                        "prompt": f"Implement the function {entry_point}",
+                                        "completion": test_code
+                                    }
+                            
+                            # Add to batch if we have valid fields
+                            if "prompt" in fields and "completion" in fields:
+                                prompts.append(fields["prompt"])
+                                completions.append(fields["completion"])
+                        except Exception as e:
+                            logger.warning(f"Error processing batch item {i}: {e}")
+                            continue
                     
                     # Skip if we couldn't extract any valid examples
                     if not prompts or not completions:
@@ -1348,33 +1360,62 @@ class DataPreprocessor:
                     # Try to get column names from dataset if available
                     column_names = dataset.column_names if hasattr(dataset, "column_names") else None
                     
-                    return dataset.map(
+                    processed = dataset.map(
                         process_sample,
                         batched=True,
                         remove_columns=column_names if not streaming else None,
-                        batch_size=100 if streaming else None
+                        batch_size=50 if streaming else None
                     )
+                    
+                    # Log processing result
+                    if hasattr(processed, "__len__"):
+                        logger.info(f"Processed {len(processed)} examples from HumanEval dataset")
+                    
+                    return processed
                 except Exception as e:
                     logger.warning(f"Error mapping HumanEval dataset: {e}")
-                    logger.error(traceback.format_exc())
+                    logger.debug(traceback.format_exc())
                     # Try with smaller batch size
+                    logger.info("Retrying with smaller batch size...")
                     return dataset.map(
                         process_sample,
                         batched=True,
-                        batch_size=20
+                        batch_size=10
                     )
             except Exception as e:
                 logger.error(f"Error processing HumanEval dataset: {e}")
-                logger.error(traceback.format_exc())
-                # Return a simple fallback processing
-                return dataset.map(
-                    lambda examples: self.common_preprocessing(
-                        {"prompt": "Write a Python function", "completion": str(examples)},
-                        "prompt", "completion",
-                        streaming=streaming
-                    ),
-                    batched=True
-                )
+                logger.debug(traceback.format_exc())
+                # Fall back to individual processing
+                logger.info("Falling back to individual example processing...")
+                
+                processed_examples = []
+                for i, example in enumerate(dataset):
+                    try:
+                        if isinstance(example, dict):
+                            # Basic format with simple fields
+                            prompt = example.get("prompt", "")
+                            solution = example.get("canonical_solution", "")
+                            
+                            if prompt and solution:
+                                processed = self.common_preprocessing(
+                                    {"prompt": prompt, "completion": solution},
+                                    "prompt", "completion",
+                                    streaming=True
+                                )
+                                processed_examples.append(processed)
+                        else:
+                            # Non-dictionary example
+                            processed = self.common_preprocessing(
+                                {"prompt": "Write a Python function", "completion": str(example)},
+                                "prompt", "completion",
+                                streaming=True
+                            )
+                            processed_examples.append(processed)
+                    except Exception as inner_e:
+                        logger.warning(f"Error processing example {i}: {inner_e}")
+                        continue
+                
+                return processed_examples
     
     def load_and_process_all_datasets(self, dataset_config: Dict, save_path: str) -> Dict[str, Dataset]:
         """Load and process all configured datasets."""
