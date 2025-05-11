@@ -9,6 +9,7 @@ This document summarizes the improvements made to the data preprocessing workflo
    - Added comprehensive error handling with detailed logging
    - Added traceback output for better debugging
    - Improved exception recovery to continue processing other datasets
+   - **NEW**: Added timeout mechanism to prevent hanging on slow datasets
 
 2. **Resource Management**
 
@@ -25,6 +26,7 @@ This document summarizes the improvements made to the data preprocessing workflo
    - Added periodic status updates and memory usage reporting
    - **NEW**: Reduced terminal output by consolidating progress information
    - **NEW**: Single-line updates for progress bars to avoid terminal flooding
+   - **NEW**: Added more frequent progress updates for slower datasets like The Stack
 
 4. **Unified Field Extraction**
 
@@ -38,6 +40,7 @@ This document summarizes the improvements made to the data preprocessing workflo
    - Implemented proper limits and error counting to avoid infinite loops
    - Added protection against malformed data
    - **NEW**: Optimized to minimize memory footprint during iteration
+   - **NEW**: Added stall detection to identify datasets that are not making progress
 
 6. **Input Validation**
 
@@ -51,6 +54,26 @@ This document summarizes the improvements made to the data preprocessing workflo
    - Improved memory efficiency for large datasets
    - **NEW**: Forced streaming mode to minimize RAM/VRAM usage
    - **NEW**: Split large datasets into smaller chunks to avoid OOM errors
+
+## Timeout Mechanisms
+
+1. **Thread-based Timeouts**
+
+   - Added timeout mechanisms using Python's threading to avoid indefinite hanging
+   - Implemented configurable timeout durations for each dataset
+   - Added automatic recovery when processing exceeds the timeout
+
+2. **Stall Detection**
+
+   - Added detection of stalled processing where no progress is being made
+   - Implemented warning messages when no progress is detected for a period
+   - Added rate tracking to estimate completion time
+
+3. **Dataset-Specific Timeouts**
+
+   - Added special handling for The Stack dataset which is known to be slow
+   - Implemented separate timeout configurations for different dataset types
+   - Added progress reporting based on processing rate (examples/second)
 
 ## VRAM Optimization
 
@@ -112,8 +135,12 @@ This document summarizes the improvements made to the data preprocessing workflo
    - Added progress logging during processing
 
 5. **The Stack**
+
    - Improved permissive license filtering
    - Added better language-specific prompt generation
+   - **NEW**: Added special timeout handling for The Stack dataset
+   - **NEW**: Implemented more frequent progress updates
+   - **NEW**: Added processing rate tracking (examples/second)
 
 ## Testing
 
@@ -125,13 +152,14 @@ Added a test script (`test_preprocessing.py`) that:
 - Validates output format and content
 - **NEW**: Includes a quiet mode to reduce terminal output
 - **NEW**: Uses streaming mode by default to minimize memory usage
+- **NEW**: Added configurable timeouts to prevent tests from hanging
 
 ## Usage
 
 The improved preprocessing workflow can be tested using:
 
 ```bash
-python test_preprocessing.py --dataset [dataset_name] --processor [processor_name] [--quiet]
+python test_preprocessing.py --dataset [dataset_name] --processor [processor_name] [--quiet] [--timeout SECONDS]
 ```
 
 Where:
@@ -139,9 +167,10 @@ Where:
 - `dataset_name`: humaneval, mbpp, codesearchnet, instruct_code, the_stack
 - `processor_name`: humaneval, mbpp, codesearchnet, instruct_code, the_stack
 - `--quiet`: Optional flag to reduce terminal output
+- `--timeout`: Timeout in seconds (default: 300, set to 0 to disable)
 
 Example:
 
 ```bash
-python test_preprocessing.py --dataset humaneval --processor humaneval --quiet
+python test_preprocessing.py --dataset humaneval --processor humaneval --quiet --timeout 60
 ```

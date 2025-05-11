@@ -1,6 +1,9 @@
 import os
 import argparse
 import logging
+import signal
+import time
+import threading
 from datasets import load_dataset
 from src.data.preprocessing import DataPreprocessor
 
@@ -17,7 +20,14 @@ logging.getLogger("datasets").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 logging.getLogger("transformers").setLevel(logging.WARNING)
 
-def test_preprocessing(dataset_name, processor_name, max_samples=10):
+# Timeout handler for hanging datasets
+class TimeoutError(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutError("Processing timed out")
+
+def test_preprocessing(dataset_name, processor_name, max_samples=10, timeout=300):
     """Test preprocessing on a small sample of data."""
     logger.info(f"Testing preprocessing for {dataset_name} using {processor_name} processor")
     
@@ -65,16 +75,60 @@ def test_preprocessing(dataset_name, processor_name, max_samples=10):
         # Find appropriate processor method
         processor_func = getattr(preprocessor, f"process_{processor_name}")
         
-        # Process the dataset with streaming
-        logger.info(f"Processing dataset...")
-        processed_dataset = processor_func(dataset, streaming=True)
+        # Set up timeout for datasets that might hang
+        if 'stack' in dataset_name.lower() or timeout > 0:
+            # Use threading with timeout for problematic datasets
+            import threading
+            import queue
+            
+            result_queue = queue.Queue()
+            
+            def process_with_timeout():
+                try:
+                    # Process the dataset
+                    logger.info(f"Processing dataset with timeout of {timeout} seconds...")
+                    result = processor_func(dataset, streaming=True)
+                    result_queue.put(("success", result))
+                except Exception as e:
+                    result_queue.put(("error", e))
+            
+            # Start processing in a separate thread
+            processing_thread = threading.Thread(target=process_with_timeout)
+            processing_thread.daemon = True
+            processing_thread.start()
+            
+            # Wait for result with timeout
+            try:
+                logger.info(f"Waiting for processing to complete (timeout: {timeout}s)...")
+                result_type, result_value = result_queue.get(timeout=timeout)
+                
+                if result_type == "success":
+                    processed_dataset = result_value
+                    logger.info(f"Processing completed successfully")
+                else:
+                    raise result_value
+            except queue.Empty:
+                logger.error(f"Processing timed out after {timeout} seconds")
+                return False
+        else:
+            # Process normally for other datasets
+            logger.info(f"Processing dataset...")
+            processed_dataset = processor_func(dataset, streaming=True)
         
         # For streaming mode, process a few examples
         count = 0
         successful = 0
         
+        # Set a timeout for the processing loop too
+        start_time = time.time()
+        
         # Only show a minimal number of examples to avoid cluttering the terminal
         for example in processed_dataset:
+            # Check if we've been processing too long
+            if time.time() - start_time > timeout:
+                logger.warning(f"Example processing loop timed out after {timeout} seconds")
+                break
+                
             if count >= max_samples:
                 break
                 
@@ -104,6 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--processor", type=str, default="humaneval", help="Processor type to use")
     parser.add_argument("--max_samples", type=int, default=10, help="Maximum samples to process")
     parser.add_argument("--quiet", action="store_true", help="Reduce logging output")
+    parser.add_argument("--timeout", type=int, default=300, help="Timeout in seconds (0 to disable)")
     
     args = parser.parse_args()
     
@@ -114,7 +169,8 @@ if __name__ == "__main__":
     success = test_preprocessing(
         args.dataset, 
         args.processor,
-        max_samples=args.max_samples
+        max_samples=args.max_samples,
+        timeout=args.timeout
     )
     
     if success:

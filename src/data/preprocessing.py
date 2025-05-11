@@ -7,16 +7,41 @@ import gc
 import psutil
 import time
 import sys
-from typing import Dict, List, Optional, Union, Callable, Tuple, Iterator, Any
+from typing import Dict, List, Optional, Union, Callable, Tuple, Iterator, Any, Set
 from datasets import load_dataset, Dataset, DatasetDict
 from transformers import AutoTokenizer
 from itertools import islice
 from tqdm import tqdm
 
+# For language detection
+try:
+    import langid
+    LANGID_AVAILABLE = True
+except ImportError:
+    LANGID_AVAILABLE = False
+    
+# For GPU memory management
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class DataPreprocessor:
+    # Define popular programming languages - include those in CodeSearchNet plus popular ones
+    POPULAR_PROGRAMMING_LANGUAGES = {
+        'python', 'javascript', 'java', 'go', 'php', 'ruby',  # CodeSearchNet languages
+        'c', 'cpp', 'csharp', 'c++', 'c#',                    # C family
+        'typescript', 'rust', 'kotlin', 'swift', 'scala',     # Other popular langs
+        'html', 'css', 'sql', 'bash', 'shell',                # Web/scripting
+    }
+    
+    # Natural languages to include
+    ALLOWED_NATURAL_LANGUAGES = {'en', 'ar'}  # English and Arabic
+    
     def __init__(self, tokenizer_path: str = "deepseek-ai/deepseek-coder-6.7b-base", max_length: int = 2048):
         self.tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path,
@@ -28,6 +53,51 @@ class DataPreprocessor:
         self._last_memory_check = 0
         self._memory_check_interval = 1000  # Check memory every 1000 examples
         
+        # Try to load langid for language detection
+        if not LANGID_AVAILABLE:
+            logger.warning("langid not installed - language filtering for comments will be limited. " 
+                          "Install with: pip install langid")
+                          
+        # Check if we can use GPU
+        if TORCH_AVAILABLE and torch.cuda.is_available():
+            logger.info(f"CUDA available: {torch.cuda.get_device_name(0)}")
+            logger.info(f"Total VRAM: {torch.cuda.get_device_properties(0).total_memory / (1024 * 1024 * 1024):.2f} GB")
+        
+    def detect_language(self, text: str) -> str:
+        """Detect language of text. Returns language code."""
+        if not text or not isinstance(text, str) or len(text.strip()) < 10:
+            return "unknown"  # Too short to detect
+            
+        # Use langid if available
+        if LANGID_AVAILABLE:
+            try:
+                lang, _ = langid.classify(text)
+                return lang
+            except Exception as e:
+                logger.warning(f"Language detection failed: {e}")
+                
+        # Fallback to basic heuristics
+        arabic_chars_pattern = re.compile(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+')
+        if arabic_chars_pattern.search(text):
+            return "ar"
+            
+        # Default to English if we can't detect language or no special characters
+        return "en"
+        
+    def should_include_by_language(self, text: str, code_language: str = None) -> bool:
+        """Determine if the example should be included based on language filters."""
+        # Check programming language if provided
+        if code_language and code_language.lower() not in self.POPULAR_PROGRAMMING_LANGUAGES:
+            return False
+            
+        # Check natural language of the comments/docstrings
+        if text and isinstance(text, str):
+            nat_lang = self.detect_language(text)
+            if nat_lang not in self.ALLOWED_NATURAL_LANGUAGES:
+                return False
+                
+        return True
+    
     def _check_resources(self, force: bool = False) -> Dict[str, float]:
         """Monitor system resources and manage memory if needed."""
         current_time = time.time()
@@ -42,72 +112,45 @@ class DataPreprocessor:
             # Get memory info
             process = psutil.Process(os.getpid())
             memory_info = process.memory_info()
-            system_memory = psutil.virtual_memory()
-            memory_usage_mb = memory_info.rss / (1024 * 1024)
-            memory_percent = system_memory.percent
+            memory_mb = memory_info.rss / (1024 * 1024)  # Convert to MB
+            memory_percent = process.memory_percent()
             
-            # Check for GPU memory if available (without adding new dependencies)
+            # Check for GPU memory if available
             gpu_memory_info = {}
+            
             try:
-                import torch
-                if torch.cuda.is_available():
+                if TORCH_AVAILABLE and torch.cuda.is_available():
                     gpu_memory_info = {
                         "gpu_allocated_mb": torch.cuda.memory_allocated() / (1024 * 1024),
                         "gpu_reserved_mb": torch.cuda.memory_reserved() / (1024 * 1024),
                         "gpu_max_mb": torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
                     }
+                    
                     # Calculate GPU memory percentage
                     if gpu_memory_info["gpu_max_mb"] > 0:
                         gpu_memory_info["gpu_percent"] = (gpu_memory_info["gpu_allocated_mb"] / 
                                                          gpu_memory_info["gpu_max_mb"]) * 100
-            except (ImportError, Exception):
+            except Exception as e:
                 # If torch is not available or there's any error, continue without GPU monitoring
-                pass
-                
-            # Log memory status (only if force=True or memory is high to reduce output)
+                logger.debug(f"Error checking GPU memory: {str(e)}")
+            
+            # Log resource usage if it's high
             if force or memory_percent > 75 or (gpu_memory_info and gpu_memory_info.get("gpu_percent", 0) > 75):
-                logger.info(f"Memory usage: {memory_usage_mb:.1f} MB ({memory_percent:.1f}% of system memory)")
+                logger.info(f"Memory usage: {memory_mb:.1f} MB ({memory_percent:.1f}% of system memory)")
+                
                 if gpu_memory_info:
                     logger.info(f"GPU memory: {gpu_memory_info.get('gpu_allocated_mb', 0):.1f} MB "
                                f"({gpu_memory_info.get('gpu_percent', 0):.1f}% of GPU memory)")
+                
+                # Do some cleanup if memory usage is very high
+                if memory_percent > 85 or (gpu_memory_info and gpu_memory_info.get("gpu_percent", 0) > 80):
+                    logger.warning("High memory usage detected, performing cleanup")
+                    self._cleanup_memory()
             
-            # Clean up if memory usage is too high (over 80%)
-            needs_cleanup = False
-            if memory_percent > 80:
-                needs_cleanup = True
-                
-            # Check GPU memory if available
-            if gpu_memory_info and gpu_memory_info.get("gpu_percent", 0) > 80:
-                needs_cleanup = True
-                
-            if needs_cleanup:
-                logger.warning(f"High memory usage detected. Cleaning up...")
-                
-                # Clear GPU memory first if torch is available
-                try:
-                    if 'torch' in sys.modules:
-                        import torch
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                except Exception:
-                    pass
-                
-                # Then collect Python garbage
-                gc.collect()
-                
-                # If still too high, try more aggressive cleanup
-                if psutil.virtual_memory().percent > 85:
-                    # Clear tokenizer cache if available
-                    if hasattr(self.tokenizer, "cache_clear"):
-                        self.tokenizer.cache_clear()
-                    
-                    # Force Python to release memory back to OS if possible
-                    gc.collect()
-            
+            # Combine system and GPU info
             result = {
-                "memory_usage_mb": memory_usage_mb,
+                "memory_mb": memory_mb,
                 "memory_percent": memory_percent,
-                "available_mb": system_memory.available / (1024 * 1024)
             }
             
             # Add GPU info if available
@@ -115,10 +158,25 @@ class DataPreprocessor:
                 result.update(gpu_memory_info)
                 
             return result
+            
         except Exception as e:
-            logger.warning(f"Error checking system resources: {e}")
+            logger.error(f"Error monitoring resources: {str(e)}")
             return {}
-        
+    
+    def _cleanup_memory(self):
+        """Release memory when usage is high."""
+        # Clear GPU memory first if torch is available
+        try:
+            if TORCH_AVAILABLE and torch.cuda.is_available():
+                logger.info("Clearing CUDA cache")
+                torch.cuda.empty_cache()
+        except Exception as e:
+            logger.warning(f"Error clearing CUDA cache: {str(e)}")
+            
+        # Force garbage collection
+        collected = gc.collect()
+        logger.info(f"Garbage collected {collected} objects")
+    
     def _safe_dataset_iterator(self, dataset: Union[Dataset, DatasetDict, List], 
                               max_samples: int = 10000) -> Iterator[Any]:
         """Safely iterate through a dataset with proper error handling and progress tracking."""
@@ -913,129 +971,167 @@ class DataPreprocessor:
                 
                 return processed_examples
     
-    def process_the_stack(self, dataset: Union[Dataset, DatasetDict], language: str = None,
-                         streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """Process The Stack dataset."""
-        if language:
-            logger.info(f"Processing The Stack dataset for {language}...")
-        else:
-            logger.info("Processing The Stack dataset for all languages...")
+    def process_the_stack(self, dataset: Union[Dataset, DatasetDict], language: str = None, 
+                         streaming: bool = True, callback: Optional[Callable] = None, 
+                         intermediate_save: bool = True, save_every: int = 10000) -> Iterator[Dict]:
+        """
+        Process The Stack dataset.
         
-        # Filter for permissive licenses
-        permissive_licenses = ["mit", "apache-2.0", "bsd-3-clause", "bsd-2-clause", "cc0-1.0", "isc"]
+        Args:
+            dataset: The Stack dataset (or a similar dataset with code)
+            language: Filter by programming language
+            streaming: Whether to stream results
+            callback: Optional callback function to process examples
+            intermediate_save: Whether to save intermediate results
+            save_every: How often to save intermediate results
+            
+        Returns:
+            Iterator of processed examples
+        """
+        # Ensure we're processing a streaming dataset for memory efficiency
+        if not streaming and not isinstance(dataset, Dataset):
+            logger.warning("Converting dataset to streaming mode for memory efficiency")
+            streaming = True
+            
+        # Set up resources monitoring
+        resources = self._check_resources(force=True)
         
-        try:
-            # For streaming mode, we need to handle one example at a time
-            if streaming:
-                processed_examples = []
-                count = 0
-                max_examples = 10000  # Limit to prevent processing too many examples
-                
-                # Process each example individually
-                for example in dataset:
-                    if count >= max_examples:
-                        break
-                        
-                    try:
-                        # Check if permissive license
-                        license_id = example.get("license", "").lower()
-                        if license_id not in permissive_licenses:
-                            continue
-                            
-                        # Check language if specified
-                        if language and example.get("lang", "").lower() != language.lower():
-                            continue
-                            
-                        # Extract code content
-                        content = example.get("content", "")
-                        if not content:
-                            continue
-                            
-                        # Create a prompt with language information if available
-                        lang = example.get("lang", "")
-                        if lang:
-                            prompt = f"# Implement a function in {lang}"
-                        else:
-                            prompt = "# Implement a function"
-                            
-                        # Process the example
-                        processed = self.common_preprocessing(
-                            {"prompt": prompt, "completion": content},
-                            "prompt", "completion",
-                            streaming=True
-                        )
-                        processed_examples.append(processed)
-                        count += 1
-                    except Exception as e:
-                        logger.warning(f"Error processing example: {e}")
-                        continue
-                
-                return processed_examples
+        # Explicitly mention available VRAM if detected
+        if "gpu_max_mb" in resources:
+            logger.info(f"GPU VRAM available: {resources['gpu_max_mb']:.1f} MB")
+            logger.info(f"Current GPU usage: {resources.get('gpu_allocated_mb', 0):.1f} MB " + 
+                       f"({resources.get('gpu_percent', 0):.1f}%)")
             
-            # For non-streaming mode, use the filter method first
-            filtered_dataset = dataset.filter(lambda x: x.get("license", "").lower() in permissive_licenses)
-            
-            # Filter by language if specified
-            if language and hasattr(filtered_dataset, "column_names") and "lang" in filtered_dataset.column_names:
-                logger.info(f"Filtering The Stack dataset to include only {language} files")
-                filtered_dataset = filtered_dataset.filter(lambda x: x["lang"].lower() == language.lower())
-                
-            # Handle case where language filtering results in empty dataset
-            if isinstance(filtered_dataset, Dataset) and len(filtered_dataset) == 0:
-                logger.warning(f"No samples found for language {language}. Check if the language name is correct.")
-                return filtered_dataset
-                
-            def process_sample(examples):
-                # Ensure we have valid inputs
-                if not isinstance(examples, dict):
-                    logger.warning(f"Expected dictionary, got {type(examples)}")
-                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                
-                # Get language information if available
-                languages = examples.get("lang", [])
-                content = examples.get("content", [])
-                
-                # Ensure fields are lists
-                if not isinstance(languages, list):
-                    languages = [languages]
-                if not isinstance(content, list):
-                    content = [content]
-                
-                # Skip empty examples
-                if len(content) == 0:
-                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                
-                # Generate prompts with language-specific text if available
-                if len(languages) == len(content):
-                    prompts = [f"# Implement a function in {lang}" for lang in languages]
-                else:
-                    # Default to generic prompt if language info isn't available or mismatched
-                    prompts = [f"# Implement a function" for _ in content]
-                    
-                return self.common_preprocessing(
-                    {"prompt": prompts, "completion": content},
-                    "prompt", "completion",
-                    streaming=streaming
-                )
-            
+        # Define format to include code + docstring
+        def format_example(example):
             try:
-                return filtered_dataset.map(
-                    process_sample,
-                    batched=True,
-                    remove_columns=filtered_dataset.column_names if not streaming else None,
-                    batch_size=100 if streaming else None
-                )
+                # Extract relevant fields
+                content = example.get('content', '')
+                language_name = example.get('lang', '').lower()
+                
+                # Apply language filtering - skip non-popular programming languages
+                if language_name and language_name not in self.POPULAR_PROGRAMMING_LANGUAGES:
+                    return None
+                    
+                # If a specific language was requested, filter for that
+                if language and language_name != language.lower():
+                    return None
+                
+                # Filter for natural language in comments
+                # Extract comments for language detection
+                # This is a simple heuristic that works for many languages
+                comment_pattern = r'(?:\/\/.*?$|\/\*[\s\S]*?\*\/|#.*?$|\'\'\'[\s\S]*?\'\'\'|"""[\s\S]*?""")'
+                comments = re.findall(comment_pattern, content, re.MULTILINE)
+                
+                # Join comments to check language
+                if comments:
+                    comment_text = ' '.join(comments)
+                    if not self.should_include_by_language(comment_text):
+                        return None
+                
+                # Format the example
+                formatted_text = f"{content}"
+                
+                # Check if we need to truncate
+                if len(formatted_text) > self.max_length * 10:  # Rough estimate
+                    logger.warning(f"Very long example ({len(formatted_text)} chars), truncating")
+                    formatted_text = formatted_text[:self.max_length * 10]
+                
+                # Return the processed example
+                return {
+                    "processed_text": formatted_text,
+                    "language": language_name
+                }
+                
             except Exception as e:
-                logger.warning(f"Error mapping dataset: {e}")
-                # Try with smaller batch size
-                return filtered_dataset.map(
-                    process_sample,
-                    batched=True,
-                    batch_size=20  # Smaller batch size
-                )
-        except Exception as e:
-            logger.error(f"Error processing The Stack dataset: {str(e)}")
-            return dataset  # Return original dataset if processing fails
+                logger.error(f"Error processing example: {str(e)}")
+                return None
+                
+        # Process the dataset with efficient memory usage
+        batches_processed = 0
+        examples_processed = 0
+        stall_counter = 0
+        last_progress_time = time.time()
+        last_example_count = 0
+        
+        # Batch processing logic
+        for i, example in enumerate(dataset):
+            try:
+                # Process the example
+                result = format_example(example)
+                
+                # Only yield valid results
+                if result:
+                    examples_processed += 1
+                    yield result
+                    
+                    # Call callback if provided
+                    if callback:
+                        callback(result)
+                    
+                    # Check for stalled processing
+                    current_time = time.time()
+                    if current_time - last_progress_time > 60:  # Check every minute
+                        if examples_processed == last_example_count:
+                            stall_counter += 1
+                            logger.warning(f"Processing appears stalled: {stall_counter} minutes without progress")
+                            
+                            # If stalled for too long, clear memory
+                            if stall_counter > 5:
+                                logger.warning("Processing stalled for too long, cleaning up memory")
+                                self._cleanup_memory()
+                                stall_counter = 0
+                        else:
+                            # Reset stall counter if making progress
+                            stall_counter = 0
+                            
+                        # Update progress tracking
+                        last_progress_time = current_time
+                        last_example_count = examples_processed
+                        
+                        # Log progress more frequently
+                        logger.info(f"Processed {examples_processed} examples from The Stack")
+                        
+                        # Check resources periodically
+                        resources = self._check_resources()
+                
+                # Periodic intermediate saving if enabled
+                if intermediate_save and examples_processed > 0 and examples_processed % save_every == 0:
+                    logger.info(f"Processed {examples_processed} examples so far")
+                    
+                    # Clear CUDA cache after processing batch
+                    if TORCH_AVAILABLE and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        
+            except Exception as e:
+                logger.error(f"Error processing example {i}: {str(e)}")
+                logger.error(traceback.format_exc())
+                continue
+                
+            # Do periodic cleanup
+            if examples_processed % 5000 == 0:
+                self._cleanup_memory()
+                
+            # Show more frequent progress updates
+            if examples_processed % 1000 == 0:
+                current_time = time.time()
+                elapsed = current_time - last_progress_time
+                rate = 1000 / max(elapsed, 1) if elapsed > 0 else 0
+                logger.info(f"Processed {examples_processed} examples from The Stack (rate: {rate:.1f} examples/sec)")
+                last_progress_time = current_time
+                
+        # Final progress update
+        logger.info(f"Completed processing {examples_processed} examples from The Stack")
+        
+        # Final resource check
+        self._check_resources(force=True)
+        
+        # Try to release VRAM if using PyTorch
+        try:
+            if TORCH_AVAILABLE and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
     
     def process_humaneval(self, dataset: Union[Dataset, DatasetDict],
                          streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -1292,7 +1388,50 @@ class DataPreprocessor:
                 
                 # Process the dataset
                 try:
-                    processed_dataset = processor_func(dataset, **processor_args)
+                    # Add special handling for The Stack which can hang indefinitely
+                    is_stack_dataset = "stack" in config["path"].lower()
+                    if is_stack_dataset:
+                        logger.info(f"Using timeouts for The Stack dataset processing")
+                        
+                        # Set a maximum processing time for The Stack
+                        import threading
+                        import queue
+                        
+                        # Create a queue for the result
+                        result_queue = queue.Queue()
+                        
+                        # Define a function to process the dataset and put the result in the queue
+                        def process_with_timeout():
+                            try:
+                                result = processor_func(dataset, **processor_args)
+                                result_queue.put(("success", result))
+                            except Exception as e:
+                                result_queue.put(("error", e))
+                        
+                        # Start a thread to process the dataset
+                        processing_thread = threading.Thread(target=process_with_timeout)
+                        processing_thread.daemon = True
+                        processing_thread.start()
+                        
+                        # Wait for the result with a timeout
+                        max_wait_time = config.get("max_processing_time", 600)  # Default 10 minutes
+                        try:
+                            logger.info(f"Waiting up to {max_wait_time} seconds for The Stack processing to complete")
+                            result_type, result_value = result_queue.get(timeout=max_wait_time)
+                            
+                            if result_type == "success":
+                                processed_dataset = result_value
+                                logger.info(f"The Stack dataset processing completed successfully")
+                            else:
+                                raise result_value
+                        except queue.Empty:
+                            logger.error(f"The Stack dataset processing timed out after {max_wait_time} seconds")
+                            logger.info(f"Skipping The Stack dataset due to timeout")
+                            continue
+                    else:
+                        # Normal processing for other datasets
+                        processed_dataset = processor_func(dataset, **processor_args)
+                    
                     self._check_resources()
                 except Exception as e:
                     logger.error(f"Failed to process dataset {dataset_name}: {str(e)}")
@@ -1494,10 +1633,8 @@ class DataPreprocessor:
                 
                 # Try to release VRAM if using PyTorch
                 try:
-                    if 'torch' in sys.modules:
-                        import torch
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
+                    if TORCH_AVAILABLE and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 except Exception:
                     pass
             
