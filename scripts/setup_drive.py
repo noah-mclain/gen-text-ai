@@ -46,14 +46,14 @@ def install_dependencies():
         logger.error(f"Failed to install dependencies: {e}")
         return False
 
-def setup_drive(base_dir, install_deps=False):
+def setup_drive(base_dir, install_deps=False, credentials_json=None):
     """Set up Google Drive API integration"""
     if install_deps:
         if not install_dependencies():
             return False
     
     # Authenticate and set up Google Drive
-    if not mount_google_drive():
+    if not mount_google_drive(credentials_json):
         logger.error("Failed to set up Google Drive API.")
         return False
     
@@ -127,6 +127,7 @@ def main():
     parser.add_argument("--install-deps", action="store_true", help="Install required dependencies")
     parser.add_argument("--base-dir", type=str, default="DeepseekCoder", 
                        help="Base directory name on Google Drive")
+    parser.add_argument("--credentials", type=str, help="Path to credentials.json file or the JSON credentials string")
     
     # Operation commands
     parser.add_argument("--list", type=str, help="List files matching a query")
@@ -138,9 +139,29 @@ def main():
     
     args = parser.parse_args()
     
+    # Get credentials JSON from file or direct string
+    credentials_json = None
+    if args.credentials:
+        if os.path.exists(args.credentials):
+            # It's a file path, read the file
+            try:
+                with open(args.credentials, 'r') as f:
+                    credentials_json = f.read()
+                logger.info(f"Using credentials from file: {args.credentials}")
+            except Exception as e:
+                logger.error(f"Error reading credentials file: {e}")
+                return 1
+        elif args.credentials.strip().startswith('{'):
+            # It looks like a JSON string
+            credentials_json = args.credentials
+            logger.info("Using provided credentials JSON string")
+        else:
+            logger.error(f"Credentials file not found: {args.credentials}")
+            return 1
+    
     # Handle setup command
     if args.setup:
-        if setup_drive(args.base_dir, args.install_deps):
+        if setup_drive(args.base_dir, args.install_deps, credentials_json):
             logger.info("Google Drive API integration successfully set up")
             return 0
         else:

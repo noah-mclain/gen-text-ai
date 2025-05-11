@@ -31,7 +31,25 @@ except ImportError:
 # Default scopes
 SCOPES = ['https://www.googleapis.com/auth/drive']
 TOKEN_PATH = os.path.expanduser('~/.drive_token.json')
-CREDENTIALS_PATH = os.path.join(os.getcwd(), 'credentials.json')
+
+# Look for credentials in multiple locations
+CREDENTIALS_PATHS = [
+    os.path.join(os.getcwd(), 'credentials.json'),  # Current directory
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'credentials.json'),  # Project root
+    os.path.expanduser('~/credentials.json'),  # Home directory
+    '/notebooks/credentials.json',  # Paperspace notebooks directory
+]
+
+# Find the first existing credentials file
+CREDENTIALS_PATH = None
+for path in CREDENTIALS_PATHS:
+    if os.path.exists(path):
+        CREDENTIALS_PATH = path
+        break
+
+# If no credentials file found, default to the first path
+if CREDENTIALS_PATH is None:
+    CREDENTIALS_PATH = CREDENTIALS_PATHS[0]
 
 # Global service object
 _drive_service = None
@@ -80,8 +98,16 @@ def get_credentials(credentials_path: str = CREDENTIALS_PATH, token_path: str = 
                 flow = InstalledAppFlow.from_client_secrets_file(
                     credentials_path, SCOPES)
                 
-                # For headless environment, use console authentication
-                creds = flow.run_console()
+                # For headless environment, use console-based authentication
+                # The run_console() method doesn't exist in newer versions, so we need to handle this differently
+                print("\n\nVisit the following URL to authorize this application:")
+                auth_url = flow.authorization_url()[0]
+                print(f"\n{auth_url}\n")
+                
+                # Get authorization code from user
+                auth_code = input("Enter the authorization code: ")
+                flow.fetch_token(code=auth_code)
+                creds = flow.credentials
                 
                 # Save the credentials for future use
                 with open(token_path, 'w') as token:
@@ -392,10 +418,13 @@ def find_files_by_name(name: str, folder_id: Optional[str] = None) -> List[Dict[
         logger.error(f"Error finding files: {e}")
         return []
 
-def mount_google_drive() -> bool:
+def mount_google_drive(credentials_json: Optional[str] = None) -> bool:
     """
     Set up Google Drive API for use (not actual mounting).
     
+    Args:
+        credentials_json: Optional JSON string containing credentials (alternative to credentials.json file)
+        
     Returns:
         True if successful, False otherwise
     """
@@ -404,8 +433,23 @@ def mount_google_drive() -> bool:
         logger.error("Google API libraries not installed. Cannot mount Drive.")
         return False
     
-    # Check if credentials.json exists
-    if not os.path.exists(CREDENTIALS_PATH):
+    # If credentials JSON string is provided, use it directly
+    if credentials_json:
+        try:
+            # Write the credentials to a temporary file
+            temp_creds_path = os.path.expanduser('~/.temp_credentials.json')
+            with open(temp_creds_path, 'w') as f:
+                f.write(credentials_json)
+            
+            # Use the temporary credentials file
+            global CREDENTIALS_PATH
+            CREDENTIALS_PATH = temp_creds_path
+            logger.info(f"Using provided credentials JSON (written to {temp_creds_path})")
+        except Exception as e:
+            logger.error(f"Error writing credentials JSON: {e}")
+            return False
+    # Otherwise use file-based credentials
+    elif not os.path.exists(CREDENTIALS_PATH):
         logger.error(f"credentials.json not found at {CREDENTIALS_PATH}")
         logger.info("Please create OAuth 2.0 credentials in Google Cloud Console and download as credentials.json")
         return False

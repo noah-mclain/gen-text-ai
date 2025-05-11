@@ -1,0 +1,32 @@
+{
+  "openassistant": {
+    "path": "agie-ai/OpenAssistant-oasst1",
+    "processor": "openassistant",
+    "split": "train",
+    "enabled": true
+  },
+  "gpteacher_general": {
+    "path": "teknium/GPTeacher-General-Instruct",
+    "processor": "gpteacher",
+    "split": "train",
+    "enabled": true
+  },
+  "pile": {
+    "path": "EleutherAI/pile",
+    "processor": "pile",
+    "split": "train",
+    "enabled": true
+  },
+  "synthetic_persona": {
+    "path": "google/Synthetic-Persona-Chat",
+    "processor": "persona_chat",
+    "split": "train",
+    "enabled": true
+  },
+  "writingprompts": {
+    "path": "euclaise/writingprompts",
+    "processor": "writingprompts",
+    "split": "train",
+    "enabled": true
+  }
+}

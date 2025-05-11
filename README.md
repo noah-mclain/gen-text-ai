@@ -1,10 +1,16 @@
-# DeepSeek-Coder Fine-Tuning Pipeline
+# AI Model Fine-Tuning Pipeline
 
-This repository contains a comprehensive pipeline for fine-tuning the DeepSeek-Coder model on various code datasets. The pipeline includes data preprocessing, training with PEFT and Unsloth optimization, advanced evaluation, and results visualization.
+This repository contains a comprehensive pipeline for fine-tuning various AI models:
+
+1. DeepSeek-Coder model for code generation
+2. FLAN-UL2 model for text and story generation
+
+The pipeline includes data preprocessing, training with PEFT and optimization techniques, advanced evaluation, and results visualization.
 
 ## Features
 
-- Preprocessing of multiple code datasets (CodeSearchNet, CodeAlpaca, MBPP, etc.)
+- **Code Generation (DeepSeek-Coder)**:
+  - Preprocessing of multiple code datasets (CodeSearchNet, CodeAlpaca, MBPP, etc.)
   - Dataset deduplication to remove redundant prompt+completion pairs
   - Consistent formatting for fine-tuning
   - **Multi-language support** with automatic processing of all programming languages
@@ -15,6 +21,21 @@ This repository contains a comprehensive pipeline for fine-tuning the DeepSeek-C
 - Advanced code quality metrics (complexity, linting, semantic similarity)
 - Runtime performance metrics (execution time, memory usage)
 - Visualization of training metrics and evaluation results
+
+- **Text Generation (FLAN-UL2)**:
+
+  - Preprocessing of text generation datasets (OpenAssistant, GPTeacher, Pile, etc.)
+  - Support for creative writing and story generation (WritingPrompts)
+  - Persona chat support for character-based text generation
+  - Multi-language support where available
+
+- **Common Features**:
+  - Parameter-Efficient Fine-Tuning (PEFT) with LoRA
+  - Optimization with Unsloth for faster training
+  - 4-bit quantization for memory efficiency
+  - Comprehensive evaluation metrics
+  - Google Drive integration for model checkpoints
+  - DeepSpeed ZeRO-3 optimization for large models
 
 ## Requirements
 
@@ -28,27 +49,42 @@ pip install -r requirements.txt
 
 ```
 .
-├── config/                  # Configuration files
-│   ├── dataset_config.json  # Dataset configuration
-│   └── training_config.json # Training configuration
-├── data/                    # Data directory
-│   ├── processed/           # Processed datasets
-│   └── raw/                 # Raw datasets
-├── models/                  # Fine-tuned models
-├── results/                 # Evaluation results
-├── src/                     # Source code
-│   ├── data/                # Data processing modules
-│   ├── training/            # Training modules
-│   ├── evaluation/          # Evaluation modules
-│   └── utils/               # Utility modules
-├── visualizations/          # Visualization outputs
-├── main.py                  # Main pipeline script
-└── requirements.txt         # Dependencies
+├── config/                       # Configuration files
+│   ├── dataset_config.json       # Code dataset configuration
+│   ├── dataset_config_text.json  # Text dataset configuration
+│   ├── training_config.json      # Code training configuration
+│   └── training_config_text.json # Text training configuration
+├── data/                         # Data directory
+│   ├── processed/                # Processed datasets
+│   └── raw/                      # Raw datasets
+├── models/                       # Fine-tuned models
+├── results/                      # Evaluation results
+├── src/                          # Source code
+│   ├── data/                     # Data processing modules
+│   │   └── processors/           # Dataset processors
+│   │       └── text_processors.py# Text dataset processors
+│   ├── training/                 # Training modules
+│   │   └── text_trainer.py       # FLAN-UL2 trainer
+│   ├── evaluation/               # Evaluation modules
+│   └── utils/                    # Utility modules
+├── visualizations/               # Visualization outputs
+├── main.py                       # Code generation pipeline script
+├── train_text_flan.py            # Text generation pipeline script
+├── train_text_flan.sh            # Text fine-tuning shell script
+└── requirements.txt              # Dependencies
 ```
 
 ## Updates and Fixes
 
 ### Recent Improvements (2024)
+
+- **New: FLAN-UL2 Text Generation Fine-Tuning**:
+
+  - Added support for fine-tuning Google's FLAN-UL2 20B model for text generation
+  - Implemented specialized dataset processors for text generation datasets
+  - Memory-optimized training with DeepSpeed ZeRO-3 and CPU offloading
+  - Support for story generation, instruction following, and chat
+  - Integration with Google Drive for storing model checkpoints
 
 - **Enhanced Preprocessing Pipeline**:
 
@@ -95,6 +131,35 @@ pip install -r requirements.txt
   - **NEW: Added language distribution tracking to monitor balance across programming languages**
 
 ## Usage
+
+### Text Generation with FLAN-UL2
+
+To fine-tune the FLAN-UL2 model for text generation:
+
+```bash
+# Run the full fine-tuning pipeline
+./train_text_flan.sh
+```
+
+Process text datasets only:
+
+```bash
+python train_text_flan.py --process_only --data_dir data/processed
+```
+
+Train with Google Drive integration:
+
+```bash
+python train_text_flan.py --use_drive --drive_base_dir "FlanUL2Text" --data_dir data/processed
+```
+
+Push to Hugging Face Hub after training:
+
+```bash
+python train_text_flan.py --push_to_hub --hub_model_id your-username/flan-ul2-ft
+```
+
+### Code Generation with DeepSeek-Coder
 
 ### Complete Pipeline
 

@@ -28,4 +28,12 @@ pytest>=7.0.0
 # Google Drive API dependencies (for Paperspace)
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.1.0
-google-auth-oauthlib>=1.0.0 
+google-auth-oauthlib>=1.0.0
+# Additional dependencies for text generation
+rouge-score>=0.1.2
+bert-score>=0.3.13
+nltk>=3.8
+spacy>=3.5.0
+textblob>=0.17.1
+flashattention-2>=1.0.5
+sacrebleu>=2.3.1 

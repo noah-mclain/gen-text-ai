@@ -15,6 +15,19 @@ from typing import Dict, List, Union, Optional, Any, Tuple
 from datasets import Dataset, DatasetDict, concatenate_datasets
 import numpy as np
 from datetime import datetime
+import pkg_resources
+
+# Get transformers version for compatibility handling
+TRANSFORMERS_VERSION = "0.0.0"  # Default version for compatibility
+try:
+    TRANSFORMERS_VERSION = pkg_resources.get_distribution("transformers").version
+    major_version, minor_version = map(int, TRANSFORMERS_VERSION.split('.')[:2])
+    TRANSFORMERS_MAJOR = major_version
+    TRANSFORMERS_MINOR = minor_version
+except (ImportError, pkg_resources.DistributionNotFound, ValueError, IndexError):
+    TRANSFORMERS_MAJOR = 4
+    TRANSFORMERS_MINOR = 0
+    print(f"Warning: Could not determine transformers version. Assuming compatibility with 4.0")
 
 # Add project root to path for absolute imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -194,6 +207,86 @@ class DeepseekFineTuner:
         """Load configuration from a JSON file."""
         with open(config_path, 'r') as f:
             return json.load(f)
+    
+    def _check_parameter_compatibility(self, args_obj, param_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Check parameter compatibility with an object and filter out incompatible parameters.
+        
+        Args:
+            args_obj: Object to check parameter compatibility with
+            param_dict: Dictionary of parameters to check
+            
+        Returns:
+            Dictionary with compatible parameters only
+        """
+        compatible_params = {}
+        
+        # Define version-specific parameter mappings
+        renames = {
+            # Parameters that changed names across transformers versions
+            "evaluation_strategy": ["eval_strategy"],
+            "eval_steps": ["evaluation_steps"],
+            "save_strategy": ["checkpoint_strategy"],
+            "lr_scheduler_type": ["scheduler_type"],
+            "gradient_accumulation_steps": ["accumulate_grad_batches"],
+            "group_by_length": ["length_column_name"],
+            "ddp_find_unused_parameters": ["find_unused_parameters"],
+            "optim": ["optimizer"],
+        }
+        
+        # Transformers 4.0 specific mappings
+        if TRANSFORMERS_MAJOR == 4 and TRANSFORMERS_MINOR < 6:
+            # In very old versions (pre-4.6), use these mappings
+            strategy_map = {
+                "steps": "eval_steps",
+                "epoch": "epoch",
+                "no": "no"
+            }
+        
+        # Set output_dir directly
+        if "output_dir" in param_dict:
+            compatible_params["output_dir"] = param_dict["output_dir"]
+        
+        # Log what parameters are available in the TrainingArguments class
+        available_attrs = dir(args_obj)
+        logger.debug(f"Available TrainingArguments parameters: {[attr for attr in available_attrs if not attr.startswith('_')]}")
+        
+        # Process each parameter
+        for key, value in param_dict.items():
+            if key == "output_dir":
+                continue  # already handled
+                
+            # Direct parameter match
+            if hasattr(args_obj, key):
+                compatible_params[key] = value
+                continue
+            
+            # Try known renames
+            found_rename = False
+            if key in renames:
+                for alt_name in renames[key]:
+                    if hasattr(args_obj, alt_name):
+                        compatible_params[alt_name] = value
+                        logger.info(f"Mapped parameter '{key}' to '{alt_name}'")
+                        found_rename = True
+                        break
+            
+            # Handle special case for evaluation_strategy
+            if key == "evaluation_strategy" and not found_rename and TRANSFORMERS_MAJOR == 4 and TRANSFORMERS_MINOR < 6:
+                # In older versions, this was split into multiple flags
+                if value == "steps" and hasattr(args_obj, "evaluate_during_training"):
+                    compatible_params["evaluate_during_training"] = True
+                    if "eval_steps" in param_dict:
+                        if hasattr(args_obj, "eval_steps"):
+                            compatible_params["eval_steps"] = param_dict["eval_steps"]
+                    found_rename = True
+            
+            # Log if we couldn't find a compatible parameter
+            if not found_rename and key not in ["evaluation_strategy", "eval_steps", "save_strategy"]:
+                # Don't warn about known problematic parameters that we'll handle separately
+                logger.warning(f"Parameter '{key}' not found in training arguments and no suitable rename found")
+        
+        return compatible_params
     
     def _load_and_prepare_datasets(self, data_dir: str) -> Dict[str, Dataset]:
         """Load and prepare datasets for training."""
@@ -433,6 +526,51 @@ class DeepseekFineTuner:
         os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
         os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
         
+        # Handle parameter compatibility for different versions of transformers
+        # Map deprecated or renamed parameters
+        param_mapping = {
+            "evaluation_strategy": "eval_strategy",
+            "eval_steps": "eval_steps",
+            "save_strategy": "save_strategy",
+        }
+        
+        # Check transformers version and adjust parameters accordingly
+        for old_param, new_param in param_mapping.items():
+            if old_param in training_args_dict:
+                # For older versions, use the new parameter name
+                if hasattr(TrainingArguments, new_param) and not hasattr(TrainingArguments, old_param):
+                    training_args_dict[new_param] = training_args_dict.pop(old_param)
+                # For newer versions, keep the old parameter name if it exists and the new one doesn't
+                elif hasattr(TrainingArguments, old_param) and not hasattr(TrainingArguments, new_param):
+                    pass
+                # If both exist or neither exist, use the version-appropriate one
+                else:
+                    try:
+                        # Attempt to get the correct parameter by inspecting signatures
+                        import inspect
+                        params = inspect.signature(TrainingArguments.__init__).parameters
+                        if new_param in params and old_param not in params:
+                            training_args_dict[new_param] = training_args_dict.pop(old_param)
+                        elif old_param in params and new_param not in params:
+                            pass
+                        else:
+                            # Default to using the original param
+                            pass
+                    except (ImportError, AttributeError):
+                        pass
+        
+        # Remove any parameters that don't exist in the current TrainingArguments
+        valid_params = set()
+        try:
+            import inspect
+            valid_params = set(inspect.signature(TrainingArguments.__init__).parameters.keys())
+        except (ImportError, AttributeError):
+            pass
+        
+        if valid_params:
+            # Filter out parameters that don't exist in the current version
+            training_args_dict = {k: v for k, v in training_args_dict.items() if k in valid_params or k == 'output_dir'}
+        
         # Configure DeepSpeed if enabled
         if self.training_config.get("use_deepspeed", False):
             # Basic DeepSpeed config optimized for single-GPU LoRA training
@@ -485,15 +623,40 @@ class DeepseekFineTuner:
             with open(ds_config_path, "w") as f:
                 json.dump(ds_config, f, indent=4)
             
-            training_args_dict["deepspeed"] = ds_config_path
+            if "deepspeed" in valid_params:
+                training_args_dict["deepspeed"] = ds_config_path
         
         # Create training arguments
         logger.info("Creating training arguments")
         try:
-            training_args = TrainingArguments(**training_args_dict)
+            # First create a minimal version with just output_dir to avoid errors
+            minimal_args = {"output_dir": self.training_config["output_dir"]}
+            training_args = TrainingArguments(**minimal_args)
+            
+            # Filter the parameters for compatibility using our helper
+            filtered_args = self._check_parameter_compatibility(training_args, training_args_dict)
+            
+            # Then set the rest of the arguments dynamically
+            for key, value in filtered_args.items():
+                try:
+                    setattr(training_args, key, value)
+                except Exception as e:
+                    logger.warning(f"Failed to set parameter {key}: {str(e)}")
+                
         except Exception as e:
             logger.error(f"Error creating training arguments: {str(e)}")
-            raise
+            # Try with only essential parameters as fallback
+            try:
+                logger.info("Trying fallback with essential parameters only")
+                essential_args = {
+                    "output_dir": self.training_config["output_dir"],
+                    "per_device_train_batch_size": self.training_config.get("per_device_train_batch_size", 2),
+                    "num_train_epochs": self.training_config.get("num_train_epochs", 3)
+                }
+                training_args = TrainingArguments(**essential_args)
+            except Exception as e2:
+                logger.error(f"Fallback also failed: {str(e2)}")
+                raise
         
         # Create data collator
         logger.info("Creating data collator")
