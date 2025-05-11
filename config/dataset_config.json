@@ -13,7 +13,8 @@
   "instruct_code": {
     "path": "ise-uiuc/Magicoder-OSS-Instruct-75K",
     "processor": "instruct_code",
-    "split": "train"
+    "split": "train",
+    "enabled": true
   },
   "mbpp": {
     "path": "mbpp",
@@ -22,7 +23,8 @@
   },
   "ds1000": {
     "path": "Salesforce/DS-1000",
-    "processor": "ds1000"
+    "processor": "ds1000",
+    "enabled": true
   },
   "codeparrot": {
     "path": "codeparrot/codeparrot-clean",
@@ -34,10 +36,11 @@
     "name": "data",
     "processor": "the_stack",
     "split": "train",
-    "language": "python"
+    "language": "python",
+    "enabled": true
   },
   "humaneval": {
-    "path": "openai/human-eval",
+    "path": "openai/openai_humaneval",
     "processor": "humaneval"
   }
 }

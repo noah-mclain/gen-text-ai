@@ -376,6 +376,7 @@ class DriveAPI:
     def upload_folder(self, local_dir: str, parent_id: Optional[str] = None) -> Optional[str]:
         """
         Upload an entire folder to Google Drive.
+        If a folder with the same name already exists, its contents will be updated/overwritten.
         
         Args:
             local_dir: Path to the local folder
@@ -393,11 +394,25 @@ class DriveAPI:
                 return None
             
             folder_name = os.path.basename(local_dir)
-            folder_id = self.create_folder(folder_name, parent_id)
+            
+            # Check if folder already exists
+            existing_folder_id = None
+            if parent_id:
+                existing_folder_id = self.find_file_id(folder_name, parent_id)
+            else:
+                existing_folder_id = self.find_file_id(folder_name)
+                
+            # Use existing folder or create new one
+            folder_id = existing_folder_id if existing_folder_id else self.create_folder(folder_name, parent_id)
             
             if not folder_id:
                 logger.error(f"Failed to create folder: {folder_name}")
                 return None
+                
+            if existing_folder_id:
+                logger.info(f"Updating existing folder: {folder_name} (ID: {folder_id})")
+            else:
+                logger.info(f"Created new folder: {folder_name} (ID: {folder_id})")
             
             # Upload all files in the directory
             for item in os.listdir(local_dir):
@@ -407,6 +422,15 @@ class DriveAPI:
                     # Recursive call for subdirectories
                     self.upload_folder(item_path, folder_id)
                 else:
+                    # Check if file already exists and remove if it does
+                    existing_file_id = self.find_file_id(item, folder_id)
+                    if existing_file_id:
+                        try:
+                            self.service.files().delete(fileId=existing_file_id).execute()
+                            logger.debug(f"Deleted existing file: {item}")
+                        except HttpError as e:
+                            logger.warning(f"Error deleting existing file {item}: {str(e)}")
+                    
                     # Upload file
                     self.upload_file(item_path, parent_id=folder_id)
             
@@ -450,6 +474,7 @@ def setup_drive_directories(api: DriveAPI, base_dir: str) -> Dict[str, str]:
 def save_to_drive(api: DriveAPI, local_path: str, folder_id: str) -> Optional[str]:
     """
     Save a file or folder to Google Drive.
+    If a file or folder with the same name already exists, it will be updated/overwritten.
     
     Args:
         api: Authenticated DriveAPI instance
@@ -459,10 +484,32 @@ def save_to_drive(api: DriveAPI, local_path: str, folder_id: str) -> Optional[st
     Returns:
         ID of the uploaded file/folder
     """
-    if os.path.isdir(local_path):
-        return api.upload_folder(local_path, folder_id)
-    else:
-        return api.upload_file(local_path, parent_id=folder_id)
+    if not api.authenticated:
+        logger.error("DriveAPI is not authenticated")
+        return None
+        
+    try:
+        if os.path.isdir(local_path):
+            logger.info(f"Uploading folder {local_path} to Google Drive")
+            return api.upload_folder(local_path, folder_id)
+        else:
+            # Check if a file with the same name already exists
+            file_name = os.path.basename(local_path)
+            existing_file_id = api.find_file_id(file_name, folder_id)
+            
+            if existing_file_id:
+                # Delete the existing file before uploading
+                try:
+                    api.service.files().delete(fileId=existing_file_id).execute()
+                    logger.info(f"Deleted existing file {file_name} before uploading new version")
+                except Exception as e:
+                    logger.warning(f"Error deleting existing file {file_name}: {e}")
+                    
+            logger.info(f"Uploading file {local_path} to Google Drive")
+            return api.upload_file(local_path, parent_id=folder_id)
+    except Exception as e:
+        logger.error(f"Error saving to Drive: {str(e)}")
+        return None
 
 def load_from_drive(api: DriveAPI, file_id: str, local_path: str) -> bool:
     """

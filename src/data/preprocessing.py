@@ -46,8 +46,13 @@ class DataPreprocessor:
         
         # For streaming mode, process in smaller batches to save memory
         if streaming:
-            batch_size = min(len(filtered_texts), 32)  # Process in small batches
+            # Ensure batch_size is never zero to avoid range() error
+            batch_size = max(1, min(len(filtered_texts), 32))  # At minimum 1, max 32
             all_lengths = []
+            
+            # Handle empty filtered_texts
+            if not filtered_texts:
+                return {"processed_text": [], "length": []}
             
             for i in range(0, len(filtered_texts), batch_size):
                 batch = filtered_texts[i:i+batch_size]
@@ -67,6 +72,10 @@ class DataPreprocessor:
                 
             return {"processed_text": filtered_texts, "length": all_lengths}
         else:
+            # Handle empty filtered_texts for non-streaming mode too
+            if not filtered_texts:
+                return {"processed_text": [], "length": []}
+                
             # Tokenize and truncate to max length for non-streaming mode
             tokenized = self.tokenizer(
                 filtered_texts,
@@ -79,18 +88,26 @@ class DataPreprocessor:
             return {"processed_text": filtered_texts, "length": tokenized["length"]}
     
     def process_codesearchnet(self, dataset: Union[Dataset, DatasetDict], 
-                             streaming: bool = False) -> Union[Dataset, DatasetDict]:
+                             streaming: bool = False, language: str = None) -> Union[Dataset, DatasetDict]:
         """Process CodeSearchNet dataset."""
-        logger.info("Processing CodeSearchNet dataset...")
+        if language:
+            logger.info(f"Processing CodeSearchNet dataset for {language}...")
+            # Filter dataset by language if specified
+            if "language" in dataset.column_names:
+                dataset = dataset.filter(lambda x: x["language"].lower() == language.lower())
+        else:
+            logger.info("Processing CodeSearchNet dataset for all languages...")
         
         def process_sample(examples):
             # Handle different field names depending on the dataset structure
             docstrings = []
             code_snippets = []
+            languages = examples.get("language", [])
+            has_language = len(languages) > 0
             
             # Try to extract the docstring and code from various field structures
             if "function" in examples and isinstance(examples["function"], list):
-                for item in examples["function"]:
+                for i, item in enumerate(examples["function"]):
                     if isinstance(item, dict):
                         docstrings.append(item.get("docstring", ""))
                         code_snippets.append(item.get("function", ""))
@@ -102,10 +119,18 @@ class DataPreprocessor:
                 code_snippets = examples["function"]
             else:
                 # Fallback: create simple prompts
-                docstrings = ["Write a Python function" for _ in range(len(examples.get("code", examples.get("function", []))))]
+                if has_language:
+                    docstrings = [f"Write a {lang} function" for lang in languages]
+                else:
+                    docstrings = ["Write a function" for _ in range(len(examples.get("code", examples.get("function", []))))]
                 code_snippets = examples.get("code", examples.get("function", []))
             
-            prompts = [f"'''{doc}'''\n# Write a Python function" for doc in docstrings]
+            # Create language-specific prompts if language information is available
+            if has_language:
+                prompts = [f"'''{doc}'''\n# Write a {lang} function" 
+                          for doc, lang in zip(docstrings, languages)]
+            else:
+                prompts = [f"'''{doc}'''\n# Write a function" for doc in docstrings]
             
             return self.common_preprocessing(
                 {"prompt": prompts, "completion": code_snippets},
@@ -533,18 +558,36 @@ class DataPreprocessor:
                 
                 return processed_examples
     
-    def process_the_stack(self, dataset: Union[Dataset, DatasetDict], language: str = "python",
+    def process_the_stack(self, dataset: Union[Dataset, DatasetDict], language: str = None,
                          streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process The Stack dataset."""
-        logger.info(f"Processing The Stack dataset for {language}...")
+        if language:
+            logger.info(f"Processing The Stack dataset for {language}...")
+        else:
+            logger.info("Processing The Stack dataset for all languages...")
         
         # Filter for permissive licenses
         permissive_licenses = ["mit", "apache-2.0", "bsd-3-clause", "bsd-2-clause", "cc0-1.0", "isc"]
         filtered_dataset = dataset.filter(lambda x: x.get("license", "").lower() in permissive_licenses)
         
+        # Filter by language if specified
+        if language and "lang" in filtered_dataset.column_names:
+            filtered_dataset = filtered_dataset.filter(lambda x: x["lang"].lower() == language.lower())
+        
         def process_sample(examples):
-            # Generate synthetic prompts
-            prompts = [f"# Implement a function in {language}" for _ in examples["content"]]
+            languages = []
+            
+            # Try to get language information
+            if "lang" in examples:
+                languages = examples["lang"]
+            
+            # Generate synthetic prompts with language-specific text if available
+            if len(languages) > 0:
+                prompts = [f"# Implement a function in {lang}" for lang in languages]
+            else:
+                # Default to generic prompt if language info isn't available
+                prompts = [f"# Implement a function" for _ in examples["content"]]
+                
             return self.common_preprocessing(
                 {"prompt": prompts, "completion": examples["content"]},
                 "prompt", "completion",
@@ -653,6 +696,11 @@ class DataPreprocessor:
             logger.info("Using Hugging Face token from environment for authentication")
             
         for dataset_name, config in dataset_config.items():
+            # Skip datasets that are explicitly disabled
+            if config.get("enabled") is False:
+                logger.info(f"Skipping disabled dataset: {dataset_name}")
+                continue
+                
             logger.info(f"Loading dataset: {dataset_name}")
             
             try:
@@ -722,9 +770,19 @@ class DataPreprocessor:
                 processor_func = getattr(self, f"process_{config['processor']}")
                 processor_args = {"streaming": streaming}
                 
-                # Add language arg for the_stack processor
-                if config['processor'] == "the_stack" and "language" in config:
-                    processor_args["language"] = config["language"]
+                # Add language arg for processors that support it
+                if "language" in config:
+                    if config['processor'] in ["the_stack", "codesearchnet"]:
+                        processor_args["language"] = config["language"]
+                    elif config.get("languages") is None:  # Only store single language if no languages list is provided
+                        config["languages"] = [config["language"]]
+                
+                # Add support for multiple languages
+                if "languages" in config and isinstance(config["languages"], list) and config["languages"]:
+                    logger.info(f"Processing dataset {dataset_name} for multiple languages: {', '.join(config['languages'])}")
+                    # For processors that have built-in language support, pass language=None to process all languages
+                    if config['processor'] in ["the_stack", "codesearchnet"]:
+                        processor_args["language"] = None
                 
                 # Process the dataset
                 processed_dataset = processor_func(dataset, **processor_args)

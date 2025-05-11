@@ -43,6 +43,28 @@ pip install -r requirements.txt
 └── requirements.txt         # Dependencies
 ```
 
+## Updates and Fixes
+
+### Recent Improvements (2024)
+
+- **Fixed dataset preprocessing**:
+
+  - Corrected dataset paths for CodeSearchNet (`code-search-net/code_search_net`), HumanEval (`openai/openai_humaneval`), and other datasets
+  - Added robust error handling for missing or empty datasets
+  - Added 'enabled' flag support in dataset configuration to selectively process datasets
+
+- **Enhanced Google Drive Integration**:
+
+  - Fixed duplicate directory creation in Google Drive
+  - Added automatic overwriting of existing files and folders to prevent duplicates
+  - Improved logging for better troubleshooting
+  - Added proper error handling for authentication and file operations
+
+- **Memory Efficiency Improvements**:
+  - Fixed batch processing to handle empty datasets
+  - Protected against division by zero in batch size calculation
+  - Added streaming mode for large datasets
+
 ## Usage
 
 ### Complete Pipeline

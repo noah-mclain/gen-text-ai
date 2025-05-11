@@ -86,6 +86,18 @@ If the script cannot extract the code from the URL, it will ask you to manually 
 http://localhost/?code=4/XXXX_LONG_CODE_HERE_XXXX&scope=https://www.googleapis.com/auth/drive
 ```
 
+## Improved Google Drive Integration
+
+Our latest updates to the Google Drive API integration feature several key improvements:
+
+1. **Preventing Directory Duplication**: The system now intelligently checks for existing directories and files, preventing the creation of duplicates.
+
+2. **Automatic Overwriting**: When saving processed datasets or models, the system will overwrite existing files rather than creating new copies, keeping your Drive organized.
+
+3. **Robust Error Handling**: Better error detection and recovery for network issues, authentication problems, and file operations.
+
+4. **Memory Optimization**: Files are processed in chunks to minimize memory usage, making it suitable for large datasets.
+
 ## Running the Pipeline
 
 Use the `main_api.py` script instead of the standard `main.py` and include the `--headless` flag:
