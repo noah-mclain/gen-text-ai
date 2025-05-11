@@ -79,7 +79,12 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
 
 def train_model(config_path, data_dir, use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
     """Train the model."""
-    cmd = f"python -m src.training.train --config {config_path} --data_dir {data_dir}"
+    # Check if PYTHONPATH includes the project root, if not, add it to the command
+    pythonpath_cmd = ""
+    if os.getcwd() not in os.environ.get("PYTHONPATH", ""):
+        pythonpath_cmd = f"export PYTHONPATH={os.getcwd()}:$PYTHONPATH && "
+
+    cmd = f"{pythonpath_cmd}python -m src.training.train --config {config_path} --data_dir {data_dir}"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
@@ -287,6 +292,13 @@ def main():
         
         # Run training with optimized config
         logger.info("Starting training with time-optimized configuration")
+        
+        # Add the current directory to PYTHONPATH if not already there
+        project_root = os.getcwd()
+        if project_root not in os.environ.get("PYTHONPATH", ""):
+            os.environ["PYTHONPATH"] = f"{project_root}:{os.environ.get('PYTHONPATH', '')}"
+            logger.info(f"Added {project_root} to PYTHONPATH for module imports")
+            
         if not train_model(
             args.training_config, 
             "data/processed",

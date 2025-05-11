@@ -2,7 +2,15 @@
 import os
 import argparse
 import logging
-from trainer import DeepseekFineTuner
+
+# Try different import approaches to handle various module structures
+try:
+    from src.training.trainer import DeepseekFineTuner
+except ImportError:
+    try:
+        from trainer import DeepseekFineTuner  # Original import
+    except ImportError:
+        from .trainer import DeepseekFineTuner  # Relative import
 
 # Import drive utils
 import sys
