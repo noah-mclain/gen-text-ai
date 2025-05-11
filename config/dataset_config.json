@@ -1,6 +1,6 @@
 {
   "codesearchnet": {
-    "path": "code-search-net",
+    "path": "code-search-net/code_search_net",
     "processor": "codesearchnet",
     "split": "train"
   },
@@ -10,17 +10,17 @@
     "split": "train"
   },
   "instruct_code": {
-    "path": "ise-uiuc/InstructCode",
+    "path": "ise-uiuc/Magicoder-OSS-Instruct-75K",
     "processor": "instruct_code",
     "split": "train"
   },
   "mbpp": {
-    "path": "mbpp",
+    "path": "google-research-datasets/mbpp",
     "processor": "mbpp",
     "split": "train"
   },
   "ds1000": {
-    "path": "Salesforce/ds-1000",
+    "path": "Salesforce/DS-1000",
     "processor": "ds1000"
   },
   "codeparrot": {
@@ -36,7 +36,7 @@
     "language": "python"
   },
   "humaneval": {
-    "path": "openai_humaneval",
+    "path": "openai/openai_humaneval",
     "processor": "humaneval"
   }
 }

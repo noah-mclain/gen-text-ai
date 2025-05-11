@@ -111,28 +111,91 @@ class DataPreprocessor:
         """Process CodeAlpaca-20K dataset."""
         logger.info("Processing CodeAlpaca dataset...")
         
-        try:
-            return dataset.map(
-                lambda examples: self.common_preprocessing(
-                    {"prompt": examples["instruction"], "completion": examples["output"]},
-                    "prompt", "completion",
-                    streaming=streaming
-                ),
-                batched=True,
-                remove_columns=dataset.column_names if not streaming else None,
-                batch_size=100 if streaming else None
-            )
-        except Exception as e:
-            logger.warning(f"Error removing columns in streaming mode: {e}")
-            return dataset.map(
-                lambda examples: self.common_preprocessing(
-                    {"prompt": examples["instruction"], "completion": examples["output"]},
-                    "prompt", "completion",
-                    streaming=streaming
-                ),
-                batched=True,
-                batch_size=100 if streaming else None
-            )
+        # For streaming mode, process one example at a time to avoid issues
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually
+            for i, example in enumerate(dataset):
+                if i >= 10000:  # Limit to prevent processing too many examples
+                    break
+                    
+                try:
+                    # Check for field names that might be present
+                    instruction = None
+                    output = None
+                    
+                    if isinstance(example, dict):
+                        if "instruction" in example:
+                            instruction = example["instruction"]
+                        elif "input" in example:
+                            instruction = example["input"]
+                            
+                        if "output" in example:
+                            output = example["output"]
+                        elif "completion" in example:
+                            output = example["completion"]
+                        elif "response" in example:
+                            output = example["response"]
+                    
+                    # Skip if missing required fields
+                    if not instruction or not output:
+                        continue
+                        
+                    processed = self.common_preprocessing(
+                        {"prompt": instruction, "completion": output},
+                        "prompt", "completion",
+                        streaming=streaming
+                    )
+                    processed_examples.append(processed)
+                except Exception as e:
+                    logger.warning(f"Error processing example {i}: {e}")
+                    continue
+                
+            return processed_examples
+        else:
+            # For non-streaming mode
+            try:
+                # Try to determine the field names from a sample
+                sample_example = next(iter(dataset))
+                
+                # Find appropriate field names
+                prompt_field = "instruction"
+                completion_field = "output"
+                
+                if isinstance(sample_example, dict):
+                    if "instruction" not in sample_example and "input" in sample_example:
+                        prompt_field = "input"
+                    
+                    if "output" not in sample_example:
+                        if "completion" in sample_example:
+                            completion_field = "completion"
+                        elif "response" in sample_example:
+                            completion_field = "response"
+                
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples[prompt_field], "completion": examples[completion_field]},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    remove_columns=dataset.column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error in batch processing mode: {e}")
+                # Fallback to simple processing with expected field names
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples.get("instruction", examples.get("input", "")), 
+                         "completion": examples.get("output", examples.get("completion", examples.get("response", "")))},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    batch_size=100 if streaming else None
+                )
     
     def process_instruct_code(self, dataset: Union[Dataset, DatasetDict],
                              streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -167,28 +230,99 @@ class DataPreprocessor:
         """Process MBPP dataset."""
         logger.info("Processing MBPP dataset...")
         
-        try:
-            return dataset.map(
-                lambda examples: self.common_preprocessing(
-                    {"prompt": examples["text"], "completion": examples["code"]},
-                    "prompt", "completion",
-                    streaming=streaming
-                ),
-                batched=True,
-                remove_columns=dataset.column_names if not streaming else None,
-                batch_size=100 if streaming else None
-            )
-        except Exception as e:
-            logger.warning(f"Error removing columns in streaming mode: {e}")
-            return dataset.map(
-                lambda examples: self.common_preprocessing(
-                    {"prompt": examples["text"], "completion": examples["code"]},
-                    "prompt", "completion",
-                    streaming=streaming
-                ),
-                batched=True,
-                batch_size=100 if streaming else None
-            )
+        # For streaming mode, process one example at a time to avoid issues
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually
+            for i, example in enumerate(dataset):
+                if i >= 10000:  # Limit to prevent processing too many examples
+                    break
+                    
+                try:
+                    # Check for field names that might be present
+                    prompt = None
+                    code = None
+                    
+                    if isinstance(example, dict):
+                        if "text" in example:
+                            prompt = example["text"]
+                        elif "prompt" in example:
+                            prompt = example["prompt"]
+                        elif "problem" in example:
+                            prompt = example["problem"]
+                        elif "task_id" in example:
+                            prompt = f"Solve task {example['task_id']}"
+                            
+                        if "code" in example:
+                            code = example["code"]
+                        elif "solution" in example:
+                            code = example["solution"]
+                        elif "canonical_solution" in example:
+                            code = example["canonical_solution"]
+                    
+                    # Skip if missing required fields
+                    if not prompt or not code:
+                        logger.warning(f"Skipping example {i}, missing fields")
+                        continue
+                        
+                    processed = self.common_preprocessing(
+                        {"prompt": prompt, "completion": code},
+                        "prompt", "completion",
+                        streaming=streaming
+                    )
+                    processed_examples.append(processed)
+                except Exception as e:
+                    logger.warning(f"Error processing example {i}: {e}")
+                    continue
+                
+            return processed_examples
+        else:
+            # For non-streaming mode
+            try:
+                # Try to determine the field names from a sample
+                sample_example = next(iter(dataset))
+                
+                # Find appropriate field names
+                prompt_field = "text" 
+                code_field = "code"
+                
+                if isinstance(sample_example, dict):
+                    if "text" not in sample_example:
+                        if "prompt" in sample_example:
+                            prompt_field = "prompt"
+                        elif "problem" in sample_example:
+                            prompt_field = "problem"
+                    
+                    if "code" not in sample_example:
+                        if "solution" in sample_example:
+                            code_field = "solution"
+                        elif "canonical_solution" in sample_example:
+                            code_field = "canonical_solution"
+                
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples[prompt_field], "completion": examples[code_field]},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    remove_columns=dataset.column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error in batch processing mode: {e}")
+                # Fallback to simple processing with expected field names
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples.get("text", examples.get("prompt", examples.get("problem", "Write code"))), 
+                         "completion": examples.get("code", examples.get("solution", examples.get("canonical_solution", "")))},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    batch_size=100 if streaming else None
+                )
     
     def process_ds1000(self, dataset: Union[Dataset, DatasetDict],
                       streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -223,29 +357,110 @@ class DataPreprocessor:
         """Process CodeParrot Clean dataset."""
         logger.info("Processing CodeParrot dataset...")
         
-        def process_sample(examples):
-            # Add a synthetic prompt for instruction-based format
-            prompts = ["# Write a Python function" for _ in examples["code"]]
-            return self.common_preprocessing(
-                {"prompt": prompts, "completion": examples["code"]},
-                "prompt", "completion",
-                streaming=streaming
-            )
-        
-        try:
-            return dataset.map(
-                process_sample,
-                batched=True,
-                remove_columns=dataset.column_names if not streaming else None,
-                batch_size=100 if streaming else None
-            )
-        except Exception as e:
-            logger.warning(f"Error removing columns in streaming mode: {e}")
-            return dataset.map(
-                process_sample,
-                batched=True,
-                batch_size=100 if streaming else None
-            )
+        # For streaming mode, process individually to avoid issues
+        if streaming:
+            processed_examples = []
+            
+            for i, example in enumerate(dataset):
+                if i >= 10000:  # Limit to prevent processing too many examples
+                    break
+                
+                try:
+                    code = None
+                    
+                    if isinstance(example, dict):
+                        # Try different possible field names
+                        for field_name in ["code", "content", "source", "text"]:
+                            if field_name in example and example[field_name]:
+                                code = example[field_name]
+                                break
+                    else:
+                        # If the example is directly a string
+                        code = str(example)
+                    
+                    if not code:
+                        logger.warning(f"Skipping example {i}, no code found")
+                        continue
+                    
+                    prompt = "# Write a Python function"
+                    processed = self.common_preprocessing(
+                        {"prompt": prompt, "completion": code},
+                        "prompt", "completion",
+                        streaming=streaming
+                    )
+                    processed_examples.append(processed)
+                except Exception as e:
+                    logger.warning(f"Error processing example {i}: {e}")
+                    continue
+            
+            return processed_examples
+        else:
+            # For batch processing
+            try:
+                # Try to determine the structure from a sample
+                sample_example = next(iter(dataset))
+                
+                # Find the field with code
+                code_field = None
+                if isinstance(sample_example, dict):
+                    for field_name in ["code", "content", "source", "text"]:
+                        if field_name in sample_example:
+                            code_field = field_name
+                            break
+                
+                if not code_field:
+                    logger.warning("Could not find a code field in the dataset")
+                    code_field = "code"  # Default fallback
+                
+                def process_sample(examples):
+                    try:
+                        # Add a synthetic prompt for instruction-based format
+                        if code_field in examples and len(examples[code_field]) > 0:
+                            prompts = ["# Write a Python function" for _ in examples[code_field]]
+                            return self.common_preprocessing(
+                                {"prompt": prompts, "completion": examples[code_field]},
+                                "prompt", "completion",
+                                streaming=streaming
+                            )
+                        else:
+                            logger.warning(f"Missing code field: {code_field}")
+                            return {"processed_text": [], "length": []}
+                    except Exception as e:
+                        logger.error(f"Error in process_sample: {e}")
+                        return {"processed_text": [], "length": []}
+                
+                return dataset.map(
+                    process_sample,
+                    batched=True,
+                    remove_columns=dataset.column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error in batch processing: {e}")
+                
+                # Fallback to simple item-by-item processing
+                processed_examples = []
+                count = 0
+                
+                for example in dataset:
+                    if count >= 10000:
+                        break
+                    
+                    try:
+                        code = str(example)
+                        prompt = "# Write a Python function"
+                        
+                        processed = self.common_preprocessing(
+                            {"prompt": prompt, "completion": code},
+                            "prompt", "completion",
+                            streaming=True  # Force streaming mode for this fallback
+                        )
+                        processed_examples.append(processed)
+                        count += 1
+                    except:
+                        continue
+                
+                return processed_examples
     
     def process_the_stack(self, dataset: Union[Dataset, DatasetDict], language: str = "python",
                          streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -291,8 +506,26 @@ class DataPreprocessor:
             
             # Process each example individually
             for example in dataset:
+                # Handle both dictionary structure and direct access
+                if isinstance(example, dict):
+                    prompt = example.get("prompt", "")
+                    solution = example.get("canonical_solution", "")
+                    # Some versions use different field names
+                    if not solution and "test" in example:
+                        solution = example.get("test", "")
+                    if not solution and "solution" in example:
+                        solution = example.get("solution", "")
+                else:
+                    # For the case where each example is directly a string
+                    try:
+                        prompt = "Write a Python function"
+                        solution = str(example)
+                    except:
+                        logger.warning(f"Could not process example: {example}")
+                        continue
+                
                 processed = self.common_preprocessing(
-                    {"prompt": example["prompt"], "completion": example["canonical_solution"]},
+                    {"prompt": prompt, "completion": solution},
                     "prompt", "completion",
                     streaming=streaming
                 )
@@ -301,21 +534,36 @@ class DataPreprocessor:
             return processed_examples
         else:
             try:
+                # Determine the actual field names in the dataset
+                sample_item = next(iter(dataset))
+                prompt_field = "prompt"
+                solution_field = "canonical_solution"
+                
+                # Check field names
+                if isinstance(sample_item, dict):
+                    if "prompt" not in sample_item and "task_id" in sample_item:
+                        prompt_field = "task_id"
+                    if "canonical_solution" not in sample_item:
+                        if "test" in sample_item:
+                            solution_field = "test"
+                        elif "solution" in sample_item:
+                            solution_field = "solution"
+                
                 return dataset.map(
                     lambda examples: self.common_preprocessing(
-                        {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
+                        {"prompt": examples[prompt_field], "completion": examples[solution_field]},
                         "prompt", "completion",
                         streaming=streaming
                     ),
                     batched=True,
-                    remove_columns=dataset.column_names,
+                    remove_columns=dataset.column_names if not streaming else None,
                     batch_size=100 if streaming else None
                 )
             except Exception as e:
                 logger.warning(f"Error processing HumanEval: {e}")
                 return dataset.map(
                     lambda examples: self.common_preprocessing(
-                        {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
+                        {"prompt": "Write a Python function", "completion": str(examples)},
                         "prompt", "completion",
                         streaming=streaming
                     ),
@@ -326,6 +574,13 @@ class DataPreprocessor:
         """Load and process all configured datasets."""
         processed_datasets = {}
         
+        # Check for HF_TOKEN environment variable
+        if os.environ.get("HF_TOKEN") is None:
+            logger.warning("HF_TOKEN environment variable not set. Some gated datasets might be inaccessible.")
+            logger.warning("You may need to set it using: export HF_TOKEN=your_huggingface_token")
+        else:
+            logger.info("Using Hugging Face token from environment for authentication")
+            
         for dataset_name, config in dataset_config.items():
             logger.info(f"Loading dataset: {dataset_name}")
             
@@ -339,15 +594,30 @@ class DataPreprocessor:
                 if not use_cache:
                     os.environ["HF_DATASETS_CACHE"] = "no"
                 
-                # Load the dataset
-                dataset = load_dataset(
-                    config["path"], 
-                    name=config.get("name"), 
-                    split=config.get("split"),
-                    streaming=streaming,
-                    use_auth_token=os.environ.get("HF_TOKEN"),
-                    trust_remote_code=True
-                )
+                # Load the dataset with proper error handling
+                try:
+                    logger.info(f"Attempting to load dataset {config['path']}")
+                    
+                    dataset = load_dataset(
+                        config["path"], 
+                        name=config.get("name"), 
+                        split=config.get("split"),
+                        streaming=streaming,
+                        use_auth_token=os.environ.get("HF_TOKEN"),
+                        trust_remote_code=True
+                    )
+                    
+                    logger.info(f"Successfully loaded dataset {dataset_name}")
+                    
+                except (ImportError, ModuleNotFoundError) as e:
+                    logger.error(f"Missing dependency for loading dataset {dataset_name}: {str(e)}")
+                    logger.error("Try installing additional dependencies if needed")
+                    continue
+                    
+                except Exception as e:
+                    logger.error(f"Error loading dataset {dataset_name}: {str(e)}")
+                    logger.info(f"Skipping dataset {dataset_name}")
+                    continue
                 
                 # Apply the appropriate processing function with streaming flag
                 processor_func = getattr(self, f"process_{config['processor']}")
@@ -373,27 +643,49 @@ class DataPreprocessor:
                     
                     # Collect all examples in memory
                     collected_data = {"processed_text": [], "length": []}
+                    count = 0
+                    errors = 0
                     
                     # Handle different return types from processor
                     if isinstance(processed_dataset, list):
                         # For HumanEval or other datasets that return a list
-                        count = 0
                         for example in processed_dataset:
                             if count >= max_samples:
                                 break
-                            collected_data["processed_text"].append(example["processed_text"])
-                            collected_data["length"].append(example["length"])
-                            count += 1
+                            
+                            try:
+                                if "processed_text" in example and "length" in example:
+                                    collected_data["processed_text"].append(example["processed_text"])
+                                    collected_data["length"].append(example["length"])
+                                    count += 1
+                            except Exception as e:
+                                logger.warning(f"Error collecting example: {e}")
+                                errors += 1
+                                if errors > 100:
+                                    logger.error("Too many errors, stopping collection")
+                                    break
                     else:
                         # For regular streaming datasets
-                        count = 0
                         for example in processed_dataset:
                             if count >= max_samples:
                                 break
-                            collected_data["processed_text"].append(example["processed_text"])
-                            collected_data["length"].append(example["length"])
-                            count += 1
+                                
+                            try:
+                                if "processed_text" in example and "length" in example:
+                                    collected_data["processed_text"].append(example["processed_text"])
+                                    collected_data["length"].append(example["length"])
+                                    count += 1
+                            except Exception as e:
+                                logger.warning(f"Error collecting example: {e}")
+                                errors += 1
+                                if errors > 100:
+                                    logger.error("Too many errors, stopping collection")
+                                    break
                     
+                    if count == 0:
+                        logger.error(f"No examples could be collected for {dataset_name}")
+                        continue
+                        
                     # Convert to HF Dataset
                     materialized_dataset = HFDataset.from_dict(collected_data)
                     
