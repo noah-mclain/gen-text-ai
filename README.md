@@ -137,6 +137,38 @@ Push to Hugging Face Hub after training:
 python main.py --mode train --push_to_hub --hub_model_id your-username/model-name
 ```
 
+#### Fast Training with The Stack
+
+For efficient direct training using The Stack dataset with language filters (time-constrained):
+
+```bash
+# NEW: Integrated quick-stack mode (recommended approach)
+python main_api.py --mode quick-stack --auto-time --use_drive_api --credentials_path credentials.json --headless
+```
+
+This single command:
+
+1. Automatically calculates time until midnight
+2. Optimizes training parameters for your time constraint
+3. Filters The Stack for specific languages (python, java, javascript, c, c++, c#, typescript, html, sql, tex, dockerfile)
+4. Only uses content with English and Arabic natural language in comments
+5. Uses mixed precision (FP16) and gradient accumulation for speed
+
+Advanced options for quick-stack mode:
+
+```bash
+# Set specific time limit (in hours)
+python main_api.py --mode quick-stack --max-hours 3 --headless
+
+# Skip preprocessing step (use direct loading)
+python main_api.py --mode quick-stack --skip-preprocessing --auto-time --headless
+
+# Add specific datasets
+python main_api.py --mode quick-stack --datasets the_stack_filtered mbpp code_alpaca --auto-time --headless
+```
+
+For more details, see [DIRECT_STACK_GUIDE.md](DIRECT_STACK_GUIDE.md).
+
 #### Evaluation
 
 Evaluate a fine-tuned model:

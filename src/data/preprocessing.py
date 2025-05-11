@@ -12,6 +12,7 @@ from datasets import load_dataset, Dataset, DatasetDict
 from transformers import AutoTokenizer
 from itertools import islice
 from tqdm import tqdm
+import random
 
 # For language detection
 try:
@@ -84,19 +85,39 @@ class DataPreprocessor:
         # Default to English if we can't detect language or no special characters
         return "en"
         
-    def should_include_by_language(self, text: str, code_language: str = None) -> bool:
-        """Determine if the example should be included based on language filters."""
-        # Check programming language if provided
-        if code_language and code_language.lower() not in self.POPULAR_PROGRAMMING_LANGUAGES:
-            return False
+    def should_include_by_language(self, text, allowed_languages=None):
+        """
+        Check if text should be included based on natural language detection.
+        By default, only keep English content, but allow for specifying other languages.
+        
+        Args:
+            text: Text to check
+            allowed_languages: List of language codes to allow (e.g., ['en', 'ar']), or None for all
             
-        # Check natural language of the comments/docstrings
-        if text and isinstance(text, str):
-            nat_lang = self.detect_language(text)
-            if nat_lang not in self.ALLOWED_NATURAL_LANGUAGES:
-                return False
-                
-        return True
+        Returns:
+            Boolean indicating if this text should be included
+        """
+        # If no language restrictions, include everything
+        if not allowed_languages:
+            return True
+        
+        # Skip empty text
+        if not text or len(text.strip()) < 10:
+            return False
+        
+        try:
+            # Detect language with langdetect
+            lang_code = detect(text[:1000])  # Only use first 1000 chars for speed
+            
+            # Convert allowed_languages to lowercase for case-insensitive matching
+            allowed_languages_lower = [lang.lower() for lang in allowed_languages]
+            
+            # Include if language is in allowed list
+            return lang_code.lower() in allowed_languages_lower
+        except Exception as e:
+            # In case of detection error, include by default
+            logger.debug(f"Language detection error: {str(e)}")
+            return True
     
     def _check_resources(self, force: bool = False) -> Dict[str, float]:
         """Monitor system resources and manage memory if needed."""
@@ -973,7 +994,9 @@ class DataPreprocessor:
     
     def process_the_stack(self, dataset: Union[Dataset, DatasetDict], language: str = None, 
                          streaming: bool = True, callback: Optional[Callable] = None, 
-                         intermediate_save: bool = True, save_every: int = 10000) -> Iterator[Dict]:
+                         intermediate_save: bool = True, save_every: int = 10000,
+                         natural_languages: List[str] = None, sampling_ratio: float = 1.0,
+                         max_samples: int = None) -> Iterator[Dict]:
         """
         Process The Stack dataset.
         
@@ -984,6 +1007,9 @@ class DataPreprocessor:
             callback: Optional callback function to process examples
             intermediate_save: Whether to save intermediate results
             save_every: How often to save intermediate results
+            natural_languages: List of natural language codes to filter on (e.g., ['en', 'ar'])
+            sampling_ratio: Ratio of examples to sample (0.0-1.0)
+            max_samples: Maximum number of samples to process
             
         Returns:
             Iterator of processed examples
@@ -1002,6 +1028,14 @@ class DataPreprocessor:
             logger.info(f"Current GPU usage: {resources.get('gpu_allocated_mb', 0):.1f} MB " + 
                        f"({resources.get('gpu_percent', 0):.1f}%)")
             
+        # Log sampling settings if applied
+        if sampling_ratio < 1.0:
+            logger.info(f"Sampling {sampling_ratio*100:.1f}% of examples")
+        if max_samples:
+            logger.info(f"Processing up to {max_samples} examples")
+        if natural_languages:
+            logger.info(f"Filtering for natural languages: {', '.join(natural_languages)}")
+        
         # Define format to include code + docstring
         def format_example(example):
             try:
@@ -1009,24 +1043,20 @@ class DataPreprocessor:
                 content = example.get('content', '')
                 language_name = example.get('lang', '').lower()
                 
-                # Apply language filtering - skip non-popular programming languages
-                if language_name and language_name not in self.POPULAR_PROGRAMMING_LANGUAGES:
-                    return None
-                    
+                # Apply programming language filtering
                 # If a specific language was requested, filter for that
                 if language and language_name != language.lower():
                     return None
-                
+                    
                 # Filter for natural language in comments
                 # Extract comments for language detection
-                # This is a simple heuristic that works for many languages
                 comment_pattern = r'(?:\/\/.*?$|\/\*[\s\S]*?\*\/|#.*?$|\'\'\'[\s\S]*?\'\'\'|"""[\s\S]*?""")'
                 comments = re.findall(comment_pattern, content, re.MULTILINE)
                 
-                # Join comments to check language
-                if comments:
+                # Check natural language if we have comments and natural_languages is specified
+                if comments and natural_languages:
                     comment_text = ' '.join(comments)
-                    if not self.should_include_by_language(comment_text):
+                    if not self.should_include_by_language(comment_text, natural_languages):
                         return None
                 
                 # Format the example
@@ -1054,15 +1084,28 @@ class DataPreprocessor:
         last_progress_time = time.time()
         last_example_count = 0
         
+        # Initialize random number generator for sampling
+        random.seed(42)  # For reproducibility
+        
         # Batch processing logic
         for i, example in enumerate(dataset):
             try:
+                # Apply sampling - skip examples based on sampling ratio
+                if sampling_ratio < 1.0 and random.random() > sampling_ratio:
+                    continue
+                    
                 # Process the example
                 result = format_example(example)
                 
                 # Only yield valid results
                 if result:
                     examples_processed += 1
+                    
+                    # Check if we reached max_samples
+                    if max_samples and examples_processed > max_samples:
+                        logger.info(f"Reached maximum sample count of {max_samples}. Stopping.")
+                        break
+                        
                     yield result
                     
                     # Call callback if provided
@@ -1385,6 +1428,21 @@ class DataPreprocessor:
                     # For processors that have built-in language support, pass language=None to process all languages
                     if config['processor'] in ["the_stack", "codesearchnet"]:
                         processor_args["language"] = None
+                
+                # Add support for natural language filtering (for comments/docstrings)
+                if "natural_languages" in config and isinstance(config["natural_languages"], list):
+                    if config['processor'] == "the_stack":
+                        processor_args["natural_languages"] = config["natural_languages"]
+                
+                # Add sampling ratio if specified
+                if "sampling_ratio" in config and 0.0 < config["sampling_ratio"] <= 1.0:
+                    if config['processor'] == "the_stack":
+                        processor_args["sampling_ratio"] = config["sampling_ratio"]
+                
+                # Add max samples if specified
+                if "max_samples" in config and config["max_samples"] > 0:
+                    if config['processor'] == "the_stack":
+                        processor_args["max_samples"] = config["max_samples"]
                 
                 # Process the dataset
                 try:

@@ -4,6 +4,8 @@ import argparse
 import logging
 import subprocess
 import json
+import datetime
+import tempfile
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
@@ -110,10 +112,88 @@ def visualize_results(training_log, results_dir, output_dir="visualizations",
     
     return run_command(cmd, "Visualizing results")
 
+def calculate_hours_until_midnight():
+    """Calculate the number of hours until midnight."""
+    now = datetime.datetime.now()
+    midnight = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    time_until_midnight = midnight - now
+    hours_until_midnight = time_until_midnight.total_seconds() / 3600
+    
+    # Round down to the nearest half hour and ensure at least 1 hour
+    hours_until_midnight = max(1, int(hours_until_midnight * 2) / 2)
+    
+    return hours_until_midnight
+
+def optimize_training_config(config_path, max_hours):
+    """Optimize training configuration for time constraints."""
+    logger.info(f"Optimizing training configuration for {max_hours} hour(s) time constraint")
+    
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    # Create a temporary file for the updated config
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as tmp_file:
+        tmp_path = tmp_file.name
+        
+        # Update for faster training
+        if "training" in config:
+            # Limit epochs
+            config["training"]["num_train_epochs"] = 1
+            
+            # Increase batch size if possible
+            if config["training"].get("per_device_train_batch_size", 8) < 12:
+                config["training"]["per_device_train_batch_size"] = 12
+            
+            # Increase gradient accumulation
+            config["training"]["gradient_accumulation_steps"] = 8
+            
+            # Set evaluation and saving steps
+            config["training"]["eval_steps"] = 100
+            config["training"]["save_steps"] = 500
+            
+            # Enable mixed precision
+            config["training"]["fp16"] = True
+            
+            # Set max training time
+            config["training"]["max_train_time_hours"] = max_hours
+
+        # Update dataset config for smaller sequence length
+        if "dataset" in config:
+            # Reduce sequence length for faster training
+            if config["dataset"].get("max_length", 2048) > 1024:
+                config["dataset"]["max_length"] = 1024
+            
+            # Adjust sampling to account for the limited time
+            if "max_samples" in config["dataset"]:
+                # Reduce samples for all datasets except the_stack_filtered
+                for key in config["dataset"]["max_samples"]:
+                    config["dataset"]["max_samples"][key] = min(5000, config["dataset"]["max_samples"].get(key, 5000))
+            
+            # Add our special stack dataset
+            if "dataset_weights" in config["dataset"]:
+                config["dataset"]["dataset_weights"]["the_stack_filtered"] = 3.0
+                
+            # Ensure streaming is enabled
+            config["dataset"]["streaming"] = True
+        
+        # Save the updated config
+        json.dump(config, tmp_file, indent=2)
+    
+    # Copy the temp file to the original location
+    with open(tmp_path, 'r') as tmp_file:
+        with open(config_path, 'w') as original_file:
+            original_file.write(tmp_file.read())
+    
+    # Clean up the temp file
+    os.unlink(tmp_path)
+    
+    logger.info(f"Updated training configuration saved to {config_path}")
+    return True
+
 def main():
     parser = argparse.ArgumentParser(description="DeepSeek-Coder Fine-Tuning Pipeline")
     parser.add_argument("--mode", type=str, required=True,
-                        choices=["all", "process", "train", "evaluate", "visualize"],
+                        choices=["all", "process", "train", "evaluate", "visualize", "quick-stack"],
                         help="Pipeline mode to run")
     parser.add_argument("--dataset_config", type=str, default="config/dataset_config.json",
                         help="Path to dataset configuration file")
@@ -142,6 +222,14 @@ def main():
     parser.add_argument("--headless", action="store_true",
                         help="Use headless authentication for environments without a browser")
     
+    # Quick Stack mode options
+    parser.add_argument("--max-hours", type=float, default=None,
+                        help="Maximum training time in hours (for quick-stack mode)")
+    parser.add_argument("--auto-time", action="store_true",
+                        help="Automatically calculate time until midnight (for quick-stack mode)")
+    parser.add_argument("--skip-preprocessing", action="store_true",
+                        help="Skip preprocessing step (for quick-stack mode)")
+    
     args = parser.parse_args()
     
     # Check for HF_TOKEN environment variable
@@ -153,6 +241,65 @@ def main():
     
     # Ensure directories exist
     ensure_directories()
+    
+    # Special handling for quick-stack mode
+    if args.mode == "quick-stack":
+        logger.info("Running in quick Stack training mode")
+        
+        # Set max training time (auto-calculate or use provided value)
+        max_hours = args.max_hours
+        if args.auto_time or max_hours is None:
+            max_hours = calculate_hours_until_midnight()
+            logger.info(f"Auto-calculated {max_hours} hours until midnight")
+            
+        # Always set streaming and no_cache for quick stack mode
+        args.streaming = True
+        args.no_cache = True
+        
+        # Default to the_stack_filtered if no datasets specified
+        if args.datasets is None:
+            args.datasets = ["the_stack_filtered"]
+            logger.info("Using the_stack_filtered dataset by default")
+        
+        # Optimize training config for time constraint
+        optimize_training_config(args.training_config, max_hours)
+        
+        # Replace mode with "all" to run the full pipeline
+        logger.info(f"Running optimized Stack training pipeline to complete in {max_hours} hours")
+        
+        # Decide whether to run process step
+        if not args.skip_preprocessing:
+            logger.info("Running preprocessing step for Stack dataset")
+            if not process_datasets(
+                args.dataset_config, 
+                args.datasets, 
+                streaming=args.streaming, 
+                no_cache=args.no_cache,
+                use_drive_api=args.use_drive_api, 
+                credentials_path=args.credentials_path, 
+                drive_base_dir=args.drive_base_dir,
+                headless=args.headless
+            ):
+                logger.error("Dataset processing failed")
+                return
+        else:
+            logger.info("Skipping preprocessing step, using direct loading")
+        
+        # Run training with optimized config
+        logger.info("Starting training with time-optimized configuration")
+        if not train_model(
+            args.training_config, 
+            "data/processed",
+            use_drive_api=args.use_drive_api, 
+            credentials_path=args.credentials_path, 
+            drive_base_dir=args.drive_base_dir,
+            headless=args.headless
+        ):
+            logger.error("Training failed")
+            return
+        
+        logger.info(f"Quick Stack training completed successfully")
+        return
     
     # Setup Google Drive API if requested
     drive_api = None
@@ -264,7 +411,7 @@ def main():
     
     # If using Google Drive API, upload results
     if args.use_drive_api and drive_api and directory_ids:
-        if args.mode in ["all", "train"]:
+        if args.mode in ["all", "train", "quick-stack"]:
             # Upload model files
             model_dir = training_config.get("training", {}).get("output_dir", "models/deepseek-coder-finetune")
             if os.path.exists(model_dir):

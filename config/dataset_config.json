@@ -146,6 +146,29 @@
     "split": "train",
     "enabled": true
   },
+  "the_stack_filtered": {
+    "path": "bigcode/the-stack",
+    "processor": "the_stack",
+    "split": "train",
+    "languages": [
+      "python",
+      "java",
+      "javascript",
+      "c",
+      "cpp",
+      "c-sharp",
+      "typescript",
+      "html",
+      "sql",
+      "tex",
+      "dockerfile"
+    ],
+    "natural_languages": ["en", "ar"],
+    "sampling_ratio": 0.05,
+    "max_samples": 30000,
+    "max_processing_time": 180,
+    "enabled": true
+  },
   "humaneval": {
     "path": "openai/openai_humaneval",
     "processor": "humaneval"
