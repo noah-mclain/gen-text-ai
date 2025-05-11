@@ -43,19 +43,34 @@ class DataPreprocessor:
                         if len(text) > 10 and "None" not in text]
         
         filtered_texts = [formatted_texts[i] for i in valid_indices]
+        filtered_prompts = [prompts[i] for i in valid_indices]
+        filtered_completions = [completions[i] for i in valid_indices]
+        
+        # Deduplicate based on prompt+completion pairs
+        unique_pairs = {}
+        deduplicated_texts = []
+        
+        for i, (text, prompt, completion) in enumerate(zip(filtered_texts, filtered_prompts, filtered_completions)):
+            # Create a unique key from the prompt and completion
+            pair_key = f"{prompt}__SEP__{completion}"
+            if pair_key not in unique_pairs:
+                unique_pairs[pair_key] = True
+                deduplicated_texts.append(text)
+        
+        logger.info(f"Removed {len(filtered_texts) - len(deduplicated_texts)} duplicate examples")
         
         # For streaming mode, process in smaller batches to save memory
         if streaming:
             # Ensure batch_size is never zero to avoid range() error
-            batch_size = max(1, min(len(filtered_texts), 32))  # At minimum 1, max 32
+            batch_size = max(1, min(len(deduplicated_texts), 32))  # At minimum 1, max 32
             all_lengths = []
             
             # Handle empty filtered_texts
-            if not filtered_texts:
+            if not deduplicated_texts:
                 return {"processed_text": [], "length": []}
             
-            for i in range(0, len(filtered_texts), batch_size):
-                batch = filtered_texts[i:i+batch_size]
+            for i in range(0, len(deduplicated_texts), batch_size):
+                batch = deduplicated_texts[i:i+batch_size]
                 # Tokenize and truncate to max length
                 tokenized = self.tokenizer(
                     batch,
@@ -70,22 +85,22 @@ class DataPreprocessor:
                 if hasattr(self.tokenizer, "cache_clear"):
                     self.tokenizer.cache_clear()
                 
-            return {"processed_text": filtered_texts, "length": all_lengths}
+            return {"processed_text": deduplicated_texts, "length": all_lengths}
         else:
             # Handle empty filtered_texts for non-streaming mode too
-            if not filtered_texts:
+            if not deduplicated_texts:
                 return {"processed_text": [], "length": []}
                 
             # Tokenize and truncate to max length for non-streaming mode
             tokenized = self.tokenizer(
-                filtered_texts,
+                deduplicated_texts,
                 truncation=True,
                 max_length=self.max_length,
                 return_overflowing_tokens=False,
                 return_length=True
             )
             
-            return {"processed_text": filtered_texts, "length": tokenized["length"]}
+            return {"processed_text": deduplicated_texts, "length": tokenized["length"]}
     
     def process_codesearchnet(self, dataset: Union[Dataset, DatasetDict], 
                              streaming: bool = False, language: str = None) -> Union[Dataset, DatasetDict]:

@@ -297,9 +297,13 @@ class DeepseekFineTuner:
         # Create training arguments
         training_args_dict = {k: v for k, v in self.training_config.items() if k not in ["seed"]}
         
+        # Ensure shuffling is enabled during training
+        if "shuffle_dataset" not in training_args_dict:
+            training_args_dict["shuffle_dataset"] = True
+        
         # Set CUDA optimization flags
         os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
-        os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'  # or INFO
+        os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
         
         # Configure DeepSpeed if enabled
         if self.training_config.get("use_deepspeed", False):

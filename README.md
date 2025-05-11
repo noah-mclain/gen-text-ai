@@ -5,6 +5,8 @@ This repository contains a comprehensive pipeline for fine-tuning the DeepSeek-C
 ## Features
 
 - Preprocessing of multiple code datasets (CodeSearchNet, CodeAlpaca, MBPP, etc.)
+  - Dataset deduplication to remove redundant prompt+completion pairs
+  - Consistent formatting for fine-tuning
 - Parameter-Efficient Fine-Tuning (PEFT) with LoRA
 - Optimization with Unsloth for faster training
 - 4-bit quantization for memory efficiency
@@ -46,6 +48,19 @@ pip install -r requirements.txt
 ## Updates and Fixes
 
 ### Recent Improvements (2024)
+
+- **Enhanced Preprocessing Pipeline**:
+
+  - Implemented deduplication of prompt+completion pairs to remove redundant examples
+  - Added robust whitespace handling (strip leading/trailing spaces and newlines)
+  - Improved filtering of null, empty, or too-short samples
+  - Ensured consistent UTF-8 encoding for all datasets
+
+- **Improved Training Process**:
+
+  - Added explicit dataset shuffling during training for better model convergence
+  - Fixed dataset splitting to ensure proper train/validation/test distribution
+  - Implemented proper data formatting with User/Assistant pattern for DeepSeek-Coder
 
 - **Fixed dataset preprocessing**:
 

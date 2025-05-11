@@ -94,9 +94,20 @@ Our latest updates to the Google Drive API integration feature several key impro
 
 2. **Automatic Overwriting**: When saving processed datasets or models, the system will overwrite existing files rather than creating new copies, keeping your Drive organized.
 
-3. **Robust Error Handling**: Better error detection and recovery for network issues, authentication problems, and file operations.
+3. **Advanced Preprocessing Pipeline**:
 
-4. **Memory Optimization**: Files are processed in chunks to minimize memory usage, making it suitable for large datasets.
+   - **Deduplication of Examples**: Automatically removes redundant prompt+completion pairs during preprocessing
+   - **Consistent Formatting**: Applies uniform formatting with "User:" and "Assistant:" prefixes
+   - **Clean Text Processing**: Strips whitespace, normalizes text, and removes too-short examples
+
+4. **Improved Training Process**:
+
+   - **Dataset Shuffling**: Explicitly enables shuffling during training for better model convergence
+   - **Proper Train/Val/Test Splits**: Ensures data is correctly distributed for training and evaluation
+
+5. **Robust Error Handling**: Better error detection and recovery for network issues, authentication problems, and file operations.
+
+6. **Memory Optimization**: Files are processed in chunks to minimize memory usage, making it suitable for large datasets.
 
 ## Running the Pipeline
 
