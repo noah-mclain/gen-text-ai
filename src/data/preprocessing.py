@@ -571,6 +571,18 @@ class DataPreprocessor:
         """Extract fields from example using multiple possible field names."""
         result = {}
         
+        # Handle non-dictionary examples (like strings or lists)
+        if not isinstance(example, dict):
+            # For string examples, return a default formatting
+            if isinstance(example, str):
+                return {
+                    "prompt": "Write a Python function",
+                    "completion": example
+                }
+            # For other non-dict types, return empty result
+            return result
+        
+        # Normal processing for dictionary examples
         for target_field, possible_names in field_names_map.items():
             for name in possible_names:
                 if name in example and example[name]:
@@ -1183,8 +1195,8 @@ class DataPreprocessor:
         
         # Define field mappings for different dataset structures
         field_mappings = {
-            "prompt": ["prompt", "task_id", "question", "instruction"],
-            "completion": ["canonical_solution", "solution", "test", "answer", "code"]
+            "prompt": ["prompt", "task_id", "question", "instruction", "function_name"],
+            "completion": ["canonical_solution", "solution", "test", "answer", "code", "content"]
         }
         
         # For HumanEval, we need special handling for streaming mode
@@ -1194,7 +1206,39 @@ class DataPreprocessor:
             # Process each example individually using our safe iterator
             for example in self._safe_dataset_iterator(dataset):
                 try:
-                    # Extract fields using our utility method
+                    # Handle the OpenAI HumanEval dataset format - direct structure detection
+                    if isinstance(example, dict) and "task_id" in example and "prompt" in example:
+                        # Original OpenAI HumanEval format
+                        prompt = example.get("prompt", "")
+                        solution = example.get("canonical_solution", "")
+                        
+                        if prompt and solution:
+                            processed = self.common_preprocessing(
+                                {"prompt": prompt, "completion": solution},
+                                "prompt", "completion",
+                                streaming=True
+                            )
+                            processed_examples.append(processed)
+                            continue
+                    
+                    # Try alternate format with function_name and entry_point
+                    if isinstance(example, dict) and "function_name" in example:
+                        func_name = example.get("function_name", "")
+                        entry_point = example.get("entry_point", func_name)
+                        
+                        # Use test as solution if available, or canonical_solution
+                        solution = example.get("test", example.get("canonical_solution", ""))
+                        
+                        if func_name and solution:
+                            processed = self.common_preprocessing(
+                                {"prompt": f"Implement the Python function {func_name}", "completion": solution},
+                                "prompt", "completion",
+                                streaming=True
+                            )
+                            processed_examples.append(processed)
+                            continue
+                    
+                    # Extract fields using standard utility method as fallback
                     fields = self._extract_fields(example, field_mappings)
                     
                     # Handle case where we have neither prompt nor completion
@@ -1220,8 +1264,20 @@ class DataPreprocessor:
                                 "completion": test_code
                             }
                         else:
-                            logger.warning("Skipping example with missing prompt or solution")
-                            continue
+                            # Last resort - look for any content field
+                            if isinstance(example, dict) and any(k in example for k in ["content", "code", "source"]):
+                                content = example.get("content", example.get("code", example.get("source", "")))
+                                if content:
+                                    fields = {
+                                        "prompt": "Write a Python function",
+                                        "completion": content
+                                    }
+                                else:
+                                    logger.warning("Skipping example with missing prompt or solution")
+                                    continue
+                            else:
+                                logger.warning("Skipping example with missing prompt or solution")
+                                continue
                     
                     processed = self.common_preprocessing(
                         {"prompt": fields["prompt"], "completion": fields["completion"]},
