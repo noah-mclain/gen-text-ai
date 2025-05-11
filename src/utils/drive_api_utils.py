@@ -147,9 +147,9 @@ class DriveAPI:
         if not self._ensure_authenticated():
             return None
         
-        # Check cache first
+        # Clear cache for this name to ensure we always get the latest ID
         if name in self.file_id_cache:
-            return self.file_id_cache[name]
+            del self.file_id_cache[name]
         
         try:
             query = f"name = '{name}'"
@@ -263,6 +263,19 @@ class DriveAPI:
                 return None
             
             file_name = remote_name or os.path.basename(local_path)
+            
+            # Check if file already exists and delete it first for proper overwriting
+            if parent_id:
+                existing_file_id = self.find_file_id(file_name, parent_id)
+                if existing_file_id:
+                    try:
+                        self.service.files().delete(fileId=existing_file_id).execute()
+                        logger.info(f"Deleted existing file: {file_name} with ID: {existing_file_id}")
+                    except HttpError as delete_error:
+                        # If file doesn't exist (404) we can continue, otherwise log the error
+                        if delete_error.resp.status != 404:
+                            logger.warning(f"Error deleting existing file {file_name}: {str(delete_error)}")
+            
             file_metadata = {'name': file_name}
             
             if parent_id:
@@ -423,13 +436,21 @@ class DriveAPI:
                     self.upload_folder(item_path, folder_id)
                 else:
                     # Check if file already exists and remove if it does
+                    # Clear the cache first to ensure we get the latest file ID
+                    if item in self.file_id_cache:
+                        del self.file_id_cache[item]
+                        
                     existing_file_id = self.find_file_id(item, folder_id)
                     if existing_file_id:
                         try:
                             self.service.files().delete(fileId=existing_file_id).execute()
-                            logger.debug(f"Deleted existing file: {item}")
+                            logger.info(f"Deleted existing file: {item} with ID: {existing_file_id}")
                         except HttpError as e:
-                            logger.warning(f"Error deleting existing file {item}: {str(e)}")
+                            # If file doesn't exist (404) we can continue, otherwise log the error
+                            if e.resp.status != 404:
+                                logger.warning(f"Error deleting existing file {item}: {str(e)}")
+                            else:
+                                logger.debug(f"File {item} with ID {existing_file_id} not found on Drive, will upload new version")
                     
                     # Upload file
                     self.upload_file(item_path, parent_id=folder_id)
@@ -495,13 +516,24 @@ def save_to_drive(api: DriveAPI, local_path: str, folder_id: str) -> Optional[st
         else:
             # Check if a file with the same name already exists
             file_name = os.path.basename(local_path)
+            
+            # Clear cache to ensure we get the most up-to-date file ID
+            if file_name in api.file_id_cache:
+                del api.file_id_cache[file_name]
+                
             existing_file_id = api.find_file_id(file_name, folder_id)
             
             if existing_file_id:
                 # Delete the existing file before uploading
                 try:
                     api.service.files().delete(fileId=existing_file_id).execute()
-                    logger.info(f"Deleted existing file {file_name} before uploading new version")
+                    logger.info(f"Deleted existing file {file_name} with ID: {existing_file_id} before uploading new version")
+                except HttpError as e:
+                    # If file doesn't exist (404) we can continue, otherwise log the error
+                    if e.resp.status != 404:
+                        logger.warning(f"Error deleting existing file {file_name}: {e}")
+                    else:
+                        logger.debug(f"File {file_name} with ID {existing_file_id} not found on Drive, will upload new version")
                 except Exception as e:
                     logger.warning(f"Error deleting existing file {file_name}: {e}")
                     

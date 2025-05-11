@@ -99,13 +99,21 @@ Our latest updates to the Google Drive API integration feature several key impro
    - **Deduplication of Examples**: Automatically removes redundant prompt+completion pairs during preprocessing
    - **Consistent Formatting**: Applies uniform formatting with "User:" and "Assistant:" prefixes
    - **Clean Text Processing**: Strips whitespace, normalizes text, and removes too-short examples
+   - **Multi-Language Support**: Process code datasets in multiple programming languages:
+     - CodeSearchNet: Python, Java, JavaScript, PHP, Ruby, Go
+     - The Stack: Python, Java, JavaScript, PHP, Ruby, Go, C, C++, C#, and many more
+     - Process specific languages or all available languages based on configuration
 
 4. **Improved Training Process**:
 
    - **Dataset Shuffling**: Explicitly enables shuffling during training for better model convergence
    - **Proper Train/Val/Test Splits**: Ensures data is correctly distributed for training and evaluation
 
-5. **Robust Error Handling**: Better error detection and recovery for network issues, authentication problems, and file operations.
+5. **Robust Error Handling**:
+
+   - Better error detection and recovery for network issues, authentication problems, and file operations
+   - Properly handles 404 errors when attempting to delete files that don't exist
+   - Improved file ID caching with automatic cache clearing to ensure latest versions are always used
 
 6. **Memory Optimization**: Files are processed in chunks to minimize memory usage, making it suitable for large datasets.
 
@@ -120,6 +128,34 @@ python main_api.py \
     --mode process \
     --dataset_config config/dataset_config.json \
     --datasets code_alpaca mbpp humaneval \
+    --streaming \
+    --no_cache \
+    --use_drive_api \
+    --credentials_path credentials.json \
+    --drive_base_dir DeepseekCoder \
+    --headless
+```
+
+### Process Multiple Programming Languages
+
+```bash
+# Process specific languages
+python main_api.py \
+    --mode process \
+    --dataset_config config/dataset_config.json \
+    --datasets the_stack_python the_stack_java codesearchnet_javascript \
+    --streaming \
+    --no_cache \
+    --use_drive_api \
+    --credentials_path credentials.json \
+    --drive_base_dir DeepseekCoder \
+    --headless
+
+# Process all available languages at once
+python main_api.py \
+    --mode process \
+    --dataset_config config/dataset_config.json \
+    --datasets the_stack_all codesearchnet_all \
     --streaming \
     --no_cache \
     --use_drive_api \

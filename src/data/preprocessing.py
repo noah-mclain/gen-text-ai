@@ -110,6 +110,9 @@ class DataPreprocessor:
             # Filter dataset by language if specified
             if "language" in dataset.column_names:
                 dataset = dataset.filter(lambda x: x["language"].lower() == language.lower())
+                if isinstance(dataset, Dataset) and len(dataset) == 0:
+                    logger.warning(f"No samples found for language {language}. Check if the language name is correct.")
+                    return dataset
         else:
             logger.info("Processing CodeSearchNet dataset for all languages...")
         
@@ -198,10 +201,9 @@ class DataPreprocessor:
                     batched=True,
                     batch_size=20  # Smaller batch size
                 )
-            except Exception as backup_error:
-                logger.error(f"Backup processing also failed: {backup_error}")
-                # Return an empty processed dataset to prevent pipeline failure
-                return {"processed_text": [], "length": []}
+            except Exception as e2:
+                logger.error(f"Failed second attempt to process CodeSearchNet: {e2}")
+                return dataset  # Return original dataset if processing fails
     
     def process_code_alpaca(self, dataset: Union[Dataset, DatasetDict],
                            streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -649,46 +651,57 @@ class DataPreprocessor:
         
         # Filter for permissive licenses
         permissive_licenses = ["mit", "apache-2.0", "bsd-3-clause", "bsd-2-clause", "cc0-1.0", "isc"]
-        filtered_dataset = dataset.filter(lambda x: x.get("license", "").lower() in permissive_licenses)
-        
-        # Filter by language if specified
-        if language and "lang" in filtered_dataset.column_names:
-            filtered_dataset = filtered_dataset.filter(lambda x: x["lang"].lower() == language.lower())
-        
-        def process_sample(examples):
-            languages = []
-            
-            # Try to get language information
-            if "lang" in examples:
-                languages = examples["lang"]
-            
-            # Generate synthetic prompts with language-specific text if available
-            if len(languages) > 0:
-                prompts = [f"# Implement a function in {lang}" for lang in languages]
-            else:
-                # Default to generic prompt if language info isn't available
-                prompts = [f"# Implement a function" for _ in examples["content"]]
-                
-            return self.common_preprocessing(
-                {"prompt": prompts, "completion": examples["content"]},
-                "prompt", "completion",
-                streaming=streaming
-            )
         
         try:
-            return filtered_dataset.map(
-                process_sample,
-                batched=True,
-                remove_columns=filtered_dataset.column_names if not streaming else None,
-                batch_size=100 if streaming else None
-            )
+            filtered_dataset = dataset.filter(lambda x: x.get("license", "").lower() in permissive_licenses)
+            
+            # Filter by language if specified
+            if language and "lang" in filtered_dataset.column_names:
+                logger.info(f"Filtering The Stack dataset to include only {language} files")
+                filtered_dataset = filtered_dataset.filter(lambda x: x["lang"].lower() == language.lower())
+                
+            # Handle case where language filtering results in empty dataset
+            if isinstance(filtered_dataset, Dataset) and len(filtered_dataset) == 0:
+                logger.warning(f"No samples found for language {language}. Check if the language name is correct.")
+                return filtered_dataset
+                
+            def process_sample(examples):
+                languages = []
+                
+                # Try to get language information
+                if "lang" in examples:
+                    languages = examples["lang"]
+                
+                # Generate synthetic prompts with language-specific text if available
+                if len(languages) > 0:
+                    prompts = [f"# Implement a function in {lang}" for lang in languages]
+                else:
+                    # Default to generic prompt if language info isn't available
+                    prompts = [f"# Implement a function" for _ in examples["content"]]
+                    
+                return self.common_preprocessing(
+                    {"prompt": prompts, "completion": examples["content"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                )
+            
+            try:
+                return filtered_dataset.map(
+                    process_sample,
+                    batched=True,
+                    remove_columns=filtered_dataset.column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error removing columns in streaming mode: {e}")
+                return filtered_dataset.map(
+                    process_sample,
+                    batched=True,
+                    batch_size=100 if streaming else None
+                )
         except Exception as e:
-            logger.warning(f"Error removing columns in streaming mode: {e}")
-            return filtered_dataset.map(
-                process_sample,
-                batched=True,
-                batch_size=100 if streaming else None
-            )
+            logger.error(f"Error processing The Stack dataset: {str(e)}")
+            return dataset  # Return original dataset if processing fails
     
     def process_humaneval(self, dataset: Union[Dataset, DatasetDict],
                          streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -809,7 +822,8 @@ class DataPreprocessor:
                             split=config.get("split"),
                             streaming=streaming,
                             token=hf_token,  # New parameter name
-                            trust_remote_code=True
+                            trust_remote_code=True,
+                            data_dir=config.get("data_dir")  # Added data_dir parameter for The Stack
                         )
                     except TypeError as e:
                         # If the newer parameter didn't work, fall back to the older one
@@ -821,7 +835,8 @@ class DataPreprocessor:
                                 split=config.get("split"),
                                 streaming=streaming,
                                 use_auth_token=hf_token,  # Old parameter name
-                                trust_remote_code=True
+                                trust_remote_code=True,
+                                data_dir=config.get("data_dir")  # Added data_dir parameter for The Stack
                             )
                         else:
                             raise

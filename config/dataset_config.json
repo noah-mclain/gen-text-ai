@@ -1,9 +1,46 @@
 {
-  "codesearchnet": {
+  "codesearchnet_python": {
     "path": "code-search-net/code_search_net",
     "processor": "codesearchnet",
     "split": "train",
     "language": "python"
+  },
+  "codesearchnet_java": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "java"
+  },
+  "codesearchnet_javascript": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "javascript"
+  },
+  "codesearchnet_php": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "php"
+  },
+  "codesearchnet_ruby": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "ruby"
+  },
+  "codesearchnet_go": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "go"
+  },
+  "codesearchnet_all": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "languages": ["python", "java", "javascript", "php", "ruby", "go"],
+    "enabled": true
   },
   "code_alpaca": {
     "path": "sahil2801/CodeAlpaca-20k",
@@ -33,10 +70,80 @@
   },
   "the_stack_python": {
     "path": "bigcode/the-stack",
-    "name": "data",
+    "data_dir": "data/python",
     "processor": "the_stack",
     "split": "train",
     "language": "python",
+    "enabled": true
+  },
+  "the_stack_java": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/java",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "java",
+    "enabled": true
+  },
+  "the_stack_javascript": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/javascript",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "javascript",
+    "enabled": true
+  },
+  "the_stack_php": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/php",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "php",
+    "enabled": true
+  },
+  "the_stack_ruby": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/ruby",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "ruby",
+    "enabled": true
+  },
+  "the_stack_go": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/go",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "go",
+    "enabled": true
+  },
+  "the_stack_c": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/c",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "c",
+    "enabled": true
+  },
+  "the_stack_cpp": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/cpp",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "cpp",
+    "enabled": true
+  },
+  "the_stack_csharp": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/csharp",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "csharp",
+    "enabled": true
+  },
+  "the_stack_all": {
+    "path": "bigcode/the-stack",
+    "processor": "the_stack",
+    "split": "train",
     "enabled": true
   },
   "humaneval": {

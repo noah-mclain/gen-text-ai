@@ -55,6 +55,7 @@ pip install -r requirements.txt
   - Added robust whitespace handling (strip leading/trailing spaces and newlines)
   - Improved filtering of null, empty, or too-short samples
   - Ensured consistent UTF-8 encoding for all datasets
+  - Added multi-language support for CodeSearchNet and The Stack datasets (Python, Java, JavaScript, PHP, Ruby, Go, C++, C, C#)
 
 - **Improved Training Process**:
 
@@ -67,11 +68,15 @@ pip install -r requirements.txt
   - Corrected dataset paths for CodeSearchNet (`code-search-net/code_search_net`), HumanEval (`openai/openai_humaneval`), and other datasets
   - Added robust error handling for missing or empty datasets
   - Added 'enabled' flag support in dataset configuration to selectively process datasets
+  - Fixed the configuration for The Stack dataset by using correct data_dir parameter instead of name parameter
+  - Improved language-specific handling in dataset processors
 
 - **Enhanced Google Drive Integration**:
 
   - Fixed duplicate directory creation in Google Drive
   - Added automatic overwriting of existing files and folders to prevent duplicates
+  - Improved file ID caching and clearing to ensure latest versions are accessed
+  - Added proper error handling for 404 errors when files don't exist during deletion attempts
   - Improved logging for better troubleshooting
   - Added proper error handling for authentication and file operations
 
@@ -188,17 +193,56 @@ Edit `config/dataset_config.json` to configure datasets for preprocessing. Examp
 
 ```json
 {
-  "codesearchnet": {
-    "path": "code-search-net",
+  "codesearchnet_python": {
+    "path": "code-search-net/code_search_net",
     "processor": "codesearchnet",
-    "split": "train"
+    "split": "train",
+    "language": "python"
+  },
+  "codesearchnet_all": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "languages": ["python", "java", "javascript", "php", "ruby", "go"],
+    "enabled": true
   },
   "mbpp": {
     "path": "mbpp",
     "processor": "mbpp",
     "split": "train"
+  },
+  "the_stack_python": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/python",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "python",
+    "enabled": true
+  },
+  "the_stack_all": {
+    "path": "bigcode/the-stack",
+    "processor": "the_stack",
+    "split": "train",
+    "enabled": true
   }
 }
+```
+
+Available language options:
+
+- **CodeSearchNet**: python, java, javascript, php, ruby, go
+- **The Stack**: python, java, javascript, php, ruby, go, c, cpp (c++), csharp (c#), and many more
+
+Process single language datasets:
+
+```bash
+python main.py --mode process --datasets the_stack_python codesearchnet_java
+```
+
+Process all languages:
+
+```bash
+python main.py --mode process --datasets the_stack_all codesearchnet_all
 ```
 
 ### Training Configuration
