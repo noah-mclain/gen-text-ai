@@ -133,9 +133,20 @@ python -m src.evaluation.evaluate \
   --base_model deepseek-ai/deepseek-coder-6.7b-base \
   --eval_humaneval \
   --eval_mbpp \
+  --eval_ds1000 \
   --eval_code_quality \
   --eval_runtime \
   --eval_semantic
+```
+
+Evaluate with DS-1000 data science benchmark on specific libraries:
+
+```bash
+python -m src.evaluation.evaluate \
+  --model_path models/deepseek-coder-finetune \
+  --base_model deepseek-ai/deepseek-coder-6.7b-base \
+  --eval_ds1000 \
+  --ds1000_libraries numpy pandas sklearn
 ```
 
 Evaluate with custom prompts:
@@ -207,6 +218,13 @@ Our pipeline supports a comprehensive set of evaluation metrics for code generat
 
 - **Pass@k**: Standard pass rate metrics for HumanEval and MBPP (pass@1, pass@5, pass@10)
 - **Tests Passed Rate**: Proportion of test cases passed
+
+### Data Science Benchmarking
+
+- **DS-1000**: Natural and reliable benchmark for evaluating data science code generation across 7 libraries:
+  - NumPy, Pandas, TensorFlow, PyTorch, Matplotlib, SciPy, and scikit-learn
+  - Evaluates model's ability to solve real-world data science tasks
+  - Measures both correctness and execution efficiency
 
 ### Code Quality Metrics
 

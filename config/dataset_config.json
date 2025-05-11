@@ -24,7 +24,7 @@
   "ds1000": {
     "path": "Salesforce/DS-1000",
     "processor": "ds1000",
-    "enabled": true
+    "enabled": false
   },
   "codeparrot": {
     "path": "codeparrot/codeparrot-clean",

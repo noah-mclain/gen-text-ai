@@ -41,6 +41,7 @@ DATASETS="code_alpaca mbpp codeparrot humaneval"
 BASE_MODEL="deepseek-ai/deepseek-coder-6.7b-base"
 MODEL_PATH="models/deepseek-coder-finetune"
 SKIP_INSTALL=false
+DS1000_LIBS=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -92,6 +93,14 @@ while [[ $# -gt 0 ]]; do
     --skip-install)
       SKIP_INSTALL=true
       shift
+      ;;
+    --ds1000-libs)
+      shift
+      DS1000_LIBS=""
+      while [[ $# -gt 0 && ! $1 =~ ^-- ]]; do
+        DS1000_LIBS="$DS1000_LIBS $1"
+        shift
+      done
       ;;
     *)
       echo -e "${YELLOW}Unknown option: $1 (ignoring)${NC}"
@@ -192,6 +201,14 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "evaluate" ]; then
   echo -e "${BLUE}============================${NC}"
   
   eval_cmd="python main_api.py --mode evaluate --model_path $MODEL_PATH --base_model $BASE_MODEL"
+  
+  # Add DS-1000 libraries if specified
+  if [ -n "$DS1000_LIBS" ]; then
+    echo -e "${GREEN}Using DS-1000 benchmark with libraries: $DS1000_LIBS${NC}"
+    eval_cmd="$eval_cmd --ds1000_libraries $DS1000_LIBS"
+  else
+    echo -e "${GREEN}Using DS-1000 benchmark with all libraries${NC}"
+  fi
   
   if [ "$USE_DRIVE_API" = "true" ]; then
     eval_cmd="$eval_cmd --use_drive_api --credentials_path $CREDENTIALS_PATH --drive_base_dir $DRIVE_BASE_DIR --headless"

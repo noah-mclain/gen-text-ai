@@ -142,6 +142,20 @@ python main_api.py \
     --headless
 ```
 
+For data science evaluation with specific libraries in DS-1000:
+
+```bash
+python main_api.py \
+    --mode evaluate \
+    --model_path models/deepseek-coder-finetune \
+    --base_model deepseek-ai/deepseek-coder-6.7b-base \
+    --ds1000_libraries numpy pandas matplotlib \
+    --use_drive_api \
+    --credentials_path credentials.json \
+    --drive_base_dir DeepseekCoder \
+    --headless
+```
+
 ### Run the Complete Pipeline
 
 For convenience, we've provided a script that runs the entire pipeline with headless mode enabled:
@@ -155,6 +169,18 @@ The script automatically:
 1. Sets up the proper Python path
 2. Authenticates with Google Drive
 3. Runs the complete pipeline with all necessary flags
+
+You can customize the script's behavior with command-line arguments:
+
+```bash
+./scripts/run_paperspace.sh --mode all --datasets code_alpaca mbpp humaneval
+```
+
+To use specific libraries for the DS-1000 benchmark:
+
+```bash
+./scripts/run_paperspace.sh --mode evaluate --ds1000-libs numpy pandas matplotlib
+```
 
 ## Accessing Your Files on Google Drive
 

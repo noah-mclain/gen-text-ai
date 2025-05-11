@@ -10,6 +10,9 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.drive_utils import mount_google_drive, setup_drive_directories, get_drive_path
 
+# Import DS-1000 benchmark
+from ds1000_benchmark import evaluate_model_on_ds1000
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,10 @@ def main():
                         help="Evaluate on HumanEval benchmark")
     parser.add_argument("--eval_mbpp", action="store_true",
                         help="Evaluate on MBPP benchmark")
+    parser.add_argument("--eval_ds1000", action="store_true",
+                        help="Evaluate on DS-1000 data science benchmark")
+    parser.add_argument("--ds1000_libraries", nargs="+", default=None,
+                        help="Specific libraries to evaluate for DS-1000 (e.g., numpy pandas sklearn)")
     parser.add_argument("--eval_code_quality", action="store_true",
                         help="Evaluate code quality metrics (complexity, linting)")
     parser.add_argument("--eval_runtime", action="store_true",
@@ -65,6 +72,7 @@ def main():
     if args.eval_all:
         args.eval_humaneval = True
         args.eval_mbpp = True
+        args.eval_ds1000 = True
         args.eval_code_quality = True
         args.eval_runtime = True
         args.eval_semantic = True
@@ -112,6 +120,25 @@ def main():
         mbpp_results = evaluator.evaluate_mbpp(output_path=mbpp_output)
         results["mbpp"] = mbpp_results
     
+    # Evaluate on DS-1000
+    if args.eval_ds1000:
+        logger.info("Evaluating on DS-1000 benchmark")
+        ds1000_output_dir = os.path.join(args.output_dir, "ds1000")
+        try:
+            ds1000_results = evaluate_model_on_ds1000(
+                model=evaluator.model,
+                tokenizer=evaluator.tokenizer,
+                output_dir=ds1000_output_dir,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                libraries=args.ds1000_libraries
+            )
+            results["ds1000"] = ds1000_results
+        except Exception as e:
+            logger.error(f"Error evaluating on DS-1000: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
     # Evaluate on custom prompts
     if args.custom_prompts:
         logger.info(f"Evaluating on custom prompts from {args.custom_prompts}")
@@ -130,6 +157,8 @@ def main():
         "evaluation_types": {
             "humaneval": args.eval_humaneval,
             "mbpp": args.eval_mbpp,
+            "ds1000": args.eval_ds1000,
+            "ds1000_libraries": args.ds1000_libraries,
             "code_quality": args.eval_code_quality,
             "runtime": args.eval_runtime,
             "semantic": args.eval_semantic,

@@ -89,7 +89,7 @@ def train_model(config_path, data_dir, use_drive_api=False, credentials_path=Non
 def evaluate_model(model_path, base_model, output_dir="results", 
                  use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
     """Evaluate the model."""
-    cmd = f"python -m src.evaluation.evaluate --model_path {model_path} --base_model {base_model} --output_dir {output_dir} --eval_humaneval --eval_mbpp"
+    cmd = f"python -m src.evaluation.evaluate --model_path {model_path} --base_model {base_model} --output_dir {output_dir} --eval_humaneval --eval_mbpp --eval_ds1000"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"

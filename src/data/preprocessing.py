@@ -117,16 +117,45 @@ class DataPreprocessor:
             elif "docstring" in examples and "function" in examples:
                 docstrings = examples["docstring"]
                 code_snippets = examples["function"]
+            elif "func_documentation_string" in examples and "func_code_string" in examples:
+                docstrings = examples["func_documentation_string"]
+                code_snippets = examples["func_code_string"]
             else:
                 # Fallback: create simple prompts
                 if has_language:
                     docstrings = [f"Write a {lang} function" for lang in languages]
                 else:
-                    docstrings = ["Write a function" for _ in range(len(examples.get("code", examples.get("function", []))))]
-                code_snippets = examples.get("code", examples.get("function", []))
+                    # Match the length of the first available field
+                    length = 0
+                    for field in ["code", "function", "func_code_string", "whole_func_string"]:
+                        if field in examples and isinstance(examples[field], list):
+                            length = len(examples[field])
+                            break
+                    
+                    if length == 0:
+                        # No valid data found
+                        return {"processed_text": [], "length": []}
+                        
+                    docstrings = ["Write a function" for _ in range(length)]
+                    
+                # Find the code in the available fields
+                for field in ["code", "function", "func_code_string", "whole_func_string"]:
+                    if field in examples and isinstance(examples[field], list) and len(examples[field]) > 0:
+                        code_snippets = examples[field]
+                        break
+            
+            # Ensure we have matching lengths
+            min_len = min(len(docstrings), len(code_snippets))
+            if min_len == 0:
+                # Handle empty data
+                return {"processed_text": [], "length": []}
+                
+            docstrings = docstrings[:min_len]
+            code_snippets = code_snippets[:min_len]
             
             # Create language-specific prompts if language information is available
-            if has_language:
+            if has_language and len(languages) >= min_len:
+                languages = languages[:min_len]  # Ensure languages matches the length
                 prompts = [f"'''{doc}'''\n# Write a {lang} function" 
                           for doc, lang in zip(docstrings, languages)]
             else:
@@ -146,12 +175,18 @@ class DataPreprocessor:
                 batch_size=100 if streaming else None
             )
         except Exception as e:
-            logger.warning(f"Error removing columns in streaming mode: {e}")
-            return dataset.map(
-                process_sample,
-                batched=True,
-                batch_size=100 if streaming else None
-            )
+            logger.warning(f"Error processing CodeSearchNet: {e}")
+            try:
+                # Try a simpler approach with smaller batch size
+                return dataset.map(
+                    process_sample,
+                    batched=True,
+                    batch_size=20  # Smaller batch size
+                )
+            except Exception as backup_error:
+                logger.error(f"Backup processing also failed: {backup_error}")
+                # Return an empty processed dataset to prevent pipeline failure
+                return {"processed_text": [], "length": []}
     
     def process_code_alpaca(self, dataset: Union[Dataset, DatasetDict],
                            streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -255,7 +290,10 @@ class DataPreprocessor:
             completions = []
             
             # Try to extract from common field names
-            if "instruction" in examples and "output" in examples:
+            if "problem" in examples and "solution" in examples:
+                prompts = examples["problem"]
+                completions = examples["solution"]
+            elif "instruction" in examples and "output" in examples:
                 prompts = examples["instruction"]
                 completions = examples["output"]
             elif "instructions" in examples and "response" in examples:
@@ -286,22 +324,44 @@ class DataPreprocessor:
             if not prompts or not completions:
                 # Fallback: try to find any text fields to use
                 for key in examples:
-                    if "prompt" in key.lower() or "instruction" in key.lower() or "input" in key.lower():
+                    if "prompt" in key.lower() or "instruction" in key.lower() or "input" in key.lower() or "problem" in key.lower():
                         prompts = examples[key]
                         break
                         
                 for key in examples:
-                    if "completion" in key.lower() or "response" in key.lower() or "output" in key.lower() or "answer" in key.lower():
+                    if "completion" in key.lower() or "response" in key.lower() or "output" in key.lower() or "answer" in key.lower() or "solution" in key.lower():
                         completions = examples[key]
                         break
             
+            # If we still didn't find anything, check if Magicoder format
+            if not prompts and not completions and isinstance(examples, dict):
+                if all(key in examples for key in ["lang", "problem", "solution"]):
+                    # This appears to be Magicoder format
+                    prompts = examples["problem"] 
+                    completions = examples["solution"]
+            
             # Ensure we have matching lengths
-            min_len = min(len(prompts), len(completions))
+            min_len = min(len(prompts) if prompts else 0, len(completions) if completions else 0)
+            if min_len == 0:
+                # Handle empty data
+                return {"processed_text": [], "length": []}
+                
             prompts = prompts[:min_len]
             completions = completions[:min_len]
             
+            # For InstructCode data, ensure we have valid strings
+            valid_prompts = []
+            valid_completions = []
+            for i in range(min_len):
+                if prompts[i] and completions[i] and isinstance(prompts[i], str) and isinstance(completions[i], str):
+                    valid_prompts.append(prompts[i])
+                    valid_completions.append(completions[i])
+            
+            if not valid_prompts or not valid_completions:
+                return {"processed_text": [], "length": []}
+            
             return self.common_preprocessing(
-                {"prompt": prompts, "completion": completions},
+                {"prompt": valid_prompts, "completion": valid_completions},
                 "prompt", "completion",
                 streaming=streaming
             )
@@ -314,12 +374,18 @@ class DataPreprocessor:
                 batch_size=100 if streaming else None
             )
         except Exception as e:
-            logger.warning(f"Error removing columns in streaming mode: {e}")
-            return dataset.map(
-                process_sample,
-                batched=True,
-                batch_size=100 if streaming else None
-            )
+            logger.warning(f"Error processing InstructCode: {e}")
+            try:
+                # Try a simpler approach with smaller batch size
+                return dataset.map(
+                    process_sample,
+                    batched=True,
+                    batch_size=20  # Smaller batch size
+                )
+            except Exception as backup_error:
+                logger.error(f"Backup processing also failed: {backup_error}")
+                # Return an empty processed dataset to prevent pipeline failure
+                return {"processed_text": [], "length": []}
     
     def process_mbpp(self, dataset: Union[Dataset, DatasetDict],
                     streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -811,7 +877,7 @@ class DataPreprocessor:
                                 break
                             
                             try:
-                                if "processed_text" in example and "length" in example:
+                                if isinstance(example, dict) and "processed_text" in example and "length" in example:
                                     collected_data["processed_text"].append(example["processed_text"])
                                     collected_data["length"].append(example["length"])
                                     count += 1
@@ -823,21 +889,57 @@ class DataPreprocessor:
                                     break
                     else:
                         # For regular streaming datasets
-                        for example in processed_dataset:
-                            if count >= max_samples:
-                                break
-                                
-                            try:
-                                if "processed_text" in example and "length" in example:
-                                    collected_data["processed_text"].append(example["processed_text"])
-                                    collected_data["length"].append(example["length"])
-                                    count += 1
-                            except Exception as e:
-                                logger.warning(f"Error collecting example: {e}")
-                                errors += 1
-                                if errors > 100:
-                                    logger.error("Too many errors, stopping collection")
+                        try:
+                            # Iterate with protection against malformed data
+                            for example in processed_dataset:
+                                if count >= max_samples:
                                     break
+                                    
+                                try:
+                                    # Verify the example has the expected structure before indexing
+                                    if isinstance(example, dict) and "processed_text" in example and "length" in example:
+                                        # Ensure the processed_text field is actually a string
+                                        if example["processed_text"] and isinstance(example["processed_text"], str):
+                                            collected_data["processed_text"].append(example["processed_text"])
+                                            collected_data["length"].append(example["length"])
+                                            count += 1
+                                        else:
+                                            logger.warning(f"Skipping example with empty or non-string processed_text field")
+                                    else:
+                                        # Skip examples with unexpected structure
+                                        logger.warning(f"Skipping example with unexpected structure: {example.keys() if isinstance(example, dict) else type(example)}")
+                                except Exception as e:
+                                    logger.warning(f"Error processing example: {e}")
+                                    errors += 1
+                                    if errors > 100:
+                                        logger.error("Too many errors during collection, stopping")
+                                        break
+                        except Exception as e:
+                            logger.error(f"Error during dataset iteration: {e}")
+                            # If iteration fails entirely, try a backup method
+                            logger.info("Trying alternative collection method...")
+                            
+                            # Force materialization with a smaller batch size that might work
+                            try:
+                                # Try to fetch just a few examples for safer processing
+                                examples = []
+                                iterator = iter(processed_dataset)
+                                for _ in range(min(100, max_samples)):
+                                    try:
+                                        examples.append(next(iterator))
+                                    except StopIteration:
+                                        break
+                                    except Exception:
+                                        continue
+                                
+                                # Process the successfully collected examples
+                                for example in examples:
+                                    if isinstance(example, dict) and "processed_text" in example and "length" in example:
+                                        collected_data["processed_text"].append(example["processed_text"])
+                                        collected_data["length"].append(example["length"])
+                                        count += 1
+                            except Exception as backup_error:
+                                logger.error(f"Backup collection method also failed: {backup_error}")
                     
                     if count == 0:
                         logger.error(f"No examples could be collected for {dataset_name}")
