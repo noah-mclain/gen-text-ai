@@ -56,7 +56,7 @@ def run_command(command, description=None):
         return False
 
 def process_datasets(config_path, datasets=None, streaming=False, no_cache=False, 
-                    use_drive_api=False, credentials_path=None, drive_base_dir=None):
+                    use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
     """Process datasets for fine-tuning."""
     cmd = f"python -m src.data.process_datasets --config {config_path}"
     if datasets:
@@ -70,35 +70,43 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
+        if headless:
+            cmd += " --headless"
     
     return run_command(cmd, "Processing datasets")
 
-def train_model(config_path, data_dir, use_drive_api=False, credentials_path=None, drive_base_dir=None):
+def train_model(config_path, data_dir, use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
     """Train the model."""
     cmd = f"python -m src.training.train --config {config_path} --data_dir {data_dir}"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
+        if headless:
+            cmd += " --headless"
     
     return run_command(cmd, "Training model")
 
 def evaluate_model(model_path, base_model, output_dir="results", 
-                 use_drive_api=False, credentials_path=None, drive_base_dir=None):
+                 use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
     """Evaluate the model."""
     cmd = f"python -m src.evaluation.evaluate --model_path {model_path} --base_model {base_model} --output_dir {output_dir} --eval_humaneval --eval_mbpp"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
+        if headless:
+            cmd += " --headless"
     
     return run_command(cmd, "Evaluating model")
 
 def visualize_results(training_log, results_dir, output_dir="visualizations", 
-                     use_drive_api=False, credentials_path=None, drive_base_dir=None):
+                     use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
     """Visualize results."""
     cmd = f"python -m src.utils.visualize --training_log {training_log} --results_dir {results_dir} --output_dir {output_dir}"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
+        if headless:
+            cmd += " --headless"
     
     return run_command(cmd, "Visualizing results")
 
@@ -173,7 +181,8 @@ def main():
             no_cache=args.no_cache,
             use_drive_api=args.use_drive_api, 
             credentials_path=args.credentials_path, 
-            drive_base_dir=args.drive_base_dir
+            drive_base_dir=args.drive_base_dir,
+            headless=args.headless
         ):
             logger.error("Dataset processing failed")
             if args.mode != "all":
@@ -185,7 +194,8 @@ def main():
             "data/processed",
             use_drive_api=args.use_drive_api, 
             credentials_path=args.credentials_path, 
-            drive_base_dir=args.drive_base_dir
+            drive_base_dir=args.drive_base_dir,
+            headless=args.headless
         ):
             logger.error("Training failed")
             if args.mode != "all":
@@ -210,7 +220,8 @@ def main():
             base_model,
             use_drive_api=args.use_drive_api, 
             credentials_path=args.credentials_path, 
-            drive_base_dir=args.drive_base_dir
+            drive_base_dir=args.drive_base_dir,
+            headless=args.headless
         ):
             logger.error("Evaluation failed")
             if args.mode != "all":
@@ -228,7 +239,8 @@ def main():
             "results", 
             use_drive_api=args.use_drive_api,
             credentials_path=args.credentials_path, 
-            drive_base_dir=args.drive_base_dir
+            drive_base_dir=args.drive_base_dir,
+            headless=args.headless
         ):
             logger.error("Visualization failed")
             return
