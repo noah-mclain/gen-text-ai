@@ -5,6 +5,7 @@ import logging
 from typing import Dict, List, Optional, Union, Callable
 from datasets import load_dataset, Dataset, DatasetDict
 from transformers import AutoTokenizer
+from itertools import islice
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -109,7 +110,7 @@ class DataPreprocessor:
         if language:
             logger.info(f"Processing CodeSearchNet dataset for {language}...")
             # Filter dataset by language if specified
-            if "language" in dataset.column_names:
+            if hasattr(dataset, "column_names") and "language" in dataset.column_names:
                 dataset = dataset.filter(lambda x: x["language"].lower() == language.lower())
                 if isinstance(dataset, Dataset) and len(dataset) == 0:
                     logger.warning(f"No samples found for language {language}. Check if the language name is correct.")
@@ -117,64 +118,78 @@ class DataPreprocessor:
         else:
             logger.info("Processing CodeSearchNet dataset for all languages...")
         
+        # For streaming mode, process examples one at a time to avoid issues
+        if streaming:
+            processed_examples = []
+            count = 0
+            max_examples = 10000  # Limit to prevent processing too many examples
+            
+            # Process each example individually
+            for example in dataset:
+                if count >= max_examples:
+                    break
+                    
+                try:
+                    # Extract docstring and code
+                    doc = example.get("func_documentation_string", "")
+                    code = example.get("func_code_string", "")
+                    lang = example.get("language", "")
+                    
+                    # Skip if missing required fields
+                    if not doc or not code:
+                        continue
+                    
+                    # Create a prompt with language information if available
+                    if lang:
+                        prompt = f"'''{doc}'''\n# Write a {lang} function"
+                    else:
+                        prompt = f"'''{doc}'''\n# Write a function"
+                    
+                    processed = self.common_preprocessing(
+                        {"prompt": prompt, "completion": code},
+                        "prompt", "completion",
+                        streaming=True
+                    )
+                    processed_examples.append(processed)
+                    count += 1
+                except Exception as e:
+                    logger.warning(f"Error processing example: {e}")
+                    continue
+            
+            return processed_examples
+        
+        # For non-streaming mode
         def process_sample(examples):
             # Handle different field names depending on the dataset structure
-            docstrings = []
-            code_snippets = []
+            if not isinstance(examples, dict):
+                logger.warning(f"Expected dictionary, got {type(examples)}")
+                return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                
+            # Extract relevant fields
+            docstrings = examples.get("func_documentation_string", [])
+            code_snippets = examples.get("func_code_string", [])
             languages = examples.get("language", [])
-            has_language = len(languages) > 0
             
-            # Try to extract the docstring and code from various field structures
-            if "function" in examples and isinstance(examples["function"], list):
-                for i, item in enumerate(examples["function"]):
-                    if isinstance(item, dict):
-                        docstrings.append(item.get("docstring", ""))
-                        code_snippets.append(item.get("function", ""))
-            elif "docstring" in examples and "code" in examples:
-                docstrings = examples["docstring"]
-                code_snippets = examples["code"]
-            elif "docstring" in examples and "function" in examples:
-                docstrings = examples["docstring"]
-                code_snippets = examples["function"]
-            elif "func_documentation_string" in examples and "func_code_string" in examples:
-                docstrings = examples["func_documentation_string"]
-                code_snippets = examples["func_code_string"]
-            else:
-                # Fallback: create simple prompts
-                if has_language:
-                    docstrings = [f"Write a {lang} function" for lang in languages]
-                else:
-                    # Match the length of the first available field
-                    length = 0
-                    for field in ["code", "function", "func_code_string", "whole_func_string"]:
-                        if field in examples and isinstance(examples[field], list):
-                            length = len(examples[field])
-                            break
-                    
-                    if length == 0:
-                        # No valid data found
-                        return {"processed_text": [], "length": []}
-                        
-                    docstrings = ["Write a function" for _ in range(length)]
-                    
-                # Find the code in the available fields
-                for field in ["code", "function", "func_code_string", "whole_func_string"]:
-                    if field in examples and isinstance(examples[field], list) and len(examples[field]) > 0:
-                        code_snippets = examples[field]
-                        break
-            
+            # Ensure all fields are lists
+            if not isinstance(docstrings, list):
+                docstrings = [docstrings]
+            if not isinstance(code_snippets, list):
+                code_snippets = [code_snippets]
+            if not isinstance(languages, list):
+                languages = [languages]
+                
             # Ensure we have matching lengths
             min_len = min(len(docstrings), len(code_snippets))
             if min_len == 0:
-                # Handle empty data
-                return {"processed_text": [], "length": []}
-                
+                return {"processed_text": [], "length": [], "duplicates_removed": 0}
+            
+            # Truncate to matching length
             docstrings = docstrings[:min_len]
             code_snippets = code_snippets[:min_len]
             
             # Create language-specific prompts if language information is available
-            if has_language and len(languages) >= min_len:
-                languages = languages[:min_len]  # Ensure languages matches the length
+            if len(languages) >= min_len:
+                languages = languages[:min_len]
                 prompts = [f"'''{doc}'''\n# Write a {lang} function" 
                           for doc, lang in zip(docstrings, languages)]
             else:
@@ -406,17 +421,19 @@ class DataPreprocessor:
                 return {"processed_text": [], "length": []}
     
     def process_mbpp(self, dataset: Union[Dataset, DatasetDict],
-                    streaming: bool = False) -> Union[Dataset, DatasetDict]:
+                     streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process MBPP dataset."""
         logger.info("Processing MBPP dataset...")
         
         # For streaming mode, process one example at a time to avoid issues
         if streaming:
             processed_examples = []
+            count = 0
+            max_examples = 10000  # Limit to prevent processing too many examples
             
             # Process each example individually
-            for i, example in enumerate(dataset):
-                if i >= 10000:  # Limit to prevent processing too many examples
+            for example in dataset:
+                if count >= max_examples:
                     break
                     
                 try:
@@ -443,25 +460,35 @@ class DataPreprocessor:
                     
                     # Skip if missing required fields
                     if not prompt or not code:
-                        logger.warning(f"Skipping example {i}, missing fields")
+                        logger.warning(f"Skipping example, missing fields")
                         continue
                         
                     processed = self.common_preprocessing(
                         {"prompt": prompt, "completion": code},
                         "prompt", "completion",
-                        streaming=streaming
+                        streaming=True
                     )
                     processed_examples.append(processed)
+                    count += 1
                 except Exception as e:
-                    logger.warning(f"Error processing example {i}: {e}")
+                    logger.warning(f"Error processing example: {e}")
                     continue
+                
+            if not processed_examples:
+                logger.warning("No valid examples processed from MBPP dataset")
                 
             return processed_examples
         else:
             # For non-streaming mode
             try:
                 # Try to determine the field names from a sample
-                sample_example = next(iter(dataset))
+                sample_items = list(islice(iter(dataset), 0, 1))
+                
+                if not sample_items:
+                    logger.warning("Empty MBPP dataset")
+                    return dataset
+                    
+                sample_example = sample_items[0]
                 
                 # Find appropriate field names
                 prompt_field = "text" 
@@ -480,28 +507,65 @@ class DataPreprocessor:
                         elif "canonical_solution" in sample_example:
                             code_field = "canonical_solution"
                 
-                return dataset.map(
-                    lambda examples: self.common_preprocessing(
-                        {"prompt": examples[prompt_field], "completion": examples[code_field]},
+                def process_sample(examples):
+                    # Ensure we have valid inputs
+                    if not isinstance(examples, dict):
+                        logger.warning(f"Expected dictionary, got {type(examples)}")
+                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                    
+                    # Get prompt and code 
+                    prompts = examples.get(prompt_field, examples.get("prompt", examples.get("problem", [])))
+                    codes = examples.get(code_field, examples.get("solution", examples.get("canonical_solution", [])))
+                    
+                    # Ensure fields are lists
+                    if not isinstance(prompts, list):
+                        prompts = [prompts]
+                    if not isinstance(codes, list):
+                        codes = [codes]
+                    
+                    # Skip empty examples
+                    min_len = min(len(prompts), len(codes))
+                    if min_len == 0:
+                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                    
+                    # Truncate to matching length
+                    prompts = prompts[:min_len]
+                    codes = codes[:min_len]
+                    
+                    return self.common_preprocessing(
+                        {"prompt": prompts, "completion": codes},
                         "prompt", "completion",
                         streaming=streaming
-                    ),
-                    batched=True,
-                    remove_columns=dataset.column_names if not streaming else None,
-                    batch_size=100 if streaming else None
-                )
+                    )
+                
+                try:
+                    # Try to get column names from dataset if available
+                    column_names = dataset.column_names if hasattr(dataset, "column_names") else None
+                    
+                    return dataset.map(
+                        process_sample,
+                        batched=True,
+                        remove_columns=column_names if not streaming else None,
+                        batch_size=100 if streaming else None
+                    )
+                except Exception as e:
+                    logger.warning(f"Error in batch processing mode: {e}")
+                    # Try with smaller batch size
+                    return dataset.map(
+                        process_sample,
+                        batched=True,
+                        batch_size=20  # Smaller batch size
+                    )
             except Exception as e:
-                logger.warning(f"Error in batch processing mode: {e}")
-                # Fallback to simple processing with expected field names
+                logger.error(f"Error processing MBPP dataset: {e}")
+                # Return a simple fallback processing
                 return dataset.map(
                     lambda examples: self.common_preprocessing(
-                        {"prompt": examples.get("text", examples.get("prompt", examples.get("problem", "Write code"))), 
-                         "completion": examples.get("code", examples.get("solution", examples.get("canonical_solution", "")))},
-                        "prompt", "completion",
+                        {"prompt": "Write Python code", "completion": str(examples)},
+                        "prompt", "completion", 
                         streaming=streaming
                     ),
-                    batched=True,
-                    batch_size=100 if streaming else None
+                    batched=True
                 )
     
     def process_ds1000(self, dataset: Union[Dataset, DatasetDict],
@@ -654,10 +718,58 @@ class DataPreprocessor:
         permissive_licenses = ["mit", "apache-2.0", "bsd-3-clause", "bsd-2-clause", "cc0-1.0", "isc"]
         
         try:
+            # For streaming mode, we need to handle one example at a time
+            if streaming:
+                processed_examples = []
+                count = 0
+                max_examples = 10000  # Limit to prevent processing too many examples
+                
+                # Process each example individually
+                for example in dataset:
+                    if count >= max_examples:
+                        break
+                        
+                    try:
+                        # Check if permissive license
+                        license_id = example.get("license", "").lower()
+                        if license_id not in permissive_licenses:
+                            continue
+                            
+                        # Check language if specified
+                        if language and example.get("lang", "").lower() != language.lower():
+                            continue
+                            
+                        # Extract code content
+                        content = example.get("content", "")
+                        if not content:
+                            continue
+                            
+                        # Create a prompt with language information if available
+                        lang = example.get("lang", "")
+                        if lang:
+                            prompt = f"# Implement a function in {lang}"
+                        else:
+                            prompt = "# Implement a function"
+                            
+                        # Process the example
+                        processed = self.common_preprocessing(
+                            {"prompt": prompt, "completion": content},
+                            "prompt", "completion",
+                            streaming=True
+                        )
+                        processed_examples.append(processed)
+                        count += 1
+                    except Exception as e:
+                        logger.warning(f"Error processing example: {e}")
+                        continue
+                
+                return processed_examples
+            
+            # For non-streaming mode, use the filter method first
             filtered_dataset = dataset.filter(lambda x: x.get("license", "").lower() in permissive_licenses)
             
             # Filter by language if specified
-            if language and "lang" in filtered_dataset.column_names:
+            if language and hasattr(filtered_dataset, "column_names") and "lang" in filtered_dataset.column_names:
                 logger.info(f"Filtering The Stack dataset to include only {language} files")
                 filtered_dataset = filtered_dataset.filter(lambda x: x["lang"].lower() == language.lower())
                 
@@ -667,21 +779,34 @@ class DataPreprocessor:
                 return filtered_dataset
                 
             def process_sample(examples):
-                languages = []
+                # Ensure we have valid inputs
+                if not isinstance(examples, dict):
+                    logger.warning(f"Expected dictionary, got {type(examples)}")
+                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
                 
-                # Try to get language information
-                if "lang" in examples:
-                    languages = examples["lang"]
+                # Get language information if available
+                languages = examples.get("lang", [])
+                content = examples.get("content", [])
                 
-                # Generate synthetic prompts with language-specific text if available
-                if len(languages) > 0:
+                # Ensure fields are lists
+                if not isinstance(languages, list):
+                    languages = [languages]
+                if not isinstance(content, list):
+                    content = [content]
+                
+                # Skip empty examples
+                if len(content) == 0:
+                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                
+                # Generate prompts with language-specific text if available
+                if len(languages) == len(content):
                     prompts = [f"# Implement a function in {lang}" for lang in languages]
                 else:
-                    # Default to generic prompt if language info isn't available
-                    prompts = [f"# Implement a function" for _ in examples["content"]]
+                    # Default to generic prompt if language info isn't available or mismatched
+                    prompts = [f"# Implement a function" for _ in content]
                     
                 return self.common_preprocessing(
-                    {"prompt": prompts, "completion": examples["content"]},
+                    {"prompt": prompts, "completion": content},
                     "prompt", "completion",
                     streaming=streaming
                 )
@@ -694,11 +819,12 @@ class DataPreprocessor:
                     batch_size=100 if streaming else None
                 )
             except Exception as e:
-                logger.warning(f"Error removing columns in streaming mode: {e}")
+                logger.warning(f"Error mapping dataset: {e}")
+                # Try with smaller batch size
                 return filtered_dataset.map(
                     process_sample,
                     batched=True,
-                    batch_size=100 if streaming else None
+                    batch_size=20  # Smaller batch size
                 )
         except Exception as e:
             logger.error(f"Error processing The Stack dataset: {str(e)}")
@@ -712,39 +838,71 @@ class DataPreprocessor:
         # For HumanEval, we need special handling for streaming mode
         if streaming:
             processed_examples = []
+            count = 0
+            max_examples = 10000  # Limit to prevent processing too many examples
             
             # Process each example individually
             for example in dataset:
-                # Handle both dictionary structure and direct access
-                if isinstance(example, dict):
-                    prompt = example.get("prompt", "")
-                    solution = example.get("canonical_solution", "")
-                    # Some versions use different field names
-                    if not solution and "test" in example:
-                        solution = example.get("test", "")
-                    if not solution and "solution" in example:
-                        solution = example.get("solution", "")
-                else:
-                    # For the case where each example is directly a string
-                    try:
-                        prompt = "Write a Python function"
-                        solution = str(example)
-                    except:
-                        logger.warning(f"Could not process example: {example}")
+                if count >= max_examples:
+                    break
+                
+                try:
+                    # Handle different field structures
+                    if isinstance(example, dict):
+                        prompt = example.get("prompt", "")
+                        solution = example.get("canonical_solution", "")
+                        
+                        # Some versions use different field names
+                        if not solution:
+                            if "test" in example:
+                                solution = example.get("test", "")
+                            elif "solution" in example:
+                                solution = example.get("solution", "")
+                            elif "entry_point" in example and "test" in example:
+                                # Combine entry point info with test
+                                entry_point = example.get("entry_point", "")
+                                test_code = example.get("test", "")
+                                solution = f"# Entry point: {entry_point}\n{test_code}"
+                    else:
+                        # For the case where each example is directly a string
+                        try:
+                            prompt = "Write a Python function"
+                            solution = str(example)
+                        except:
+                            logger.warning(f"Could not process example: {type(example)}")
+                            continue
+                    
+                    # Skip if missing required fields
+                    if not prompt or not solution:
+                        logger.warning("Skipping example with missing prompt or solution")
                         continue
-                
-                processed = self.common_preprocessing(
-                    {"prompt": prompt, "completion": solution},
-                    "prompt", "completion",
-                    streaming=streaming
-                )
-                processed_examples.append(processed)
-                
+                    
+                    processed = self.common_preprocessing(
+                        {"prompt": prompt, "completion": solution},
+                        "prompt", "completion",
+                        streaming=True
+                    )
+                    processed_examples.append(processed)
+                    count += 1
+                except Exception as e:
+                    logger.warning(f"Error processing example: {e}")
+                    continue
+            
+            if not processed_examples:
+                logger.warning("No valid examples processed from HumanEval dataset")
+            
             return processed_examples
         else:
+            # For non-streaming mode, we can use map with batch processing
             try:
-                # Determine the actual field names in the dataset
-                sample_item = next(iter(dataset))
+                # Determine the actual field names in the dataset by checking a sample
+                sample_items = list(islice(iter(dataset), 0, 1))
+                
+                if not sample_items:
+                    logger.warning("Empty HumanEval dataset")
+                    return dataset
+                    
+                sample_item = sample_items[0]
                 prompt_field = "prompt"
                 solution_field = "canonical_solution"
                 
@@ -758,18 +916,58 @@ class DataPreprocessor:
                         elif "solution" in sample_item:
                             solution_field = "solution"
                 
-                return dataset.map(
-                    lambda examples: self.common_preprocessing(
-                        {"prompt": examples[prompt_field], "completion": examples[solution_field]},
+                def process_sample(examples):
+                    # Ensure we have valid inputs
+                    if not isinstance(examples, dict):
+                        logger.warning(f"Expected dictionary, got {type(examples)}")
+                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                    
+                    # Get prompt and solution
+                    prompts = examples.get(prompt_field, [])
+                    solutions = examples.get(solution_field, [])
+                    
+                    # Ensure fields are lists
+                    if not isinstance(prompts, list):
+                        prompts = [prompts]
+                    if not isinstance(solutions, list):
+                        solutions = [solutions]
+                    
+                    # Skip empty examples
+                    min_len = min(len(prompts), len(solutions))
+                    if min_len == 0:
+                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                    
+                    # Truncate to matching length
+                    prompts = prompts[:min_len]
+                    solutions = solutions[:min_len]
+                    
+                    return self.common_preprocessing(
+                        {"prompt": prompts, "completion": solutions},
                         "prompt", "completion",
                         streaming=streaming
-                    ),
-                    batched=True,
-                    remove_columns=dataset.column_names if not streaming else None,
-                    batch_size=100 if streaming else None
-                )
+                    )
+                
+                try:
+                    # Try to get column names from dataset if available
+                    column_names = dataset.column_names if hasattr(dataset, "column_names") else None
+                    
+                    return dataset.map(
+                        process_sample,
+                        batched=True,
+                        remove_columns=column_names if not streaming else None,
+                        batch_size=100 if streaming else None
+                    )
+                except Exception as e:
+                    logger.warning(f"Error mapping HumanEval dataset: {e}")
+                    # Try with smaller batch size
+                    return dataset.map(
+                        process_sample,
+                        batched=True,
+                        batch_size=20
+                    )
             except Exception as e:
-                logger.warning(f"Error processing HumanEval: {e}")
+                logger.error(f"Error processing HumanEval dataset: {e}")
+                # Return a simple fallback processing
                 return dataset.map(
                     lambda examples: self.common_preprocessing(
                         {"prompt": "Write a Python function", "completion": str(examples)},
@@ -966,21 +1164,44 @@ class DataPreprocessor:
                                 iterator = iter(processed_dataset)
                                 for _ in range(min(100, max_samples)):
                                     try:
-                                        examples.append(next(iterator))
+                                        example = next(iterator)
+                                        # Skip non-dict or invalid examples
+                                        if not isinstance(example, dict):
+                                            continue
+                                        if "processed_text" not in example or "length" not in example:
+                                            continue
+                                        examples.append(example)
                                     except StopIteration:
                                         break
-                                    except Exception:
+                                    except TypeError as type_error:
+                                        # This is likely the 'int' has no len() error
+                                        logger.warning(f"Type error during iteration: {type_error}")
                                         continue
+                                    except Exception as ex:
+                                        logger.warning(f"Error during backup iteration: {ex}")
+                                        continue
+                                
+                                if not examples:
+                                    logger.error(f"Could not collect any valid examples for {dataset_name}")
+                                    continue
                                 
                                 # Process the successfully collected examples
                                 for example in examples:
-                                    if isinstance(example, dict) and "processed_text" in example and "length" in example:
-                                        collected_data["processed_text"].append(example["processed_text"])
-                                        collected_data["length"].append(example["length"])
-                                        # Track duplicate counts
-                                        if "duplicates_removed" in example:
-                                            total_duplicates_removed += example["duplicates_removed"]
-                                        count += 1
+                                    try:
+                                        if isinstance(example, dict) and "processed_text" in example and "length" in example:
+                                            # Ensure the processed_text is a string
+                                            if not isinstance(example["processed_text"], str):
+                                                continue
+                                                
+                                            collected_data["processed_text"].append(example["processed_text"])
+                                            collected_data["length"].append(example["length"])
+                                            # Track duplicate counts
+                                            if "duplicates_removed" in example:
+                                                total_duplicates_removed += example["duplicates_removed"]
+                                            count += 1
+                                    except Exception as ex:
+                                        logger.warning(f"Error processing example in backup method: {ex}")
+                                        continue
                             except Exception as backup_error:
                                 logger.error(f"Backup collection method also failed: {backup_error}")
                     
