@@ -2,12 +2,17 @@ import os
 import re
 import json
 import logging
-from typing import Dict, List, Optional, Union, Callable
+import traceback
+import gc
+import psutil
+import time
+from typing import Dict, List, Optional, Union, Callable, Tuple, Iterator, Any
 from datasets import load_dataset, Dataset, DatasetDict
 from transformers import AutoTokenizer
 from itertools import islice
+from tqdm import tqdm
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class DataPreprocessor:
@@ -19,14 +24,132 @@ class DataPreprocessor:
         )
         self.max_length = max_length
         self.begin_token = ""
+        self._last_memory_check = 0
+        self._memory_check_interval = 1000  # Check memory every 1000 examples
+        
+    def _check_resources(self, force: bool = False) -> Dict[str, float]:
+        """Monitor system resources and manage memory if needed."""
+        current_time = time.time()
+        
+        # Only check periodically to avoid performance impact
+        if not force and (current_time - self._last_memory_check < 60):  # Check max once per minute
+            return {}
+            
+        self._last_memory_check = current_time
+        
+        try:
+            # Get memory info
+            process = psutil.Process(os.getpid())
+            memory_info = process.memory_info()
+            system_memory = psutil.virtual_memory()
+            
+            memory_usage_mb = memory_info.rss / (1024 * 1024)
+            memory_percent = system_memory.percent
+            
+            # Log memory status
+            logger.info(f"Memory usage: {memory_usage_mb:.1f} MB ({memory_percent:.1f}% of system memory)")
+            
+            # Clean up if memory usage is too high (over 80%)
+            if memory_percent > 80:
+                logger.warning(f"High memory usage detected ({memory_percent:.1f}%). Cleaning up...")
+                gc.collect()
+                
+                # If still too high, try more aggressive cleanup
+                if psutil.virtual_memory().percent > 85:
+                    logger.warning("Memory still high after garbage collection. Taking additional measures...")
+                    
+                    # Clear tokenizer cache if available
+                    if hasattr(self.tokenizer, "cache_clear"):
+                        self.tokenizer.cache_clear()
+                    
+                    # Force Python to release memory back to OS if possible
+                    gc.collect()
+                    
+                    # Check if that helped
+                    new_memory_percent = psutil.virtual_memory().percent
+                    logger.info(f"Memory after cleanup: {new_memory_percent:.1f}%")
+            
+            return {
+                "memory_usage_mb": memory_usage_mb,
+                "memory_percent": memory_percent,
+                "available_mb": system_memory.available / (1024 * 1024)
+            }
+        except Exception as e:
+            logger.warning(f"Error checking system resources: {e}")
+            return {}
+        
+    def _safe_dataset_iterator(self, dataset: Union[Dataset, DatasetDict, List], 
+                              max_samples: int = 10000) -> Iterator[Any]:
+        """Safely iterate through a dataset with proper error handling and progress tracking."""
+        count = 0
+        errors = 0
+        max_errors = 100  # Maximum number of errors before stopping iteration
+        
+        # Create iterator with progress tracking
+        try:
+            iterator = iter(dataset)
+            with tqdm(total=min(max_samples, len(dataset) if hasattr(dataset, '__len__') else max_samples), 
+                     desc="Processing examples") as pbar:
+                while count < max_samples:
+                    try:
+                        example = next(iterator)
+                        yield example
+                        count += 1
+                        pbar.update(1)
+                        
+                        # Periodically check memory usage and collect garbage if needed
+                        if count % self._memory_check_interval == 0:
+                            # Check resources and perform cleanup if necessary
+                            self._check_resources()
+                    except StopIteration:
+                        break
+                    except Exception as e:
+                        errors += 1
+                        logger.warning(f"Error processing example: {str(e)}")
+                        if errors >= max_errors:
+                            logger.error(f"Too many errors ({errors}), stopping iteration")
+                            break
+        except Exception as e:
+            logger.error(f"Failed to create iterator: {str(e)}")
+            # Return empty generator
+            return
+            yield from []
         
     def common_preprocessing(self, examples: Dict, prompt_field: str, completion_field: str,
                             lowercase: bool = False, streaming: bool = False) -> Dict:
         """Apply common preprocessing steps to all datasets."""
         
+        # Input validation
+        if not isinstance(examples, dict):
+            logger.warning(f"Expected dictionary for examples, got {type(examples)}")
+            return {"processed_text": [], "length": [], "duplicates_removed": 0}
+            
+        if prompt_field not in examples or completion_field not in examples:
+            fields = list(examples.keys())
+            logger.warning(f"Missing required fields. Expected {prompt_field} and {completion_field}, got {fields}")
+            return {"processed_text": [], "length": [], "duplicates_removed": 0}
+            
+        # Get the raw data, ensuring we have lists
+        raw_prompts = examples[prompt_field]
+        raw_completions = examples[completion_field]
+        
+        if not isinstance(raw_prompts, list):
+            raw_prompts = [raw_prompts]
+        if not isinstance(raw_completions, list):
+            raw_completions = [raw_completions]
+            
+        # Ensure equal lengths by truncating
+        min_len = min(len(raw_prompts), len(raw_completions))
+        if min_len == 0:
+            return {"processed_text": [], "length": [], "duplicates_removed": 0}
+            
+        prompts = raw_prompts[:min_len]
+        completions = raw_completions[:min_len]
+        
         # Clean whitespace, strip leading/trailing spaces and newlines
-        prompts = [re.sub(r'\s+', ' ', str(p)).strip() for p in examples[prompt_field]]
-        completions = [re.sub(r'\s+', ' ', str(c)).strip() for c in examples[completion_field]]
+        # Convert all inputs to strings, handle None values
+        prompts = [re.sub(r'\s+', ' ', str(p or "")).strip() for p in prompts]
+        completions = [re.sub(r'\s+', ' ', str(c or "")).strip() for c in completions]
         
         # Optionally lowercase all text
         if lowercase:
@@ -74,18 +197,27 @@ class DataPreprocessor:
             for i in range(0, len(deduplicated_texts), batch_size):
                 batch = deduplicated_texts[i:i+batch_size]
                 # Tokenize and truncate to max length
-                tokenized = self.tokenizer(
-                    batch,
-                    truncation=True,
-                    max_length=self.max_length,
-                    return_overflowing_tokens=False,
-                    return_length=True
-                )
-                all_lengths.extend(tokenized["length"])
+                try:
+                    tokenized = self.tokenizer(
+                        batch,
+                        truncation=True,
+                        max_length=self.max_length,
+                        return_overflowing_tokens=False,
+                        return_length=True
+                    )
+                    all_lengths.extend(tokenized["length"])
+                    
+                    # Clear GPU cache after processing batch
+                    if hasattr(self.tokenizer, "cache_clear"):
+                        self.tokenizer.cache_clear()
+                except Exception as e:
+                    logger.warning(f"Tokenization error: {str(e)}. Skipping batch.")
+                    # Add placeholder lengths for skipped batch to maintain indices
+                    all_lengths.extend([0] * len(batch))
                 
-                # Clear GPU cache after processing batch
-                if hasattr(self.tokenizer, "cache_clear"):
-                    self.tokenizer.cache_clear()
+            # Ensure output has matching lengths
+            if len(all_lengths) < len(deduplicated_texts):
+                all_lengths.extend([0] * (len(deduplicated_texts) - len(all_lengths)))
                 
             return {"processed_text": deduplicated_texts, "length": all_lengths, "duplicates_removed": duplicates_removed}
         else:
@@ -94,15 +226,20 @@ class DataPreprocessor:
                 return {"processed_text": [], "length": [], "duplicates_removed": duplicates_removed}
                 
             # Tokenize and truncate to max length for non-streaming mode
-            tokenized = self.tokenizer(
-                deduplicated_texts,
-                truncation=True,
-                max_length=self.max_length,
-                return_overflowing_tokens=False,
-                return_length=True
-            )
-            
-            return {"processed_text": deduplicated_texts, "length": tokenized["length"], "duplicates_removed": duplicates_removed}
+            try:
+                tokenized = self.tokenizer(
+                    deduplicated_texts,
+                    truncation=True,
+                    max_length=self.max_length,
+                    return_overflowing_tokens=False,
+                    return_length=True
+                )
+                
+                return {"processed_text": deduplicated_texts, "length": tokenized["length"], "duplicates_removed": duplicates_removed}
+            except Exception as e:
+                logger.error(f"Tokenization error in non-streaming mode: {str(e)}")
+                # Return with dummy length values as fallback
+                return {"processed_text": deduplicated_texts, "length": [0] * len(deduplicated_texts), "duplicates_removed": duplicates_removed}
     
     def process_codesearchnet(self, dataset: Union[Dataset, DatasetDict], 
                              streaming: bool = False, language: str = None) -> Union[Dataset, DatasetDict]:
@@ -121,14 +258,9 @@ class DataPreprocessor:
         # For streaming mode, process examples one at a time to avoid issues
         if streaming:
             processed_examples = []
-            count = 0
-            max_examples = 10000  # Limit to prevent processing too many examples
             
-            # Process each example individually
-            for example in dataset:
-                if count >= max_examples:
-                    break
-                    
+            # Process each example individually using our safe iterator
+            for example in self._safe_dataset_iterator(dataset):
                 try:
                     # Extract docstring and code
                     doc = example.get("func_documentation_string", "")
@@ -151,7 +283,6 @@ class DataPreprocessor:
                         streaming=True
                     )
                     processed_examples.append(processed)
-                    count += 1
                 except Exception as e:
                     logger.warning(f"Error processing example: {e}")
                     continue
@@ -219,6 +350,7 @@ class DataPreprocessor:
                 )
             except Exception as e2:
                 logger.error(f"Failed second attempt to process CodeSearchNet: {e2}")
+                logger.error(traceback.format_exc())
                 return dataset  # Return original dataset if processing fails
     
     def process_code_alpaca(self, dataset: Union[Dataset, DatasetDict],
@@ -312,86 +444,142 @@ class DataPreprocessor:
                     batch_size=100 if streaming else None
                 )
     
+    def _extract_fields(self, example: Dict, field_names_map: Dict[str, List[str]]) -> Dict[str, Any]:
+        """Extract fields from example using multiple possible field names."""
+        result = {}
+        
+        for target_field, possible_names in field_names_map.items():
+            for name in possible_names:
+                if name in example and example[name]:
+                    result[target_field] = example[name]
+                    break
+                    
+        return result
+        
     def process_instruct_code(self, dataset: Union[Dataset, DatasetDict],
                              streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process InstructCode dataset."""
         logger.info("Processing InstructCode dataset...")
         
+        # Define field mappings for different dataset structures
+        field_mappings = {
+            "prompt": ["problem", "instruction", "instructions", "input", "query"],
+            "completion": ["solution", "output", "response", "answer", "code"]
+        }
+        
+        # For streaming mode, process examples one at a time to avoid issues
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually using our safe iterator
+            for example in self._safe_dataset_iterator(dataset):
+                try:
+                    # Extract fields using our utility method
+                    fields = self._extract_fields(example, field_mappings)
+                    
+                    # Skip if missing required fields
+                    if "prompt" not in fields or "completion" not in fields:
+                        # Try to handle conversation format if present
+                        if "conversations" in example and isinstance(example["conversations"], list):
+                            prompt = ""
+                            completion = ""
+                            
+                            for i, turn in enumerate(example["conversations"]):
+                                if isinstance(turn, dict):
+                                    role = turn.get("role", turn.get("from", "")).lower()
+                                    content = turn.get("content", turn.get("value", ""))
+                                    
+                                    if role in ["user", "human"] and not prompt:
+                                        prompt = content
+                                    elif role in ["assistant", "bot", "gpt"] and not completion:
+                                        completion = content
+                            
+                            if prompt and completion:
+                                fields = {"prompt": prompt, "completion": completion}
+                            else:
+                                continue
+                        else:
+                            continue
+                    
+                    processed = self.common_preprocessing(
+                        {"prompt": fields["prompt"], "completion": fields["completion"]},
+                        "prompt", "completion",
+                        streaming=True
+                    )
+                    processed_examples.append(processed)
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing example: {e}")
+                    continue
+            
+            # Log progress occasionally
+            if len(processed_examples) % 1000 == 0 and processed_examples:
+                logger.info(f"Processed {len(processed_examples)} examples from instruct_code dataset")
+                
+            if not processed_examples:
+                logger.warning("No valid examples processed from instruct_code dataset")
+                
+            return processed_examples
+        
+        # For non-streaming mode, process in batches
         def process_sample(examples):
-            # Check for different field structures
+            # Handle different field structures
+            if not isinstance(examples, dict):
+                logger.warning(f"Expected dictionary, got {type(examples)}")
+                return {"processed_text": [], "length": [], "duplicates_removed": 0}
+            
+            # Determine which fields to use for this batch
+            batch_size = len(next(iter(examples.values()))) if examples else 0
+            if batch_size == 0:
+                return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                
             prompts = []
             completions = []
             
-            # Try to extract from common field names
-            if "problem" in examples and "solution" in examples:
-                prompts = examples["problem"]
-                completions = examples["solution"]
-            elif "instruction" in examples and "output" in examples:
-                prompts = examples["instruction"]
-                completions = examples["output"]
-            elif "instructions" in examples and "response" in examples:
-                prompts = examples["instructions"]
-                completions = examples["response"]
-            elif "conversations" in examples:
-                # Handle conversation format
-                for conv_list in examples["conversations"]:
-                    if isinstance(conv_list, list) and len(conv_list) >= 2:
-                        # Extract first user message as prompt and first assistant message as completion
-                        user_msgs = [msg.get("value", "") for msg in conv_list if msg.get("role", "") == "user"]
-                        assistant_msgs = [msg.get("value", "") for msg in conv_list if msg.get("role", "") == "assistant"]
-                        
-                        if user_msgs and assistant_msgs:
-                            prompts.append(user_msgs[0])
-                            completions.append(assistant_msgs[0])
-            elif "messages" in examples:
-                # Handle messages format
-                for msg_list in examples["messages"]:
-                    if isinstance(msg_list, list) and len(msg_list) >= 2:
-                        user_msgs = [msg.get("content", "") for msg in msg_list if msg.get("role", "") == "user"]
-                        assistant_msgs = [msg.get("content", "") for msg in msg_list if msg.get("role", "") == "assistant"]
-                        
-                        if user_msgs and assistant_msgs:
-                            prompts.append(user_msgs[0])
-                            completions.append(assistant_msgs[0])
-            
-            if not prompts or not completions:
-                # Fallback: try to find any text fields to use
-                for key in examples:
-                    if "prompt" in key.lower() or "instruction" in key.lower() or "input" in key.lower() or "problem" in key.lower():
-                        prompts = examples[key]
-                        break
-                        
-                for key in examples:
-                    if "completion" in key.lower() or "response" in key.lower() or "output" in key.lower() or "answer" in key.lower() or "solution" in key.lower():
-                        completions = examples[key]
-                        break
-            
-            # If we still didn't find anything, check if Magicoder format
-            if not prompts and not completions and isinstance(examples, dict):
-                if all(key in examples for key in ["lang", "problem", "solution"]):
-                    # This appears to be Magicoder format
-                    prompts = examples["problem"] 
-                    completions = examples["solution"]
-            
-            # Ensure we have matching lengths
-            min_len = min(len(prompts) if prompts else 0, len(completions) if completions else 0)
-            if min_len == 0:
-                # Handle empty data
-                return {"processed_text": [], "length": []}
+            # First try to extract fields for each example individually
+            for i in range(batch_size):
+                # Extract a single example from the batch
+                example = {k: v[i] if isinstance(v, list) and i < len(v) else v for k, v in examples.items()}
                 
-            prompts = prompts[:min_len]
-            completions = completions[:min_len]
+                # Extract fields using our utility method
+                fields = self._extract_fields(example, field_mappings)
+                
+                if "prompt" in fields and "completion" in fields:
+                    prompts.append(fields["prompt"])
+                    completions.append(fields["completion"])
+                elif "conversations" in example and isinstance(example["conversations"], list):
+                    # Try to handle conversation format
+                    prompt = ""
+                    completion = ""
+                    
+                    for turn in example["conversations"]:
+                        if isinstance(turn, dict):
+                            role = turn.get("role", turn.get("from", "")).lower()
+                            content = turn.get("content", turn.get("value", ""))
+                            
+                            if role in ["user", "human"] and not prompt:
+                                prompt = content
+                            elif role in ["assistant", "bot", "gpt"] and not completion:
+                                completion = content
+                    
+                    if prompt and completion:
+                        prompts.append(prompt)
+                        completions.append(completion)
             
-            # For InstructCode data, ensure we have valid strings
+            # Skip if no valid examples found
+            if not prompts or not completions:
+                return {"processed_text": [], "length": [], "duplicates_removed": 0}
+            
+            # Ensure all entries are strings
             valid_prompts = []
             valid_completions = []
-            for i in range(min_len):
+            for i in range(min(len(prompts), len(completions))):
                 if prompts[i] and completions[i] and isinstance(prompts[i], str) and isinstance(completions[i], str):
                     valid_prompts.append(prompts[i])
                     valid_completions.append(completions[i])
             
             if not valid_prompts or not valid_completions:
-                return {"processed_text": [], "length": []}
+                return {"processed_text": [], "length": [], "duplicates_removed": 0}
             
             return self.common_preprocessing(
                 {"prompt": valid_prompts, "completion": valid_completions},
@@ -400,14 +588,18 @@ class DataPreprocessor:
             )
         
         try:
+            # Try to get column names from dataset if available
+            column_names = dataset.column_names if hasattr(dataset, "column_names") else None
+            
             return dataset.map(
                 process_sample,
                 batched=True,
-                remove_columns=dataset.column_names if not streaming else None,
+                remove_columns=column_names if not streaming else None,
                 batch_size=100 if streaming else None
             )
         except Exception as e:
             logger.warning(f"Error processing InstructCode: {e}")
+            logger.error(traceback.format_exc())
             try:
                 # Try a simpler approach with smaller batch size
                 return dataset.map(
@@ -418,58 +610,44 @@ class DataPreprocessor:
             except Exception as backup_error:
                 logger.error(f"Backup processing also failed: {backup_error}")
                 # Return an empty processed dataset to prevent pipeline failure
-                return {"processed_text": [], "length": []}
+                return {"processed_text": [], "length": [], "duplicates_removed": 0}
     
     def process_mbpp(self, dataset: Union[Dataset, DatasetDict],
                      streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process MBPP dataset."""
         logger.info("Processing MBPP dataset...")
         
+        # Define field mappings for different dataset structures
+        field_mappings = {
+            "prompt": ["text", "prompt", "problem", "description", "task_id"],
+            "completion": ["code", "solution", "canonical_solution", "answer"]
+        }
+        
         # For streaming mode, process one example at a time to avoid issues
         if streaming:
             processed_examples = []
-            count = 0
-            max_examples = 10000  # Limit to prevent processing too many examples
             
-            # Process each example individually
-            for example in dataset:
-                if count >= max_examples:
-                    break
-                    
+            # Process each example individually using our safe iterator
+            for example in self._safe_dataset_iterator(dataset):
                 try:
-                    # Check for field names that might be present
-                    prompt = None
-                    code = None
+                    # Extract fields using our utility method
+                    fields = self._extract_fields(example, field_mappings)
                     
-                    if isinstance(example, dict):
-                        if "text" in example:
-                            prompt = example["text"]
-                        elif "prompt" in example:
-                            prompt = example["prompt"]
-                        elif "problem" in example:
-                            prompt = example["problem"]
-                        elif "task_id" in example:
-                            prompt = f"Solve task {example['task_id']}"
-                            
-                        if "code" in example:
-                            code = example["code"]
-                        elif "solution" in example:
-                            code = example["solution"]
-                        elif "canonical_solution" in example:
-                            code = example["canonical_solution"]
+                    # Handle task_id special case
+                    if "prompt" not in fields and "task_id" in example:
+                        fields["prompt"] = f"Solve task {example['task_id']}"
                     
                     # Skip if missing required fields
-                    if not prompt or not code:
+                    if "prompt" not in fields or "completion" not in fields:
                         logger.warning(f"Skipping example, missing fields")
                         continue
                         
                     processed = self.common_preprocessing(
-                        {"prompt": prompt, "completion": code},
+                        {"prompt": fields["prompt"], "completion": fields["completion"]},
                         "prompt", "completion",
                         streaming=True
                     )
                     processed_examples.append(processed)
-                    count += 1
                 except Exception as e:
                     logger.warning(f"Error processing example: {e}")
                     continue
@@ -480,84 +658,69 @@ class DataPreprocessor:
             return processed_examples
         else:
             # For non-streaming mode
+            def process_sample(examples):
+                # Ensure we have valid inputs
+                if not isinstance(examples, dict):
+                    logger.warning(f"Expected dictionary, got {type(examples)}")
+                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                
+                # Get batch size
+                batch_size = len(next(iter(examples.values()))) if examples else 0
+                if batch_size == 0:
+                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                
+                prompts = []
+                completions = []
+                
+                # Process each example in the batch
+                for i in range(batch_size):
+                    # Extract a single example from the batch
+                    example = {k: v[i] if isinstance(v, list) and i < len(v) else v for k, v in examples.items()}
+                    
+                    # Extract fields using our utility method
+                    fields = self._extract_fields(example, field_mappings)
+                    
+                    # Handle task_id special case
+                    if "prompt" not in fields and "task_id" in example:
+                        fields["prompt"] = f"Solve task {example['task_id']}"
+                    
+                    # Add to batch if we have valid fields
+                    if "prompt" in fields and "completion" in fields:
+                        prompts.append(fields["prompt"])
+                        completions.append(fields["completion"])
+                
+                # Skip if we couldn't extract any valid examples
+                if not prompts or not completions:
+                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                
+                return self.common_preprocessing(
+                    {"prompt": prompts, "completion": completions},
+                    "prompt", "completion",
+                    streaming=streaming
+                )
+            
             try:
-                # Try to determine the field names from a sample
-                sample_items = list(islice(iter(dataset), 0, 1))
+                # Try to get column names from dataset if available
+                column_names = dataset.column_names if hasattr(dataset, "column_names") else None
                 
-                if not sample_items:
-                    logger.warning("Empty MBPP dataset")
-                    return dataset
-                    
-                sample_example = sample_items[0]
-                
-                # Find appropriate field names
-                prompt_field = "text" 
-                code_field = "code"
-                
-                if isinstance(sample_example, dict):
-                    if "text" not in sample_example:
-                        if "prompt" in sample_example:
-                            prompt_field = "prompt"
-                        elif "problem" in sample_example:
-                            prompt_field = "problem"
-                    
-                    if "code" not in sample_example:
-                        if "solution" in sample_example:
-                            code_field = "solution"
-                        elif "canonical_solution" in sample_example:
-                            code_field = "canonical_solution"
-                
-                def process_sample(examples):
-                    # Ensure we have valid inputs
-                    if not isinstance(examples, dict):
-                        logger.warning(f"Expected dictionary, got {type(examples)}")
-                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                    
-                    # Get prompt and code 
-                    prompts = examples.get(prompt_field, examples.get("prompt", examples.get("problem", [])))
-                    codes = examples.get(code_field, examples.get("solution", examples.get("canonical_solution", [])))
-                    
-                    # Ensure fields are lists
-                    if not isinstance(prompts, list):
-                        prompts = [prompts]
-                    if not isinstance(codes, list):
-                        codes = [codes]
-                    
-                    # Skip empty examples
-                    min_len = min(len(prompts), len(codes))
-                    if min_len == 0:
-                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                    
-                    # Truncate to matching length
-                    prompts = prompts[:min_len]
-                    codes = codes[:min_len]
-                    
-                    return self.common_preprocessing(
-                        {"prompt": prompts, "completion": codes},
-                        "prompt", "completion",
-                        streaming=streaming
-                    )
-                
-                try:
-                    # Try to get column names from dataset if available
-                    column_names = dataset.column_names if hasattr(dataset, "column_names") else None
-                    
-                    return dataset.map(
-                        process_sample,
-                        batched=True,
-                        remove_columns=column_names if not streaming else None,
-                        batch_size=100 if streaming else None
-                    )
-                except Exception as e:
-                    logger.warning(f"Error in batch processing mode: {e}")
-                    # Try with smaller batch size
-                    return dataset.map(
-                        process_sample,
-                        batched=True,
-                        batch_size=20  # Smaller batch size
-                    )
+                return dataset.map(
+                    process_sample,
+                    batched=True,
+                    remove_columns=column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error in batch processing mode: {e}")
+                logger.error(traceback.format_exc())
+                # Try with smaller batch size
+                return dataset.map(
+                    process_sample,
+                    batched=True,
+                    batch_size=20  # Smaller batch size
+                )
             except Exception as e:
                 logger.error(f"Error processing MBPP dataset: {e}")
+                logger.error(traceback.format_exc())
                 # Return a simple fallback processing
                 return dataset.map(
                     lambda examples: self.common_preprocessing(
@@ -835,55 +998,54 @@ class DataPreprocessor:
         """Process HumanEval dataset."""
         logger.info("Processing HumanEval dataset...")
         
+        # Define field mappings for different dataset structures
+        field_mappings = {
+            "prompt": ["prompt", "task_id", "question", "instruction"],
+            "completion": ["canonical_solution", "solution", "test", "answer", "code"]
+        }
+        
         # For HumanEval, we need special handling for streaming mode
         if streaming:
             processed_examples = []
-            count = 0
-            max_examples = 10000  # Limit to prevent processing too many examples
             
-            # Process each example individually
-            for example in dataset:
-                if count >= max_examples:
-                    break
-                
+            # Process each example individually using our safe iterator
+            for example in self._safe_dataset_iterator(dataset):
                 try:
-                    # Handle different field structures
-                    if isinstance(example, dict):
-                        prompt = example.get("prompt", "")
-                        solution = example.get("canonical_solution", "")
-                        
-                        # Some versions use different field names
-                        if not solution:
-                            if "test" in example:
-                                solution = example.get("test", "")
-                            elif "solution" in example:
-                                solution = example.get("solution", "")
-                            elif "entry_point" in example and "test" in example:
-                                # Combine entry point info with test
-                                entry_point = example.get("entry_point", "")
-                                test_code = example.get("test", "")
-                                solution = f"# Entry point: {entry_point}\n{test_code}"
-                    else:
+                    # Extract fields using our utility method
+                    fields = self._extract_fields(example, field_mappings)
+                    
+                    # Handle case where we have neither prompt nor completion
+                    if "prompt" not in fields or "completion" not in fields:
                         # For the case where each example is directly a string
-                        try:
-                            prompt = "Write a Python function"
-                            solution = str(example)
-                        except:
-                            logger.warning(f"Could not process example: {type(example)}")
+                        if not isinstance(example, dict):
+                            try:
+                                fields = {
+                                    "prompt": "Write a Python function",
+                                    "completion": str(example)
+                                }
+                            except:
+                                logger.warning(f"Could not process example: {type(example)}")
+                                continue
+                        
+                        # Handle combined format with entry_point and test
+                        elif "entry_point" in example and "test" in example:
+                            entry_point = example.get("entry_point", "")
+                            test_code = example.get("test", "")
+                            
+                            fields = {
+                                "prompt": f"Implement the function {entry_point}",
+                                "completion": test_code
+                            }
+                        else:
+                            logger.warning("Skipping example with missing prompt or solution")
                             continue
                     
-                    # Skip if missing required fields
-                    if not prompt or not solution:
-                        logger.warning("Skipping example with missing prompt or solution")
-                        continue
-                    
                     processed = self.common_preprocessing(
-                        {"prompt": prompt, "completion": solution},
+                        {"prompt": fields["prompt"], "completion": fields["completion"]},
                         "prompt", "completion",
                         streaming=True
                     )
                     processed_examples.append(processed)
-                    count += 1
                 except Exception as e:
                     logger.warning(f"Error processing example: {e}")
                     continue
@@ -895,54 +1057,50 @@ class DataPreprocessor:
         else:
             # For non-streaming mode, we can use map with batch processing
             try:
-                # Determine the actual field names in the dataset by checking a sample
-                sample_items = list(islice(iter(dataset), 0, 1))
-                
-                if not sample_items:
-                    logger.warning("Empty HumanEval dataset")
-                    return dataset
-                    
-                sample_item = sample_items[0]
-                prompt_field = "prompt"
-                solution_field = "canonical_solution"
-                
-                # Check field names
-                if isinstance(sample_item, dict):
-                    if "prompt" not in sample_item and "task_id" in sample_item:
-                        prompt_field = "task_id"
-                    if "canonical_solution" not in sample_item:
-                        if "test" in sample_item:
-                            solution_field = "test"
-                        elif "solution" in sample_item:
-                            solution_field = "solution"
-                
                 def process_sample(examples):
                     # Ensure we have valid inputs
                     if not isinstance(examples, dict):
                         logger.warning(f"Expected dictionary, got {type(examples)}")
                         return {"processed_text": [], "length": [], "duplicates_removed": 0}
                     
-                    # Get prompt and solution
-                    prompts = examples.get(prompt_field, [])
-                    solutions = examples.get(solution_field, [])
-                    
-                    # Ensure fields are lists
-                    if not isinstance(prompts, list):
-                        prompts = [prompts]
-                    if not isinstance(solutions, list):
-                        solutions = [solutions]
-                    
-                    # Skip empty examples
-                    min_len = min(len(prompts), len(solutions))
-                    if min_len == 0:
+                    # Get batch size
+                    batch_size = len(next(iter(examples.values()))) if examples else 0
+                    if batch_size == 0:
                         return {"processed_text": [], "length": [], "duplicates_removed": 0}
                     
-                    # Truncate to matching length
-                    prompts = prompts[:min_len]
-                    solutions = solutions[:min_len]
+                    prompts = []
+                    completions = []
+                    
+                    # Process each example in the batch
+                    for i in range(batch_size):
+                        # Extract a single example from the batch
+                        example = {k: v[i] if isinstance(v, list) and i < len(v) else v for k, v in examples.items()}
+                        
+                        # Extract fields using our utility method
+                        fields = self._extract_fields(example, field_mappings)
+                        
+                        # Handle combined entry_point and test case
+                        if "prompt" not in fields or "completion" not in fields:
+                            if "entry_point" in example and "test" in example:
+                                entry_point = example.get("entry_point", "")
+                                test_code = example.get("test", "")
+                                
+                                fields = {
+                                    "prompt": f"Implement the function {entry_point}",
+                                    "completion": test_code
+                                }
+                        
+                        # Add to batch if we have valid fields
+                        if "prompt" in fields and "completion" in fields:
+                            prompts.append(fields["prompt"])
+                            completions.append(fields["completion"])
+                    
+                    # Skip if we couldn't extract any valid examples
+                    if not prompts or not completions:
+                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
                     
                     return self.common_preprocessing(
-                        {"prompt": prompts, "completion": solutions},
+                        {"prompt": prompts, "completion": completions},
                         "prompt", "completion",
                         streaming=streaming
                     )
@@ -959,6 +1117,7 @@ class DataPreprocessor:
                     )
                 except Exception as e:
                     logger.warning(f"Error mapping HumanEval dataset: {e}")
+                    logger.error(traceback.format_exc())
                     # Try with smaller batch size
                     return dataset.map(
                         process_sample,
@@ -967,6 +1126,7 @@ class DataPreprocessor:
                     )
             except Exception as e:
                 logger.error(f"Error processing HumanEval dataset: {e}")
+                logger.error(traceback.format_exc())
                 # Return a simple fallback processing
                 return dataset.map(
                     lambda examples: self.common_preprocessing(
@@ -981,6 +1141,9 @@ class DataPreprocessor:
         """Load and process all configured datasets."""
         processed_datasets = {}
         
+        # Create save directory
+        os.makedirs(save_path, exist_ok=True)
+        
         # Check for HF_TOKEN environment variable
         if os.environ.get("HF_TOKEN") is None:
             logger.warning("HF_TOKEN environment variable not set. Some gated datasets might be inaccessible.")
@@ -988,6 +1151,13 @@ class DataPreprocessor:
         else:
             logger.info("Using Hugging Face token from environment for authentication")
             
+        # Check system resources before starting
+        resources = self._check_resources(force=True)
+        if resources and resources.get("memory_percent", 0) > 90:
+            logger.warning(f"System memory is very low ({resources.get('memory_percent')}%). Processing may fail.")
+            logger.warning(f"Available memory: {resources.get('available_mb', 0):.1f} MB")
+            
+        # Process datasets with resource monitoring
         for dataset_name, config in dataset_config.items():
             # Skip datasets that are explicitly disabled
             if config.get("enabled") is False:
@@ -995,6 +1165,9 @@ class DataPreprocessor:
                 continue
                 
             logger.info(f"Loading dataset: {dataset_name}")
+            
+            # Check resources before processing each dataset
+            self._check_resources()
             
             try:
                 # Get streaming and caching options
@@ -1042,6 +1215,9 @@ class DataPreprocessor:
                     
                     logger.info(f"Successfully loaded dataset {dataset_name}")
                     
+                    # Check resources after loading
+                    self._check_resources()
+                    
                 except (ImportError, ModuleNotFoundError) as e:
                     logger.error(f"Missing dependency for loading dataset {dataset_name}: {str(e)}")
                     logger.error("Try installing additional dependencies if needed")
@@ -1057,6 +1233,7 @@ class DataPreprocessor:
                         logger.error("Check the dataset name and make sure it's correct.")
                     else:
                         logger.error(f"Error loading dataset {dataset_name}: {str(e)}")
+                        logger.error(traceback.format_exc())
                     
                     logger.info(f"Skipping dataset {dataset_name}")
                     continue
@@ -1080,10 +1257,17 @@ class DataPreprocessor:
                         processor_args["language"] = None
                 
                 # Process the dataset
-                processed_dataset = processor_func(dataset, **processor_args)
+                try:
+                    processed_dataset = processor_func(dataset, **processor_args)
+                    
+                    # Check resources after processing
+                    self._check_resources()
+                except Exception as e:
+                    logger.error(f"Failed to process dataset {dataset_name}: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    continue
                 
                 # Create save directory
-                os.makedirs(save_path, exist_ok=True)
                 save_path_for_dataset = os.path.join(save_path, f"{dataset_name}_processed")
                 
                 # Track total duplicates removed
@@ -1104,18 +1288,29 @@ class DataPreprocessor:
                     # Handle different return types from processor
                     if isinstance(processed_dataset, list):
                         # For HumanEval or other datasets that return a list
-                        for example in processed_dataset:
+                        for i, example in enumerate(processed_dataset):
                             if count >= max_samples:
                                 break
                             
                             try:
                                 if isinstance(example, dict) and "processed_text" in example and "length" in example:
-                                    collected_data["processed_text"].append(example["processed_text"])
-                                    collected_data["length"].append(example["length"])
-                                    # Track duplicate counts
-                                    if "duplicates_removed" in example:
-                                        total_duplicates_removed += example["duplicates_removed"]
-                                    count += 1
+                                    # Ensure processed_text is a string and not a list or other type
+                                    if isinstance(example["processed_text"], str):
+                                        collected_data["processed_text"].append(example["processed_text"])
+                                        collected_data["length"].append(example["length"])
+                                        # Track duplicate counts
+                                        if "duplicates_removed" in example:
+                                            total_duplicates_removed += example["duplicates_removed"]
+                                        count += 1
+                                    elif isinstance(example["processed_text"], list) and len(example["processed_text"]) > 0:
+                                        # If it's a list (batch processing returned), take the first item
+                                        collected_data["processed_text"].append(example["processed_text"][0])
+                                        collected_data["length"].append(example["length"][0] if isinstance(example["length"], list) else example["length"])
+                                        count += 1
+                                        
+                                # Check resources periodically
+                                if i % self._memory_check_interval == 0:
+                                    self._check_resources()
                             except Exception as e:
                                 logger.warning(f"Error collecting example: {e}")
                                 errors += 1
@@ -1125,13 +1320,10 @@ class DataPreprocessor:
                     else:
                         # For regular streaming datasets
                         try:
-                            # Iterate with protection against malformed data
-                            for example in processed_dataset:
-                                if count >= max_samples:
-                                    break
-                                    
+                            # Use our safe iterator method for unified error handling
+                            for example in self._safe_dataset_iterator(processed_dataset, max_samples):
                                 try:
-                                    # Verify the example has the expected structure before indexing
+                                    # Verify the example has the expected structure
                                     if isinstance(example, dict) and "processed_text" in example and "length" in example:
                                         # Ensure the processed_text field is actually a string
                                         if example["processed_text"] and isinstance(example["processed_text"], str):
@@ -1141,104 +1333,93 @@ class DataPreprocessor:
                                             if "duplicates_removed" in example:
                                                 total_duplicates_removed += example["duplicates_removed"]
                                             count += 1
-                                        else:
-                                            logger.warning(f"Skipping example with empty or non-string processed_text field")
-                                    else:
-                                        # Skip examples with unexpected structure
-                                        logger.warning(f"Skipping example with unexpected structure: {example.keys() if isinstance(example, dict) else type(example)}")
+                                        elif isinstance(example["processed_text"], list) and len(example["processed_text"]) > 0:
+                                            # Handle case where processed_text is a list
+                                            for i, text in enumerate(example["processed_text"]):
+                                                if count >= max_samples:
+                                                    break
+                                                if text and isinstance(text, str):
+                                                    collected_data["processed_text"].append(text)
+                                                    # Get corresponding length if available
+                                                    if isinstance(example["length"], list) and i < len(example["length"]):
+                                                        collected_data["length"].append(example["length"][i])
+                                                    else:
+                                                        collected_data["length"].append(0)  # Default length
+                                                    count += 1
                                 except Exception as e:
                                     logger.warning(f"Error processing example: {e}")
                                     errors += 1
                                     if errors > 100:
                                         logger.error("Too many errors during collection, stopping")
                                         break
+                                    
+                                # Resource monitoring is handled by the safe iterator
                         except Exception as e:
                             logger.error(f"Error during dataset iteration: {e}")
-                            # If iteration fails entirely, try a backup method
-                            logger.info("Trying alternative collection method...")
-                            
-                            # Force materialization with a smaller batch size that might work
-                            try:
-                                # Try to fetch just a few examples for safer processing
-                                examples = []
-                                iterator = iter(processed_dataset)
-                                for _ in range(min(100, max_samples)):
-                                    try:
-                                        example = next(iterator)
-                                        # Skip non-dict or invalid examples
-                                        if not isinstance(example, dict):
-                                            continue
-                                        if "processed_text" not in example or "length" not in example:
-                                            continue
-                                        examples.append(example)
-                                    except StopIteration:
-                                        break
-                                    except TypeError as type_error:
-                                        # This is likely the 'int' has no len() error
-                                        logger.warning(f"Type error during iteration: {type_error}")
-                                        continue
-                                    except Exception as ex:
-                                        logger.warning(f"Error during backup iteration: {ex}")
-                                        continue
-                                
-                                if not examples:
-                                    logger.error(f"Could not collect any valid examples for {dataset_name}")
-                                    continue
-                                
-                                # Process the successfully collected examples
-                                for example in examples:
-                                    try:
-                                        if isinstance(example, dict) and "processed_text" in example and "length" in example:
-                                            # Ensure the processed_text is a string
-                                            if not isinstance(example["processed_text"], str):
-                                                continue
-                                                
-                                            collected_data["processed_text"].append(example["processed_text"])
-                                            collected_data["length"].append(example["length"])
-                                            # Track duplicate counts
-                                            if "duplicates_removed" in example:
-                                                total_duplicates_removed += example["duplicates_removed"]
-                                            count += 1
-                                    except Exception as ex:
-                                        logger.warning(f"Error processing example in backup method: {ex}")
-                                        continue
-                            except Exception as backup_error:
-                                logger.error(f"Backup collection method also failed: {backup_error}")
+                            logger.error(traceback.format_exc())
                     
+                    # Check resources before creating the final dataset
+                    self._check_resources(force=True)
+                    
+                    # Verify we have data to save
                     if count == 0:
                         logger.error(f"No examples could be collected for {dataset_name}")
                         continue
                         
+                    # Ensure both lists have the same length
+                    min_len = min(len(collected_data["processed_text"]), len(collected_data["length"]))
+                    collected_data["processed_text"] = collected_data["processed_text"][:min_len]
+                    collected_data["length"] = collected_data["length"][:min_len]
+                    
                     # Convert to HF Dataset
-                    materialized_dataset = HFDataset.from_dict(collected_data)
-                    
-                    # Save the materialized dataset
-                    materialized_dataset.save_to_disk(save_path_for_dataset)
-                    logger.info(f"Saved materialized dataset ({len(materialized_dataset)} examples) to {save_path_for_dataset}")
-                    
-                    # Store for return
-                    processed_datasets[dataset_name] = materialized_dataset
+                    try:
+                        materialized_dataset = HFDataset.from_dict(collected_data)
+                        
+                        # Save the materialized dataset
+                        materialized_dataset.save_to_disk(save_path_for_dataset)
+                        logger.info(f"Saved materialized dataset ({len(materialized_dataset)} examples) to {save_path_for_dataset}")
+                        
+                        # Store for return
+                        processed_datasets[dataset_name] = materialized_dataset
+                    except Exception as e:
+                        logger.error(f"Failed to create or save dataset: {e}")
+                        logger.error(traceback.format_exc())
                     
                 else:
-                    # For non-streaming datasets, count duplicates removed
-                    # We can't directly access the duplicate counts in the processed dataset
-                    # because HuggingFace Datasets don't preserve custom attributes
-                    # This would require changing how we store metadata in the dataset
-                    
-                    # Save dataset
-                    processed_dataset.save_to_disk(save_path_for_dataset)
-                    logger.info(f"Saved processed dataset to {save_path_for_dataset}")
-                    processed_datasets[dataset_name] = processed_dataset
+                    # For non-streaming datasets
+                    try:
+                        # Verify we have a valid dataset to save
+                        if isinstance(processed_dataset, Dataset) and len(processed_dataset) > 0:
+                            # Check resources before saving
+                            self._check_resources(force=True)
+                            
+                            # Save dataset
+                            processed_dataset.save_to_disk(save_path_for_dataset)
+                            logger.info(f"Saved processed dataset to {save_path_for_dataset}")
+                            processed_datasets[dataset_name] = processed_dataset
+                        else:
+                            logger.error(f"Processed dataset for {dataset_name} is empty or invalid")
+                    except Exception as e:
+                        logger.error(f"Failed to save dataset {dataset_name}: {e}")
+                        logger.error(traceback.format_exc())
                 
                 # Log the total number of duplicates removed
                 if total_duplicates_removed > 0:
                     logger.info(f"Removed {total_duplicates_removed} duplicate examples from dataset {dataset_name}")
                 
                 logger.info(f"Successfully processed and saved {dataset_name}")
+                
+                # Force cleanup after each dataset is processed
+                gc.collect()
             
             except Exception as e:
                 logger.error(f"Error processing {dataset_name}: {str(e)}")
-                import traceback
                 logger.error(traceback.format_exc())
+                
+                # Try to recover from error and continue with next dataset
+                gc.collect()
+        
+        # Final resource check
+        self._check_resources(force=True)
         
         return processed_datasets 
