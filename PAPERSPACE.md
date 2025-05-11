@@ -29,6 +29,7 @@ Paperspace Gradient environments don't support FUSE filesystem mounting or the `
    - Go to "APIs & Services" > "Credentials"
    - Click "Create Credentials" > "OAuth client ID"
    - Choose "Desktop application" as application type
+   - **Important:** Make sure a valid redirect URI is configured (the default http://localhost is fine)
    - Download the credentials JSON file
 
 ### 2. Prepare Your Paperspace Environment
@@ -73,9 +74,17 @@ With either option, you'll see the authentication process:
 1. The script will generate and display an authorization URL
 2. Copy this URL and open it in a browser on your local machine (not in Paperspace)
 3. Log in with your Google account and grant the requested permissions
-4. You'll receive an authorization code on the consent screen
-5. Copy this code and paste it at the prompt in your Paperspace terminal
-6. The authentication token will be saved as `token.pickle` and reused for future sessions
+4. You'll be redirected to a page (usually showing an error, which is expected)
+5. **Important:** Copy the ENTIRE URL from your browser's address bar after redirection
+6. Paste this URL back into the terminal when prompted
+7. The script will extract the authorization code from the URL and complete the authentication
+8. The authentication token will be saved as `token.pickle` and reused for future sessions
+
+If the script cannot extract the code from the URL, it will ask you to manually find and enter the "code" parameter from the URL, which will look something like:
+
+```
+http://localhost/?code=4/XXXX_LONG_CODE_HERE_XXXX&scope=https://www.googleapis.com/auth/drive
+```
 
 ## Running the Pipeline
 
@@ -159,14 +168,16 @@ For large datasets or systems with limited memory:
 
 ## Troubleshooting
 
-1. **Authentication Issues**: If you encounter authentication problems, delete the `token.pickle` file and run the authentication process again with the standalone script:
+1. **Authentication Error - Missing redirect_uri**: Make sure your credentials.json file has at least one valid redirect_uri configured (typically http://localhost).
+
+2. **Authentication Issues**: If you encounter authentication problems, delete the `token.pickle` file and run the authentication process again with the standalone script:
 
    ```bash
    rm token.pickle
    python scripts/direct_auth.py --credentials credentials.json
    ```
 
-2. **ModuleNotFoundError for 'src'**: This indicates Python can't find the project modules:
+3. **ModuleNotFoundError for 'src'**: This indicates Python can't find the project modules:
 
    ```bash
    # Use the standalone script instead:
@@ -176,14 +187,17 @@ For large datasets or systems with limited memory:
    export PYTHONPATH="/path/to/gen-text-ai:$PYTHONPATH"
    ```
 
-3. **Rate Limits**: Google Drive API has rate limits. If you hit them, the pipeline will automatically handle retries, but you may need to wait or split your work into smaller batches.
+4. **Cannot Extract Authorization Code**: If you get an error extracting the code from the redirect URL, make sure you're copying the entire URL from your browser's address bar. The URL should contain a "code" parameter.
 
-4. **File Not Found**: Double-check that your file paths are correct and that you have the appropriate permissions on your Google Drive account.
+5. **Rate Limits**: Google Drive API has rate limits. If you hit them, the pipeline will automatically handle retries, but you may need to wait or split your work into smaller batches.
 
-5. **Memory Issues**: If you still encounter memory problems, try processing smaller subsets of the datasets by specifying them explicitly with the `--datasets` parameter.
+6. **File Not Found**: Double-check that your file paths are correct and that you have the appropriate permissions on your Google Drive account.
+
+7. **Memory Issues**: If you still encounter memory problems, try processing smaller subsets of the datasets by specifying them explicitly with the `--datasets` parameter.
 
 ## References
 
 - [Google Drive API Documentation](https://developers.google.com/drive/api/v3/about-sdk)
+- [Google OAuth 2.0 for Installed Applications](https://developers.google.com/identity/protocols/oauth2/native-app)
 - [DeepSeek-Coder Model Hub](https://huggingface.co/deepseek-ai/deepseek-coder-6.7b-base)
 - [Paperspace Gradient Documentation](https://docs.paperspace.com/gradient/)
