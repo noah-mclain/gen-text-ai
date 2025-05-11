@@ -4,8 +4,19 @@
 # Uses the Google Drive API instead of mounting (which is not supported on Paperspace)
 # Also applies memory efficiency optimizations
 
+# Get the directory where the script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Navigate to the project root directory
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
+cd "$PROJECT_ROOT"
+echo "Working directory: $(pwd)"
+
 # Set environment variables for Hugging Face token (replace with your token)
 # export HF_TOKEN=your_token_here
+
+# Set PYTHONPATH to include the project root
+export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
+echo "PYTHONPATH: $PYTHONPATH"
 
 # Install dependencies
 echo "Installing dependencies..."
@@ -31,6 +42,10 @@ mkdir -p data/raw data/processed models results visualizations logs
 DATASETS="code_alpaca mbpp humaneval"
 BASE_MODEL="deepseek-ai/deepseek-coder-6.7b-base"
 DRIVE_BASE_DIR="DeepseekCoder"
+
+# First, authenticate with Google Drive API
+echo "Authenticating with Google Drive API..."
+python scripts/authenticate_headless.py --credentials credentials.json
 
 # Process datasets with memory efficiency
 echo "Processing datasets with memory efficiency and Google Drive API..."

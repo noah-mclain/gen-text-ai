@@ -10,8 +10,15 @@ After completion, a token.pickle file will be created for future use.
 """
 
 import os
+import sys
 import argparse
 import logging
+from pathlib import Path
+
+# Add the parent directory to the Python path so we can import src
+script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+project_root = script_dir.parent
+sys.path.insert(0, str(project_root))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,7 +37,15 @@ def main():
         return 1
     
     # Import here to avoid issues if Google API libraries aren't installed
-    from src.utils.drive_api_utils import initialize_drive_api
+    try:
+        from src.utils.drive_api_utils import initialize_drive_api
+    except ImportError as e:
+        logger.error(f"Import error: {str(e)}")
+        logger.error(f"Current PYTHONPATH: {sys.path}")
+        logger.error(f"Current working directory: {os.getcwd()}")
+        logger.error("Make sure you have the Google API libraries installed:")
+        logger.error("pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
+        return 1
     
     logger.info("Starting headless authentication process...")
     logger.info("=" * 70)

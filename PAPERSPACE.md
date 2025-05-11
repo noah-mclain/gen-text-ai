@@ -48,17 +48,33 @@ Paperspace Gradient environments don't support FUSE filesystem mounting or the `
 
 ### 3. Authentication in Headless Environments
 
-For Paperspace notebooks and other headless environments, we've implemented a special console-based authentication flow:
+You have two options for authentication in headless environments:
 
-1. Run the authentication script with the headless flag:
-   ```bash
-   python -c "from src.utils.drive_api_utils import initialize_drive_api; initialize_drive_api(headless=True)"
-   ```
-2. A URL will be printed to the console. Copy this URL
-3. Open the URL in a browser on your local machine (not in Paperspace)
-4. Choose your Google account and grant the requested permissions
-5. Copy the authorization code displayed and paste it back into the Paperspace console
-6. The authentication token is now saved as `token.pickle` and will be reused for future sessions
+#### Option 1: Using the standalone script (recommended)
+
+This script doesn't require project imports and works in any directory:
+
+```bash
+python scripts/direct_auth.py --credentials credentials.json
+```
+
+#### Option 2: Using the project-aware script
+
+This script requires proper Python path setup:
+
+```bash
+# First make sure the project root is in the Python path
+export PYTHONPATH="/path/to/gen-text-ai:$PYTHONPATH"
+python scripts/authenticate_headless.py --credentials credentials.json
+```
+
+With either option:
+
+1. A URL will be printed to the console. Copy this URL
+2. Open the URL in a browser on your local machine (not in Paperspace)
+3. Choose your Google account and grant the requested permissions
+4. Copy the authorization code displayed and paste it back into the Paperspace console
+5. The authentication token is now saved as `token.pickle` and will be reused for future sessions
 
 ## Running the Pipeline
 
@@ -112,6 +128,12 @@ For convenience, we've provided a script that runs the entire pipeline with head
 ./scripts/run_paperspace.sh
 ```
 
+The script automatically:
+
+1. Sets up the proper Python path
+2. Authenticates with Google Drive
+3. Runs the complete pipeline with all necessary flags
+
 ## Accessing Your Files on Google Drive
 
 All files will be stored in a directory structure under the specified base directory:
@@ -136,13 +158,28 @@ For large datasets or systems with limited memory:
 
 ## Troubleshooting
 
-1. **Authentication Issues**: If you encounter authentication problems, delete the `token.pickle` file and run the authentication process again with the `--headless` flag.
+1. **Authentication Issues**: If you encounter authentication problems, delete the `token.pickle` file and run the authentication process again with the standalone script:
 
-2. **Rate Limits**: Google Drive API has rate limits. If you hit them, the pipeline will automatically handle retries, but you may need to wait or split your work into smaller batches.
+   ```bash
+   rm token.pickle
+   python scripts/direct_auth.py --credentials credentials.json
+   ```
 
-3. **File Not Found**: Double-check that your file paths are correct and that you have the appropriate permissions on your Google Drive account.
+2. **ModuleNotFoundError for 'src'**: This indicates Python can't find the project modules:
 
-4. **Memory Issues**: If you still encounter memory problems, try processing smaller subsets of the datasets by specifying them explicitly with the `--datasets` parameter.
+   ```bash
+   # Use the standalone script instead:
+   python scripts/direct_auth.py --credentials credentials.json
+
+   # Or set the PYTHONPATH:
+   export PYTHONPATH="/path/to/gen-text-ai:$PYTHONPATH"
+   ```
+
+3. **Rate Limits**: Google Drive API has rate limits. If you hit them, the pipeline will automatically handle retries, but you may need to wait or split your work into smaller batches.
+
+4. **File Not Found**: Double-check that your file paths are correct and that you have the appropriate permissions on your Google Drive account.
+
+5. **Memory Issues**: If you still encounter memory problems, try processing smaller subsets of the datasets by specifying them explicitly with the `--datasets` parameter.
 
 ## References
 
