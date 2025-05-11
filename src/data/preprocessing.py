@@ -84,9 +84,31 @@ class DataPreprocessor:
         logger.info("Processing CodeSearchNet dataset...")
         
         def process_sample(examples):
-            prompts = [f"'''{docstring}'''\n# Write a Python function" for docstring in examples["docstring"]]
+            # Handle different field names depending on the dataset structure
+            docstrings = []
+            code_snippets = []
+            
+            # Try to extract the docstring and code from various field structures
+            if "function" in examples and isinstance(examples["function"], list):
+                for item in examples["function"]:
+                    if isinstance(item, dict):
+                        docstrings.append(item.get("docstring", ""))
+                        code_snippets.append(item.get("function", ""))
+            elif "docstring" in examples and "code" in examples:
+                docstrings = examples["docstring"]
+                code_snippets = examples["code"]
+            elif "docstring" in examples and "function" in examples:
+                docstrings = examples["docstring"]
+                code_snippets = examples["function"]
+            else:
+                # Fallback: create simple prompts
+                docstrings = ["Write a Python function" for _ in range(len(examples.get("code", examples.get("function", []))))]
+                code_snippets = examples.get("code", examples.get("function", []))
+            
+            prompts = [f"'''{doc}'''\n# Write a Python function" for doc in docstrings]
+            
             return self.common_preprocessing(
-                {"prompt": prompts, "completion": examples["code"]},
+                {"prompt": prompts, "completion": code_snippets},
                 "prompt", "completion",
                 streaming=streaming
             )
@@ -202,13 +224,66 @@ class DataPreprocessor:
         """Process InstructCode dataset."""
         logger.info("Processing InstructCode dataset...")
         
+        def process_sample(examples):
+            # Check for different field structures
+            prompts = []
+            completions = []
+            
+            # Try to extract from common field names
+            if "instruction" in examples and "output" in examples:
+                prompts = examples["instruction"]
+                completions = examples["output"]
+            elif "instructions" in examples and "response" in examples:
+                prompts = examples["instructions"]
+                completions = examples["response"]
+            elif "conversations" in examples:
+                # Handle conversation format
+                for conv_list in examples["conversations"]:
+                    if isinstance(conv_list, list) and len(conv_list) >= 2:
+                        # Extract first user message as prompt and first assistant message as completion
+                        user_msgs = [msg.get("value", "") for msg in conv_list if msg.get("role", "") == "user"]
+                        assistant_msgs = [msg.get("value", "") for msg in conv_list if msg.get("role", "") == "assistant"]
+                        
+                        if user_msgs and assistant_msgs:
+                            prompts.append(user_msgs[0])
+                            completions.append(assistant_msgs[0])
+            elif "messages" in examples:
+                # Handle messages format
+                for msg_list in examples["messages"]:
+                    if isinstance(msg_list, list) and len(msg_list) >= 2:
+                        user_msgs = [msg.get("content", "") for msg in msg_list if msg.get("role", "") == "user"]
+                        assistant_msgs = [msg.get("content", "") for msg in msg_list if msg.get("role", "") == "assistant"]
+                        
+                        if user_msgs and assistant_msgs:
+                            prompts.append(user_msgs[0])
+                            completions.append(assistant_msgs[0])
+            
+            if not prompts or not completions:
+                # Fallback: try to find any text fields to use
+                for key in examples:
+                    if "prompt" in key.lower() or "instruction" in key.lower() or "input" in key.lower():
+                        prompts = examples[key]
+                        break
+                        
+                for key in examples:
+                    if "completion" in key.lower() or "response" in key.lower() or "output" in key.lower() or "answer" in key.lower():
+                        completions = examples[key]
+                        break
+            
+            # Ensure we have matching lengths
+            min_len = min(len(prompts), len(completions))
+            prompts = prompts[:min_len]
+            completions = completions[:min_len]
+            
+            return self.common_preprocessing(
+                {"prompt": prompts, "completion": completions},
+                "prompt", "completion",
+                streaming=streaming
+            )
+        
         try:
             return dataset.map(
-                lambda examples: self.common_preprocessing(
-                    {"prompt": examples["prompt"], "completion": examples["completion"]},
-                    "prompt", "completion",
-                    streaming=streaming
-                ),
+                process_sample,
                 batched=True,
                 remove_columns=dataset.column_names if not streaming else None,
                 batch_size=100 if streaming else None
@@ -216,11 +291,7 @@ class DataPreprocessor:
         except Exception as e:
             logger.warning(f"Error removing columns in streaming mode: {e}")
             return dataset.map(
-                lambda examples: self.common_preprocessing(
-                    {"prompt": examples["prompt"], "completion": examples["completion"]},
-                    "prompt", "completion",
-                    streaming=streaming
-                ),
+                process_sample,
                 batched=True,
                 batch_size=100 if streaming else None
             )

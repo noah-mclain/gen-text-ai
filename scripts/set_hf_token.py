@@ -6,60 +6,95 @@ This is useful for accessing gated datasets that require authentication.
 
 import os
 import json
-import argparse
 import logging
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def set_hf_token(credentials_path="credentials.json"):
-    """Extract Hugging Face token from credentials.json and set as environment variable."""
+    """Set the HF_TOKEN environment variable from credentials file."""
+    
+    # Skip if HF_TOKEN is already set
+    if os.environ.get("HF_TOKEN"):
+        logger.info("HF_TOKEN is already set in environment variables")
+        return True
+        
+    # Check if credentials file exists
+    if not os.path.exists(credentials_path):
+        logger.warning(f"Credentials file not found at: {credentials_path}")
+        return False
+        
+    # Load the credentials
     try:
-        # Check if credentials file exists
-        if not os.path.exists(credentials_path):
-            logger.error(f"Credentials file not found at {credentials_path}")
-            return False
-            
-        # Load credentials
         with open(credentials_path, 'r') as f:
             credentials = json.load(f)
             
-        # Extract HF token if available
-        hf_token = None
+        # Look for token in various locations in the JSON structure
+        token = None
         
-        # Check different possible paths in the JSON structure
-        if "huggingface" in credentials:
-            hf_token = credentials["huggingface"].get("token")
-        elif "hf_token" in credentials:
-            hf_token = credentials["hf_token"]
-        elif "api_keys" in credentials and "huggingface" in credentials["api_keys"]:
-            hf_token = credentials["api_keys"]["huggingface"]
+        # Direct token field
+        if "hf_token" in credentials:
+            token = credentials["hf_token"]
+        # Nested under huggingface
+        elif "huggingface" in credentials and isinstance(credentials["huggingface"], dict):
+            if "token" in credentials["huggingface"]:
+                token = credentials["huggingface"]["token"]
+            else:
+                token = next(iter(credentials["huggingface"].values()), None)
+        # Nested under api_keys
+        elif "api_keys" in credentials and isinstance(credentials["api_keys"], dict):
+            if "huggingface" in credentials["api_keys"]:
+                token = credentials["api_keys"]["huggingface"]
+            elif "hf" in credentials["api_keys"]:
+                token = credentials["api_keys"]["hf"]
         
-        # Set environment variable if token was found
-        if hf_token:
-            os.environ["HF_TOKEN"] = hf_token
-            logger.info("Successfully set HF_TOKEN environment variable")
+        # Set the token if found
+        if token and isinstance(token, str) and len(token) > 10:
+            os.environ["HF_TOKEN"] = token
+            logger.info("Successfully set HF_TOKEN from credentials")
             return True
         else:
-            logger.error("No Hugging Face token found in credentials file")
-            logger.info("Please add your Hugging Face token to credentials.json under huggingface.token or hf_token")
+            logger.warning("Could not find valid HF_TOKEN in credentials file")
             return False
             
     except Exception as e:
-        logger.error(f"Error setting HF_TOKEN: {str(e)}")
+        logger.error(f"Error loading credentials: {str(e)}")
+        return False
+
+def check_hf_token():
+    """Check if HF_TOKEN is properly set."""
+    token = os.environ.get("HF_TOKEN")
+    
+    if not token:
+        logger.warning("HF_TOKEN is not set!")
+        logger.warning("Some gated datasets might be inaccessible.")
+        logger.warning("Set your token using: export HF_TOKEN=your_huggingface_token")
+        logger.warning("Or add it to your credentials.json file.")
         return False
         
-def main():
-    parser = argparse.ArgumentParser(description="Set Hugging Face token from credentials file")
-    parser.add_argument("--credentials", default="credentials.json",
-                        help="Path to credentials file (default: credentials.json)")
-    
-    args = parser.parse_args()
-    
-    if set_hf_token(args.credentials):
-        logger.info("HF_TOKEN has been set successfully")
-    else:
-        logger.error("Failed to set HF_TOKEN")
+    if len(token) < 10 or not token.startswith("hf_"):
+        logger.warning(f"HF_TOKEN value looks invalid: {token[:5]}...")
+        return False
         
+    logger.info("HF_TOKEN is set properly! You should be able to access gated datasets.")
+    return True
+
 if __name__ == "__main__":
-    main() 
+    # Try to find credentials in common locations
+    candidate_paths = [
+        "credentials.json",
+        "../credentials.json",
+        "../../credentials.json",
+        os.path.expanduser("~/credentials.json"),
+        os.path.expanduser("~/.huggingface/token")
+    ]
+    
+    for path in candidate_paths:
+        if os.path.exists(path):
+            logger.info(f"Found credentials at: {path}")
+            if set_hf_token(path):
+                break
+    
+    # Check if token is set properly
+    check_hf_token() 

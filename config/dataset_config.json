@@ -2,7 +2,8 @@
   "codesearchnet": {
     "path": "code-search-net/code_search_net",
     "processor": "codesearchnet",
-    "split": "train"
+    "split": "train",
+    "language": "python"
   },
   "code_alpaca": {
     "path": "sahil2801/CodeAlpaca-20k",
@@ -15,7 +16,7 @@
     "split": "train"
   },
   "mbpp": {
-    "path": "google-research-datasets/mbpp",
+    "path": "mbpp",
     "processor": "mbpp",
     "split": "train"
   },
@@ -36,7 +37,7 @@
     "language": "python"
   },
   "humaneval": {
-    "path": "openai/openai_humaneval",
+    "path": "openai/human-eval",
     "processor": "humaneval"
   }
 }
