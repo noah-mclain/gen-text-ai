@@ -3,6 +3,59 @@ import os
 import argparse
 import logging
 
+# Fix import order to ensure Unsloth optimizations are applied correctly
+try:
+    from unsloth import FastLanguageModel
+except ImportError:
+    print("Unsloth not installed. Install with: pip install unsloth")
+
+# Standard imports
+import json
+import torch
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+
+# Import other libraries after unsloth
+import transformers
+from transformers import (
+    TrainingArguments,
+    Trainer,
+    DataCollatorForLanguageModeling,
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig
+)
+import peft
+from peft import LoraConfig
+
+# Import project modules
+try:
+    from src.utils.drive_utils import save_model_to_drive
+except (ImportError, ModuleNotFoundError):
+    try:
+        from utils.drive_utils import save_model_to_drive
+    except (ImportError, ModuleNotFoundError):
+        print("Warning: drive_utils not found. Google Drive integration will be disabled.")
+        
+        def save_model_to_drive(*args, **kwargs):
+            print("Google Drive integration not available.")
+            return False
+
+try:
+    from src.data.load_datasets import load_processed_datasets
+except (ImportError, ModuleNotFoundError):
+    try:
+        from data.load_datasets import load_processed_datasets
+    except (ImportError, ModuleNotFoundError):
+        print("Warning: load_datasets module not found.")
+        
+        def load_processed_datasets(*args, **kwargs):
+            raise ImportError("load_datasets module not found, cannot continue training.")
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # Try different import approaches to handle various module structures
 try:
     from src.training.trainer import DeepseekFineTuner
@@ -16,9 +69,6 @@ except ImportError:
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.drive_utils import mount_google_drive, setup_drive_directories, is_drive_mounted
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune deepseek-coder models")

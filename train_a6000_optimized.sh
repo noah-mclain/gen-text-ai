@@ -15,6 +15,17 @@ export DS_OFFLOAD_OPTIMIZER=cpu
 export ACCELERATE_USE_DEEPSPEED=true
 export ACCELERATE_DEEPSPEED_CONFIG_FILE=ds_config_a6000.json
 
+# Fix Unsloth import order warning
+export PYTHONPATH=$PYTHONPATH:.
+# Create a wrapper for imports
+cat > import_wrapper.py << EOL
+from unsloth import FastLanguageModel
+import transformers
+import peft
+print("✅ Imports properly ordered for optimal performance")
+EOL
+python import_wrapper.py
+
 # Check if HF_TOKEN is set
 if [ -z "$HF_TOKEN" ]; then
   echo "Warning: HF_TOKEN is not set. Some datasets might be inaccessible."
@@ -55,19 +66,23 @@ python -c "from datasets import load_dataset; load_dataset('codeparrot/codeparro
 python -c "from datasets import load_dataset; load_dataset('openai/openai_humaneval', streaming=True, trust_remote_code=True)"
 python -c "from datasets import load_dataset; load_dataset('ise-uiuc/Magicoder-OSS-Instruct-75K', split='train', streaming=True, trust_remote_code=True)"
 
-# Run the optimized training command
-echo "Starting optimized training with all datasets..."
-python -m torch.distributed.run --nproc_per_node=1 main_api.py \
-    --mode quick-stack \
+# Process datasets first
+echo "Processing datasets..."
+python main_api.py \
+    --mode process \
     --datasets the_stack_filtered codesearchnet_all code_alpaca humaneval mbpp codeparrot instruct_code \
     --streaming \
     --no_cache \
-    --auto-time \
-    --use_drive_api \
-    --credentials_path credentials.json \
-    --headless \
     --dataset_config config/dataset_config.json \
-    --training_config config/training_config.json \
+    2>&1 | tee logs/dataset_processing_$(date +%Y%m%d_%H%M%S).log
+
+# Train with direct module call (bypassing main_api.py)
+echo "Starting training with direct module call (avoids argument mismatch)..."
+python -m src.training.train \
+    --config config/training_config.json \
+    --data_dir data/processed \
+    --use_drive \
+    --drive_base_dir DeepseekCoder \
     2>&1 | tee logs/train_a6000_optimized_$(date +%Y%m%d_%H%M%S).log
 
 # Check exit status
