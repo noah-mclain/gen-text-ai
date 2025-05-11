@@ -17,7 +17,7 @@ class DataPreprocessor:
             use_auth_token=os.environ.get("HF_TOKEN")
         )
         self.max_length = max_length
-        self.begin_token = "<｜begin▁of▁sentence｜>"
+        self.begin_token = ""
         
     def common_preprocessing(self, examples: Dict, prompt_field: str, completion_field: str,
                             lowercase: bool = False, streaming: bool = False) -> Dict:
@@ -91,76 +91,132 @@ class DataPreprocessor:
                 streaming=streaming
             )
         
-        return dataset.map(
-            process_sample,
-            batched=True, 
-            remove_columns=dataset.column_names,
-            batch_size=100 if streaming else None
-        )
+        try:
+            return dataset.map(
+                process_sample,
+                batched=True, 
+                remove_columns=dataset.column_names if not streaming else None,
+                batch_size=100 if streaming else None
+            )
+        except Exception as e:
+            logger.warning(f"Error removing columns in streaming mode: {e}")
+            return dataset.map(
+                process_sample,
+                batched=True,
+                batch_size=100 if streaming else None
+            )
     
     def process_code_alpaca(self, dataset: Union[Dataset, DatasetDict],
                            streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process CodeAlpaca-20K dataset."""
         logger.info("Processing CodeAlpaca dataset...")
         
-        return dataset.map(
-            lambda examples: self.common_preprocessing(
-                {"prompt": examples["instruction"], "completion": examples["output"]},
-                "prompt", "completion",
-                streaming=streaming
-            ),
-            batched=True,
-            remove_columns=dataset.column_names,
-            batch_size=100 if streaming else None
-        )
+        try:
+            return dataset.map(
+                lambda examples: self.common_preprocessing(
+                    {"prompt": examples["instruction"], "completion": examples["output"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                ),
+                batched=True,
+                remove_columns=dataset.column_names if not streaming else None,
+                batch_size=100 if streaming else None
+            )
+        except Exception as e:
+            logger.warning(f"Error removing columns in streaming mode: {e}")
+            return dataset.map(
+                lambda examples: self.common_preprocessing(
+                    {"prompt": examples["instruction"], "completion": examples["output"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                ),
+                batched=True,
+                batch_size=100 if streaming else None
+            )
     
     def process_instruct_code(self, dataset: Union[Dataset, DatasetDict],
                              streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process InstructCode dataset."""
         logger.info("Processing InstructCode dataset...")
         
-        return dataset.map(
-            lambda examples: self.common_preprocessing(
-                {"prompt": examples["prompt"], "completion": examples["completion"]},
-                "prompt", "completion",
-                streaming=streaming
-            ),
-            batched=True,
-            remove_columns=dataset.column_names,
-            batch_size=100 if streaming else None
-        )
+        try:
+            return dataset.map(
+                lambda examples: self.common_preprocessing(
+                    {"prompt": examples["prompt"], "completion": examples["completion"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                ),
+                batched=True,
+                remove_columns=dataset.column_names if not streaming else None,
+                batch_size=100 if streaming else None
+            )
+        except Exception as e:
+            logger.warning(f"Error removing columns in streaming mode: {e}")
+            return dataset.map(
+                lambda examples: self.common_preprocessing(
+                    {"prompt": examples["prompt"], "completion": examples["completion"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                ),
+                batched=True,
+                batch_size=100 if streaming else None
+            )
     
     def process_mbpp(self, dataset: Union[Dataset, DatasetDict],
                     streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process MBPP dataset."""
         logger.info("Processing MBPP dataset...")
         
-        return dataset.map(
-            lambda examples: self.common_preprocessing(
-                {"prompt": examples["text"], "completion": examples["code"]},
-                "prompt", "completion",
-                streaming=streaming
-            ),
-            batched=True,
-            remove_columns=dataset.column_names,
-            batch_size=100 if streaming else None
-        )
+        try:
+            return dataset.map(
+                lambda examples: self.common_preprocessing(
+                    {"prompt": examples["text"], "completion": examples["code"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                ),
+                batched=True,
+                remove_columns=dataset.column_names if not streaming else None,
+                batch_size=100 if streaming else None
+            )
+        except Exception as e:
+            logger.warning(f"Error removing columns in streaming mode: {e}")
+            return dataset.map(
+                lambda examples: self.common_preprocessing(
+                    {"prompt": examples["text"], "completion": examples["code"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                ),
+                batched=True,
+                batch_size=100 if streaming else None
+            )
     
     def process_ds1000(self, dataset: Union[Dataset, DatasetDict],
                       streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process DS-1000 dataset."""
         logger.info("Processing DS-1000 dataset...")
         
-        return dataset.map(
-            lambda examples: self.common_preprocessing(
-                {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
-                "prompt", "completion",
-                streaming=streaming
-            ),
-            batched=True,
-            remove_columns=dataset.column_names,
-            batch_size=100 if streaming else None
-        )
+        try:
+            return dataset.map(
+                lambda examples: self.common_preprocessing(
+                    {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                ),
+                batched=True,
+                remove_columns=dataset.column_names if not streaming else None,
+                batch_size=100 if streaming else None
+            )
+        except Exception as e:
+            logger.warning(f"Error removing columns in streaming mode: {e}")
+            return dataset.map(
+                lambda examples: self.common_preprocessing(
+                    {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                ),
+                batched=True,
+                batch_size=100 if streaming else None
+            )
     
     def process_codeparrot(self, dataset: Union[Dataset, DatasetDict],
                           streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -176,12 +232,20 @@ class DataPreprocessor:
                 streaming=streaming
             )
         
-        return dataset.map(
-            process_sample,
-            batched=True,
-            remove_columns=dataset.column_names,
-            batch_size=100 if streaming else None
-        )
+        try:
+            return dataset.map(
+                process_sample,
+                batched=True,
+                remove_columns=dataset.column_names if not streaming else None,
+                batch_size=100 if streaming else None
+            )
+        except Exception as e:
+            logger.warning(f"Error removing columns in streaming mode: {e}")
+            return dataset.map(
+                process_sample,
+                batched=True,
+                batch_size=100 if streaming else None
+            )
     
     def process_the_stack(self, dataset: Union[Dataset, DatasetDict], language: str = "python",
                          streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -201,28 +265,62 @@ class DataPreprocessor:
                 streaming=streaming
             )
         
-        return filtered_dataset.map(
-            process_sample,
-            batched=True,
-            remove_columns=filtered_dataset.column_names,
-            batch_size=100 if streaming else None
-        )
+        try:
+            return filtered_dataset.map(
+                process_sample,
+                batched=True,
+                remove_columns=filtered_dataset.column_names if not streaming else None,
+                batch_size=100 if streaming else None
+            )
+        except Exception as e:
+            logger.warning(f"Error removing columns in streaming mode: {e}")
+            return filtered_dataset.map(
+                process_sample,
+                batched=True,
+                batch_size=100 if streaming else None
+            )
     
     def process_humaneval(self, dataset: Union[Dataset, DatasetDict],
                          streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process HumanEval dataset."""
         logger.info("Processing HumanEval dataset...")
         
-        return dataset.map(
-            lambda examples: self.common_preprocessing(
-                {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
-                "prompt", "completion",
-                streaming=streaming
-            ),
-            batched=True,
-            remove_columns=dataset.column_names,
-            batch_size=100 if streaming else None
-        )
+        # For HumanEval, we need special handling for streaming mode
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually
+            for example in dataset:
+                processed = self.common_preprocessing(
+                    {"prompt": example["prompt"], "completion": example["canonical_solution"]},
+                    "prompt", "completion",
+                    streaming=streaming
+                )
+                processed_examples.append(processed)
+                
+            return processed_examples
+        else:
+            try:
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    remove_columns=dataset.column_names,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error processing HumanEval: {e}")
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True
+                )
     
     def load_and_process_all_datasets(self, dataset_config: Dict, save_path: str) -> Dict[str, Dataset]:
         """Load and process all configured datasets."""
@@ -235,6 +333,7 @@ class DataPreprocessor:
                 # Get streaming and caching options
                 streaming = config.get("streaming", False)
                 use_cache = config.get("use_cache", True)
+                max_samples = config.get("max_samples", 10000)
                 
                 # Set cache directory if needed
                 if not use_cache:
@@ -258,21 +357,59 @@ class DataPreprocessor:
                 if config['processor'] == "the_stack" and "language" in config:
                     processor_args["language"] = config["language"]
                 
+                # Process the dataset
                 processed_dataset = processor_func(dataset, **processor_args)
                 
-                # Save the processed dataset
+                # Create save directory
                 os.makedirs(save_path, exist_ok=True)
                 save_path_for_dataset = os.path.join(save_path, f"{dataset_name}_processed")
                 
-                # For streaming datasets, we need to materialize them before saving
+                # For streaming datasets we need to materialize and convert to non-streaming format
                 if streaming:
-                    logger.info(f"Materializing streaming dataset {dataset_name} before saving...")
-                    processed_dataset = processed_dataset.take(config.get("max_samples", 100000))
+                    logger.info(f"Materializing streaming dataset {dataset_name} (taking {max_samples} samples)...")
+                    
+                    # Create standard format dataset
+                    from datasets import Dataset as HFDataset
+                    
+                    # Collect all examples in memory
+                    collected_data = {"processed_text": [], "length": []}
+                    
+                    # Handle different return types from processor
+                    if isinstance(processed_dataset, list):
+                        # For HumanEval or other datasets that return a list
+                        count = 0
+                        for example in processed_dataset:
+                            if count >= max_samples:
+                                break
+                            collected_data["processed_text"].append(example["processed_text"])
+                            collected_data["length"].append(example["length"])
+                            count += 1
+                    else:
+                        # For regular streaming datasets
+                        count = 0
+                        for example in processed_dataset:
+                            if count >= max_samples:
+                                break
+                            collected_data["processed_text"].append(example["processed_text"])
+                            collected_data["length"].append(example["length"])
+                            count += 1
+                    
+                    # Convert to HF Dataset
+                    materialized_dataset = HFDataset.from_dict(collected_data)
+                    
+                    # Save the materialized dataset
+                    materialized_dataset.save_to_disk(save_path_for_dataset)
+                    logger.info(f"Saved materialized dataset ({len(materialized_dataset)} examples) to {save_path_for_dataset}")
+                    
+                    # Store for return
+                    processed_datasets[dataset_name] = materialized_dataset
+                    
+                else:
+                    # For non-streaming datasets, save directly
+                    processed_dataset.save_to_disk(save_path_for_dataset)
+                    logger.info(f"Saved processed dataset to {save_path_for_dataset}")
+                    processed_datasets[dataset_name] = processed_dataset
                 
-                processed_dataset.save_to_disk(save_path_for_dataset)
-                logger.info(f"Saved processed dataset to {save_path_for_dataset}")
-                
-                processed_datasets[dataset_name] = processed_dataset
                 logger.info(f"Successfully processed and saved {dataset_name}")
             
             except Exception as e:

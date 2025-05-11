@@ -1,0 +1,20 @@
+{
+  "code_alpaca": {
+    "path": "sahil2801/CodeAlpaca-20k",
+    "processor": "code_alpaca",
+    "split": "train",
+    "max_samples": 10000
+  },
+  "mbpp": {
+    "path": "mbpp",
+    "processor": "mbpp",
+    "split": "train",
+    "max_samples": 5000
+  },
+  "codeparrot": {
+    "path": "codeparrot/codeparrot-clean",
+    "processor": "codeparrot",
+    "split": "train",
+    "max_samples": 5000
+  }
+}
