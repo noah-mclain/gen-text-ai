@@ -258,7 +258,9 @@ def create_train_val_test_split(dataset: Dataset, train_size: float = 0.8, val_s
     """
     if dataset is None:
         logger.error("Cannot split None dataset")
-        return None, None, None
+        # Return empty datasets instead of None to prevent errors
+        empty_dataset = Dataset.from_dict({"text": []})
+        return empty_dataset, empty_dataset, empty_dataset
         
     try:
         # Check if dataset is empty
@@ -279,7 +281,45 @@ def create_train_val_test_split(dataset: Dataset, train_size: float = 0.8, val_s
     try:
         if streaming:
             logger.warning("Splitting streaming datasets is approximate and may not be reproducible")
-            # Create a buffered generator for each split
+            
+            # Try to use the datasets library's streaming split functionality if available
+            try:
+                from datasets import IterableDataset
+                
+                # Check if the dataset is already an IterableDataset
+                if isinstance(dataset, IterableDataset):
+                    # Use built-in streaming split for iterable datasets if available
+                    splits = dataset.train_test_split(
+                        test_size=val_size + test_size,
+                        seed=seed,
+                        shuffle=True
+                    )
+                    train_dataset = splits["train"]
+                    
+                    # Further split the test into validation and test
+                    remaining_ratio = test_size / (val_size + test_size)
+                    remaining_splits = splits["test"].train_test_split(
+                        test_size=remaining_ratio,
+                        seed=seed,
+                        shuffle=True
+                    )
+                    
+                    return train_dataset, remaining_splits["train"], remaining_splits["test"]
+            except (ImportError, AttributeError) as e:
+                logger.warning(f"Could not use IterableDataset split functionality: {e}")
+            
+            # Fallback: Create a buffered generator for each split
+            def create_stream_generator(gen_function):
+                """Create a dataset-like object from a generator function"""
+                try:
+                    from datasets import IterableDataset
+                    # Convert generator to IterableDataset if possible
+                    return IterableDataset.from_generator(gen_function)
+                except (ImportError, AttributeError):
+                    # Fallback to just returning the generator function
+                    return gen_function()
+            
+            # Generator function to apply random split
             def split_generator(dataset, train_prop, val_prop, test_prop, seed=42):
                 random.seed(seed)
                 for example in dataset:
@@ -291,13 +331,24 @@ def create_train_val_test_split(dataset: Dataset, train_size: float = 0.8, val_s
                     else:
                         yield ("test", example)
             
-            # Create generators for each split
-            train_gen = (ex for split, ex in split_generator(dataset, train_size, val_size, test_size) if split == "train")
-            val_gen = (ex for split, ex in split_generator(dataset, train_size, val_size, test_size) if split == "validation")
-            test_gen = (ex for split, ex in split_generator(dataset, train_size, val_size, test_size) if split == "test")
+            # Generator functions for each split
+            def train_gen():
+                for split, ex in split_generator(dataset, train_size, val_size, test_size, seed):
+                    if split == "train":
+                        yield ex
+                        
+            def val_gen():
+                for split, ex in split_generator(dataset, train_size, val_size, test_size, seed):
+                    if split == "validation":
+                        yield ex
+                        
+            def test_gen():
+                for split, ex in split_generator(dataset, train_size, val_size, test_size, seed):
+                    if split == "test":
+                        yield ex
             
             # Create dataset objects
-            return train_gen, val_gen, test_gen
+            return create_stream_generator(train_gen), create_stream_generator(val_gen), create_stream_generator(test_gen)
         else:
             # For normal datasets, use the standard train_test_split method
             train_val_test = dataset.train_test_split(test_size=val_size + test_size, seed=seed)
@@ -312,6 +363,19 @@ def create_train_val_test_split(dataset: Dataset, train_size: float = 0.8, val_s
         logger.error(f"Error splitting dataset: {str(e)}")
         logger.debug(traceback.format_exc())
         
-        # Return the original dataset for all splits as a fallback
-        logger.warning("Returning original dataset for all splits as fallback")
-        return dataset, dataset, dataset
+        # Return empty datasets to prevent further errors
+        try:
+            # Try to create an empty dataset with the same structure
+            if hasattr(dataset, 'features'):
+                empty_dict = {k: [] for k in dataset.features.keys()}
+                empty_dataset = Dataset.from_dict(empty_dict)
+            else:
+                # Fallback to a simple empty dataset
+                empty_dataset = Dataset.from_dict({"text": []})
+                
+            logger.warning("Returning empty datasets for all splits as fallback")
+            return empty_dataset, empty_dataset, empty_dataset
+        except Exception:
+            # Last resort fallback
+            logger.warning("Returning the original dataset for all splits as fallback")
+            return dataset, dataset, dataset

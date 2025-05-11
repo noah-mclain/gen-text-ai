@@ -195,7 +195,7 @@ class DeepseekFineTuner:
         with open(config_path, 'r') as f:
             return json.load(f)
     
-    def _load_and_prepare_datasets(self, data_dir: str) -> DatasetDict:
+    def _load_and_prepare_datasets(self, data_dir: str) -> Dict[str, Dataset]:
         """Load and prepare datasets for training."""
         logger.info(f"Loading datasets from {data_dir}")
         
@@ -227,7 +227,7 @@ class DeepseekFineTuner:
         
         # Create train/val/test splits
         logger.info("Creating train/val/test splits")
-        splits = create_train_val_test_split(
+        train_dataset, val_dataset, test_dataset = create_train_val_test_split(
             combined_dataset,
             train_size=self.dataset_config.get("train_size", 0.9),
             val_size=self.dataset_config.get("val_size", 0.05),
@@ -236,11 +236,20 @@ class DeepseekFineTuner:
             streaming=streaming
         )
         
-        logger.info(f"Train size: {len(splits['train'])} examples")
-        logger.info(f"Validation size: {len(splits['validation'])} examples")
-        logger.info(f"Test size: {len(splits['test'])} examples")
+        # Safely check lengths for logging
+        try:
+            logger.info(f"Train size: {len(train_dataset) if hasattr(train_dataset, '__len__') else 'unknown'} examples")
+            logger.info(f"Validation size: {len(val_dataset) if hasattr(val_dataset, '__len__') else 'unknown'} examples")
+            logger.info(f"Test size: {len(test_dataset) if hasattr(test_dataset, '__len__') else 'unknown'} examples")
+        except Exception as e:
+            logger.warning(f"Could not determine dataset sizes: {str(e)}")
         
-        return splits
+        # Return as dictionary for trainer
+        return {
+            "train": train_dataset,
+            "validation": val_dataset,
+            "test": test_dataset
+        }
         
     def _load_model(self):
         """Load model with appropriate quantization and optimization."""
@@ -377,11 +386,41 @@ class DeepseekFineTuner:
         if self.use_drive:
             data_dir = get_drive_path(data_dir, os.path.join(self.drive_base_dir, "data/processed"), data_dir)
         
-        # Load datasets
-        datasets = self._load_and_prepare_datasets(data_dir)
+        # Validate the data directory exists
+        if not os.path.exists(data_dir):
+            raise ValueError(f"Data directory {data_dir} does not exist")
+            
+        # Load datasets with error handling
+        try:
+            logger.info(f"Loading and preparing datasets from {data_dir}")
+            datasets = self._load_and_prepare_datasets(data_dir)
+            
+            # Validate datasets
+            if not datasets or not all(key in datasets for key in ["train", "validation", "test"]):
+                raise ValueError("Failed to properly prepare train/validation/test datasets")
+                
+            # Validate that datasets have content
+            for split_name, dataset in datasets.items():
+                if dataset is None:
+                    raise ValueError(f"{split_name} dataset is None")
+                    
+                # Try to check if datasets are empty (when possible)
+                try:
+                    if hasattr(dataset, '__len__') and len(dataset) == 0:
+                        logger.warning(f"{split_name} dataset is empty - training may fail")
+                except Exception:
+                    logger.warning(f"Could not check length of {split_name} dataset")
+        except Exception as e:
+            logger.error(f"Error preparing datasets: {str(e)}")
+            raise
         
         # Load model
-        model = self._load_model()
+        logger.info("Loading and preparing model")
+        try:
+            model = self._load_model()
+        except Exception as e:
+            logger.error(f"Error loading model: {str(e)}")
+            raise
         
         # Create training arguments
         training_args_dict = {k: v for k, v in self.training_config.items() if k not in ["seed"]}
@@ -427,10 +466,10 @@ class DeepseekFineTuner:
                         "warmup_max_lr": self.training_config.get("learning_rate", 2e-4),
                         "warmup_num_steps": int(self.training_config.get("warmup_ratio", 0.03) * 
                                               self.training_config.get("num_train_epochs", 3) * 
-                                              len(datasets["train"]) / 
+                                              (len(datasets["train"]) if hasattr(datasets["train"], '__len__') else 1000) / 
                                               self.training_config.get("per_device_train_batch_size", 2)),
                         "total_num_steps": int(self.training_config.get("num_train_epochs", 3) * 
-                                            len(datasets["train"]) / 
+                                            (len(datasets["train"]) if hasattr(datasets["train"], '__len__') else 1000) / 
                                             self.training_config.get("per_device_train_batch_size", 2))
                     }
                 },
@@ -449,45 +488,71 @@ class DeepseekFineTuner:
             training_args_dict["deepspeed"] = ds_config_path
         
         # Create training arguments
-        training_args = TrainingArguments(**training_args_dict)
+        logger.info("Creating training arguments")
+        try:
+            training_args = TrainingArguments(**training_args_dict)
+        except Exception as e:
+            logger.error(f"Error creating training arguments: {str(e)}")
+            raise
         
         # Create data collator
+        logger.info("Creating data collator")
         data_collator = DataCollatorForLanguageModeling(
             tokenizer=self.tokenizer, 
             mlm=False
         )
         
         # Create trainer
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=datasets["train"],
-            eval_dataset=datasets["validation"],
-            tokenizer=self.tokenizer,
-            data_collator=data_collator
-        )
+        logger.info("Creating trainer")
+        try:
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=datasets["train"],
+                eval_dataset=datasets["validation"],
+                tokenizer=self.tokenizer,
+                data_collator=data_collator
+            )
+        except Exception as e:
+            logger.error(f"Error creating trainer: {str(e)}")
+            raise
         
         # Train model
         logger.info("Starting training")
-        trainer.train()
+        try:
+            trainer.train()
+        except Exception as e:
+            logger.error(f"Error during training: {str(e)}")
+            raise
         
         # Save model
         logger.info(f"Saving model to {training_args.output_dir}")
-        trainer.save_model()
-        self.tokenizer.save_pretrained(training_args.output_dir)
+        try:
+            trainer.save_model()
+            self.tokenizer.save_pretrained(training_args.output_dir)
+        except Exception as e:
+            logger.error(f"Error saving model: {str(e)}")
+            # Don't raise here so we can still try to evaluate
         
         # Evaluate model on test set
         logger.info("Evaluating model on test set")
-        metrics = trainer.evaluate(datasets["test"])
-        logger.info(f"Test metrics: {metrics}")
-        
-        # Save metrics
-        with open(os.path.join(training_args.output_dir, "metrics.json"), "w") as f:
-            json.dump(metrics, f)
+        try:
+            metrics = trainer.evaluate(datasets["test"])
+            logger.info(f"Test metrics: {metrics}")
+            
+            # Save metrics
+            with open(os.path.join(training_args.output_dir, "metrics.json"), "w") as f:
+                json.dump(metrics, f)
+        except Exception as e:
+            logger.error(f"Error evaluating model: {str(e)}")
+            metrics = {"error": str(e)}
         
         # Push to HuggingFace Hub if enabled
         if self.training_config.get("push_to_hub", False):
-            logger.info(f"Pushing model to HuggingFace Hub as {self.training_config.get('hub_model_id')}")
-            trainer.push_to_hub()
+            try:
+                logger.info(f"Pushing model to HuggingFace Hub as {self.training_config.get('hub_model_id')}")
+                trainer.push_to_hub()
+            except Exception as e:
+                logger.error(f"Error pushing to hub: {str(e)}")
         
         return metrics 

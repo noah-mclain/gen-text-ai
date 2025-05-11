@@ -144,8 +144,16 @@ def main():
                         help="Push the final model to Hugging Face Hub")
     parser.add_argument("--hub_model_id", type=str, default=None,
                         help="Model ID for pushing to Hugging Face Hub")
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable debug logging")
     
     args = parser.parse_args()
+    
+    # Set up verbose logging if debug mode is enabled
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.getLogger("transformers").setLevel(logging.DEBUG)
+        logging.getLogger("datasets").setLevel(logging.DEBUG)
     
     # Ensure absolute paths for config and data_dir
     if not os.path.isabs(args.config):
@@ -164,9 +172,19 @@ def main():
             # Assume paths relative to project root if not explicitly relative
             args.data_dir = os.path.join(project_root, args.data_dir)
     
-    # Ensure directories exist
-    os.makedirs(os.path.dirname(args.config), exist_ok=True)
-    os.makedirs(args.data_dir, exist_ok=True)
+    # Check if config file exists
+    if not os.path.exists(args.config):
+        logger.error(f"Config file not found: {args.config}")
+        return 1
+        
+    # Check if data directory exists
+    if not os.path.exists(args.data_dir):
+        logger.warning(f"Data directory not found: {args.data_dir}, creating it")
+        try:
+            os.makedirs(args.data_dir, exist_ok=True)
+        except Exception as e:
+            logger.error(f"Failed to create data directory: {e}")
+            return 1
     
     logger.info(f"Using config path: {args.config}")
     logger.info(f"Using data directory: {args.data_dir}")
@@ -175,45 +193,76 @@ def main():
     drive_paths = None
     if args.use_drive:
         logger.info("Attempting to mount Google Drive...")
-        if mount_google_drive():
-            logger.info(f"Setting up directories in Google Drive under {args.drive_base_dir}")
-            drive_paths = setup_drive_directories(os.path.join("/content/drive/MyDrive", args.drive_base_dir))
-            
-            # If pushing to HF Hub is enabled through command line, update config
-            if args.push_to_hub and os.path.exists(args.config):
-                import json
-                with open(args.config, 'r') as f:
-                    config = json.load(f)
+        try:
+            if mount_google_drive():
+                logger.info(f"Setting up directories in Google Drive under {args.drive_base_dir}")
+                drive_paths = setup_drive_directories(os.path.join("/content/drive/MyDrive", args.drive_base_dir))
                 
-                if "training" not in config:
-                    config["training"] = {}
-                
-                config["training"]["push_to_hub"] = True
-                if args.hub_model_id:
-                    config["training"]["hub_model_id"] = args.hub_model_id
-                
-                with open(args.config, 'w') as f:
-                    json.dump(config, f, indent=2)
-                
-                logger.info(f"Updated config to push to Hub with model ID: {args.hub_model_id or 'auto-generated'}")
-        else:
-            logger.warning("Failed to mount Google Drive. Using local storage instead.")
+                # If pushing to HF Hub is enabled through command line, update config
+                if args.push_to_hub and os.path.exists(args.config):
+                    import json
+                    with open(args.config, 'r') as f:
+                        config = json.load(f)
+                    
+                    if "training" not in config:
+                        config["training"] = {}
+                    
+                    config["training"]["push_to_hub"] = True
+                    if args.hub_model_id:
+                        config["training"]["hub_model_id"] = args.hub_model_id
+                    
+                    with open(args.config, 'w') as f:
+                        json.dump(config, f, indent=2)
+                    
+                    logger.info(f"Updated config to push to Hub with model ID: {args.hub_model_id or 'auto-generated'}")
+            else:
+                logger.warning("Failed to mount Google Drive. Using local storage instead.")
+                args.use_drive = False
+        except Exception as e:
+            logger.error(f"Error during Google Drive setup: {e}")
+            logger.warning("Failed to setup Google Drive. Using local storage instead.")
             args.use_drive = False
     
-    # Create fine-tuner
-    logger.info(f"Initializing fine-tuner with config {args.config}")
-    tuner = DeepseekFineTuner(
-        args.config, 
-        use_drive=args.use_drive, 
-        drive_base_dir=os.path.join("/content/drive/MyDrive", args.drive_base_dir) if args.use_drive else None
-    )
-    
-    # Start training
-    logger.info(f"Starting training with data from {args.data_dir}")
-    metrics = tuner.train(args.data_dir)
-    
-    logger.info(f"Training completed with metrics: {metrics}")
-    return 0  # Return success code
+    # Try/except around the entire training process to catch and log any errors
+    try:
+        # Create fine-tuner
+        logger.info(f"Initializing fine-tuner with config {args.config}")
+        tuner = DeepseekFineTuner(
+            args.config, 
+            use_drive=args.use_drive, 
+            drive_base_dir=os.path.join("/content/drive/MyDrive", args.drive_base_dir) if args.use_drive else None
+        )
+        
+        # Start training
+        logger.info(f"Starting training with data from {args.data_dir}")
+        metrics = tuner.train(args.data_dir)
+        
+        logger.info(f"Training completed with metrics: {metrics}")
+        return 0  # Return success code
+    except Exception as e:
+        # Catch and log any errors during the training process
+        logger.error(f"Training failed with error: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        # Try to save minimal checkpoint information if we have a tuner
+        try:
+            if 'tuner' in locals() and hasattr(tuner, 'config') and 'output_dir' in tuner.training_config:
+                import json
+                error_info = {
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                    "timestamp": datetime.now().isoformat()
+                }
+                error_file = os.path.join(tuner.training_config["output_dir"], "training_error.json")
+                os.makedirs(os.path.dirname(error_file), exist_ok=True)
+                with open(error_file, 'w') as f:
+                    json.dump(error_info, f, indent=2)
+                logger.info(f"Error information saved to {error_file}")
+        except Exception as save_error:
+            logger.error(f"Failed to save error information: {save_error}")
+        
+        return 1  # Return error code
 
 if __name__ == "__main__":
     sys.exit(main()) 
