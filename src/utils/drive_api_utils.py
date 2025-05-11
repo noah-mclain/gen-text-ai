@@ -37,10 +37,13 @@ class DriveAPI:
         self.authenticated = False
         self.file_id_cache = {}
         
-    def authenticate(self) -> bool:
+    def authenticate(self, headless: bool = False) -> bool:
         """
         Authenticate with Google Drive API.
         
+        Args:
+            headless: If True, use console flow instead of local server (for headless environments)
+            
         Returns:
             True if authentication was successful, False otherwise
         """
@@ -61,7 +64,14 @@ class DriveAPI:
                     
                     flow = InstalledAppFlow.from_client_secrets_file(
                         self.credentials_path, SCOPES)
-                    self.creds = flow.run_local_server(port=0)
+                    
+                    if headless:
+                        # Use console flow for headless environments
+                        logger.info("Using console-based authentication flow for headless environment")
+                        self.creds = flow.run_console()
+                    else:
+                        # Use local server flow for environments with a browser
+                        self.creds = flow.run_local_server(port=0)
                 
                 # Save the credentials for the next run
                 with open(self.token_path, 'wb') as token:
@@ -77,10 +87,10 @@ class DriveAPI:
             logger.error(f"Error authenticating with Google Drive API: {str(e)}")
             return False
     
-    def _ensure_authenticated(self) -> bool:
+    def _ensure_authenticated(self, headless: bool = False) -> bool:
         """Ensure API is authenticated before use."""
         if not self.authenticated:
-            return self.authenticate()
+            return self.authenticate(headless=headless)
         return True
     
     def create_folder(self, folder_name: str, parent_id: Optional[str] = None) -> Optional[str]:
@@ -408,19 +418,20 @@ class DriveAPI:
 
 # Helper functions to make the API easier to use
 
-def initialize_drive_api(credentials_path: str = 'credentials.json', token_path: str = 'token.pickle') -> DriveAPI:
+def initialize_drive_api(credentials_path: str = 'credentials.json', token_path: str = 'token.pickle', headless: bool = False) -> DriveAPI:
     """
     Initialize and authenticate the Drive API.
     
     Args:
         credentials_path: Path to the credentials.json file
         token_path: Path to save/load the token
+        headless: If True, use console flow instead of local server (for headless environments)
         
     Returns:
         Authenticated DriveAPI instance
     """
     drive_api = DriveAPI(credentials_path, token_path)
-    drive_api.authenticate()
+    drive_api.authenticate(headless=headless)
     return drive_api
 
 def setup_drive_directories(api: DriveAPI, base_dir: str) -> Dict[str, str]:

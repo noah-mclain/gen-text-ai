@@ -46,22 +46,23 @@ Paperspace Gradient environments don't support FUSE filesystem mounting or the `
    ```
 4. Upload your credentials.json file to the project root directory
 
-### 3. First-Time Authentication
+### 3. Authentication in Headless Environments
 
-The first time you run the pipeline, you'll need to complete the OAuth flow:
+For Paperspace notebooks and other headless environments, we've implemented a special console-based authentication flow:
 
-1. Run the authentication script:
+1. Run the authentication script with the headless flag:
    ```bash
-   python -c "from src.utils.drive_api_utils import initialize_drive_api; initialize_drive_api()"
+   python -c "from src.utils.drive_api_utils import initialize_drive_api; initialize_drive_api(headless=True)"
    ```
-2. A URL will be printed to the console. Open this URL in your browser.
-3. Choose your Google account and grant the requested permissions
-4. Copy the authorization code displayed and paste it back into the console
-5. The authentication token is now saved as `token.pickle` and will be reused for future sessions
+2. A URL will be printed to the console. Copy this URL
+3. Open the URL in a browser on your local machine (not in Paperspace)
+4. Choose your Google account and grant the requested permissions
+5. Copy the authorization code displayed and paste it back into the Paperspace console
+6. The authentication token is now saved as `token.pickle` and will be reused for future sessions
 
 ## Running the Pipeline
 
-Use the `main_api.py` script instead of the standard `main.py`:
+Use the `main_api.py` script instead of the standard `main.py` and include the `--headless` flag:
 
 ### Process Datasets with Memory Efficiency
 
@@ -74,7 +75,8 @@ python main_api.py \
     --no_cache \
     --use_drive_api \
     --credentials_path credentials.json \
-    --drive_base_dir DeepseekCoder
+    --drive_base_dir DeepseekCoder \
+    --headless
 ```
 
 ### Train the Model
@@ -85,7 +87,8 @@ python main_api.py \
     --training_config config/training_config.json \
     --use_drive_api \
     --credentials_path credentials.json \
-    --drive_base_dir DeepseekCoder
+    --drive_base_dir DeepseekCoder \
+    --headless
 ```
 
 ### Evaluate the Model
@@ -97,12 +100,13 @@ python main_api.py \
     --base_model deepseek-ai/deepseek-coder-6.7b-base \
     --use_drive_api \
     --credentials_path credentials.json \
-    --drive_base_dir DeepseekCoder
+    --drive_base_dir DeepseekCoder \
+    --headless
 ```
 
 ### Run the Complete Pipeline
 
-For convenience, we've provided a script that runs the entire pipeline:
+For convenience, we've provided a script that runs the entire pipeline with headless mode enabled:
 
 ```bash
 ./scripts/run_paperspace.sh
@@ -132,7 +136,7 @@ For large datasets or systems with limited memory:
 
 ## Troubleshooting
 
-1. **Authentication Issues**: If you encounter authentication problems, delete the `token.pickle` file and run the authentication process again.
+1. **Authentication Issues**: If you encounter authentication problems, delete the `token.pickle` file and run the authentication process again with the `--headless` flag.
 
 2. **Rate Limits**: Google Drive API has rate limits. If you hit them, the pipeline will automatically handle retries, but you may need to wait or split your work into smaller batches.
 

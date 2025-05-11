@@ -131,6 +131,8 @@ def main():
                         help="Path to Google Drive API credentials JSON file")
     parser.add_argument("--drive_base_dir", type=str, default="DeepseekCoder",
                         help="Base directory on Google Drive")
+    parser.add_argument("--headless", action="store_true",
+                        help="Use headless authentication for environments without a browser")
     
     args = parser.parse_args()
     
@@ -143,7 +145,7 @@ def main():
     
     if args.use_drive_api:
         logger.info("Initializing Google Drive API...")
-        drive_api = initialize_drive_api(args.credentials_path)
+        drive_api = initialize_drive_api(args.credentials_path, headless=args.headless)
         
         if drive_api.authenticated:
             logger.info(f"Setting up directories in Google Drive under {args.drive_base_dir}")

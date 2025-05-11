@@ -42,7 +42,8 @@ python main_api.py \
     --no_cache \
     --use_drive_api \
     --credentials_path credentials.json \
-    --drive_base_dir $DRIVE_BASE_DIR
+    --drive_base_dir $DRIVE_BASE_DIR \
+    --headless
 
 # Train the model
 echo "Training model with Google Drive API integration..."
@@ -51,7 +52,8 @@ python main_api.py \
     --training_config config/training_config.json \
     --use_drive_api \
     --credentials_path credentials.json \
-    --drive_base_dir $DRIVE_BASE_DIR
+    --drive_base_dir $DRIVE_BASE_DIR \
+    --headless
 
 # Evaluate the model
 echo "Evaluating model..."
@@ -61,7 +63,8 @@ python main_api.py \
     --base_model $BASE_MODEL \
     --use_drive_api \
     --credentials_path credentials.json \
-    --drive_base_dir $DRIVE_BASE_DIR
+    --drive_base_dir $DRIVE_BASE_DIR \
+    --headless
 
 # Visualize results
 echo "Generating visualizations..."
@@ -69,7 +72,8 @@ python main_api.py \
     --mode visualize \
     --use_drive_api \
     --credentials_path credentials.json \
-    --drive_base_dir $DRIVE_BASE_DIR
+    --drive_base_dir $DRIVE_BASE_DIR \
+    --headless
 
 echo "Pipeline completed! All data has been saved to Google Drive under $DRIVE_BASE_DIR."
 echo "You can access your model, results and visualizations there." 
