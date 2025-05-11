@@ -366,21 +366,38 @@ class DataPreprocessor:
     
     def process_codesearchnet(self, dataset: Union[Dataset, DatasetDict], 
                              streaming: bool = False, language: str = None) -> Union[Dataset, DatasetDict]:
-        """Process CodeSearchNet dataset."""
+        """
+        Process CodeSearchNet dataset.
+        
+        Args:
+            dataset: The CodeSearchNet dataset
+            streaming: Whether to use streaming mode for memory efficiency
+            language: Specific language to filter by, or None to process all languages
+            
+        Returns:
+            Processed dataset or list of processed examples
+        """
+        # Display clear logging information
         if language:
             logger.info(f"Processing CodeSearchNet dataset for {language}...")
             # Filter dataset by language if specified
-            if hasattr(dataset, "column_names") and "language" in dataset.column_names:
-                dataset = dataset.filter(lambda x: x["language"].lower() == language.lower())
-                if isinstance(dataset, Dataset) and len(dataset) == 0:
-                    logger.warning(f"No samples found for language {language}. Check if the language name is correct.")
-                    return dataset
+            try:
+                if hasattr(dataset, "column_names") and "language" in dataset.column_names:
+                    dataset = dataset.filter(lambda x: x["language"].lower() == language.lower())
+                    if isinstance(dataset, Dataset) and len(dataset) == 0:
+                        logger.warning(f"No samples found for language {language}. Check if the language name is correct.")
+                        return dataset
+                    logger.info(f"Filtered to {len(dataset) if hasattr(dataset, '__len__') else 'unknown'} examples for language: {language}")
+            except Exception as e:
+                logger.warning(f"Error filtering by language {language}: {e}")
         else:
             logger.info("Processing CodeSearchNet dataset for all languages...")
-        
-        # For streaming mode, process examples one at a time to avoid issues
+            
+        # For streaming mode, process examples one at a time to avoid memory issues
         if streaming:
             processed_examples = []
+            error_counts = {lang: 0 for lang in self.POPULAR_PROGRAMMING_LANGUAGES}
+            success_counts = {lang: 0 for lang in self.POPULAR_PROGRAMMING_LANGUAGES}
             
             # Process each example individually using our safe iterator
             for example in self._safe_dataset_iterator(dataset):
@@ -388,7 +405,7 @@ class DataPreprocessor:
                     # Extract docstring and code
                     doc = example.get("func_documentation_string", "")
                     code = example.get("func_code_string", "")
-                    lang = example.get("language", "")
+                    lang = example.get("language", "").lower()
                     
                     # Skip if missing required fields
                     if not doc or not code:
@@ -405,76 +422,209 @@ class DataPreprocessor:
                         "prompt", "completion",
                         streaming=True
                     )
+                    
+                    # Add language tag to track the source language
+                    if "processed_text" in processed:
+                        processed["language"] = lang
+                        
                     processed_examples.append(processed)
+                    
+                    # Track successful examples by language
+                    if lang in success_counts:
+                        success_counts[lang] += 1
+                    
+                    # Periodically log progress
+                    total_processed = sum(success_counts.values())
+                    if total_processed % 1000 == 0:
+                        logger.info(f"Processed {total_processed} CodeSearchNet examples so far")
+                        
                 except Exception as e:
-                    logger.warning(f"Error processing example: {e}")
+                    # Track errors by language
+                    if "language" in example and example["language"] in error_counts:
+                        error_counts[example["language"]] += 1
+                    logger.debug(f"Error processing example: {e}")
                     continue
+            
+            # Log statistics at the end
+            logger.info(f"Completed processing {len(processed_examples)} CodeSearchNet examples")
+            
+            # Log language statistics
+            processed_langs = {lang: count for lang, count in success_counts.items() if count > 0}
+            if processed_langs:
+                logger.info(f"Language distribution: {processed_langs}")
             
             return processed_examples
         
-        # For non-streaming mode
+        # For non-streaming mode - more efficient batch processing
         def process_sample(examples):
             # Handle different field names depending on the dataset structure
             if not isinstance(examples, dict):
                 logger.warning(f"Expected dictionary, got {type(examples)}")
-                return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                return {"processed_text": [], "length": [], "duplicates_removed": 0, "language": []}
                 
-            # Extract relevant fields
-            docstrings = examples.get("func_documentation_string", [])
-            code_snippets = examples.get("func_code_string", [])
-            languages = examples.get("language", [])
-            
-            # Ensure all fields are lists
-            if not isinstance(docstrings, list):
-                docstrings = [docstrings]
-            if not isinstance(code_snippets, list):
-                code_snippets = [code_snippets]
-            if not isinstance(languages, list):
-                languages = [languages]
+            try:
+                # Extract relevant fields
+                docstrings = examples.get("func_documentation_string", [])
+                code_snippets = examples.get("func_code_string", [])
+                languages = examples.get("language", [])
                 
-            # Ensure we have matching lengths
-            min_len = min(len(docstrings), len(code_snippets))
-            if min_len == 0:
-                return {"processed_text": [], "length": [], "duplicates_removed": 0}
-            
-            # Truncate to matching length
-            docstrings = docstrings[:min_len]
-            code_snippets = code_snippets[:min_len]
-            
-            # Create language-specific prompts if language information is available
-            if len(languages) >= min_len:
-                languages = languages[:min_len]
-                prompts = [f"'''{doc}'''\n# Write a {lang} function" 
-                          for doc, lang in zip(docstrings, languages)]
-            else:
-                prompts = [f"'''{doc}'''\n# Write a function" for doc in docstrings]
-            
-            return self.common_preprocessing(
-                {"prompt": prompts, "completion": code_snippets},
-                "prompt", "completion",
-                streaming=streaming
-            )
+                # Ensure all fields are lists
+                if not isinstance(docstrings, list):
+                    docstrings = [docstrings]
+                if not isinstance(code_snippets, list):
+                    code_snippets = [code_snippets]
+                if not isinstance(languages, list):
+                    languages = [languages]
+                    
+                # Ensure we have matching lengths
+                min_len = min(len(docstrings), len(code_snippets))
+                if min_len == 0:
+                    return {"processed_text": [], "length": [], "duplicates_removed": 0, "language": []}
+                
+                # Truncate to matching length
+                docstrings = docstrings[:min_len]
+                code_snippets = code_snippets[:min_len]
+                
+                # Create language-specific prompts if language information is available
+                if len(languages) >= min_len:
+                    languages = languages[:min_len]
+                    prompts = [f"'''{doc}'''\n# Write a {lang} function" 
+                              for doc, lang in zip(docstrings, languages)]
+                else:
+                    # Default to generic prompt if no language info
+                    prompts = [f"'''{doc}'''\n# Write a function" for doc in docstrings]
+                    # Fill in languages with empty values if needed
+                    languages = languages + [""] * (min_len - len(languages))
+                
+                # Process the examples
+                result = self.common_preprocessing(
+                    {"prompt": prompts, "completion": code_snippets},
+                    "prompt", "completion",
+                    streaming=streaming
+                )
+                
+                # Add languages to the result
+                if "processed_text" in result and len(result["processed_text"]) > 0:
+                    # Ensure languages list matches processed text length
+                    result_len = len(result["processed_text"])
+                    result["language"] = languages[:result_len] if len(languages) >= result_len else languages + [""] * (result_len - len(languages))
+                else:
+                    result["language"] = []
+                
+                return result
+            except Exception as e:
+                logger.warning(f"Error in batch processing: {e}")
+                return {"processed_text": [], "length": [], "duplicates_removed": 0, "language": []}
         
+        # Main batch processing with fallbacks
         try:
-            return dataset.map(
+            logger.info("Processing CodeSearchNet with batch processing")
+            
+            # First try: Standard batch processing
+            processed = dataset.map(
                 process_sample,
                 batched=True, 
                 remove_columns=dataset.column_names if not streaming else None,
-                batch_size=100 if streaming else None
+                batch_size=100 if streaming else None,
+                num_proc=1  # Safer processing option
             )
+            
+            # Log processing statistics
+            if isinstance(processed, Dataset) and hasattr(processed, "__len__"):
+                logger.info(f"Successfully processed {len(processed)} CodeSearchNet examples")
+                # Count by language if available
+                if "language" in processed.column_names:
+                    # Sample to get language distribution (avoid scanning full dataset)
+                    sample_size = min(1000, len(processed))
+                    languages = processed.select(range(sample_size))["language"]
+                    lang_counts = {}
+                    for lang in languages:
+                        if lang:  # Skip empty language values
+                            lang_counts[lang] = lang_counts.get(lang, 0) + 1
+                    if lang_counts:
+                        logger.info(f"Language distribution (sample): {lang_counts}")
+            
+            return processed
+            
         except Exception as e:
-            logger.warning(f"Error processing CodeSearchNet: {e}")
+            logger.warning(f"Error in standard batch processing: {e}")
+            
             try:
-                # Try a simpler approach with smaller batch size
-                return dataset.map(
+                logger.info("Trying with smaller batch size...")
+                # Second try: Smaller batch size
+                processed = dataset.map(
                     process_sample,
                     batched=True,
                     batch_size=20  # Smaller batch size
                 )
+                
+                if isinstance(processed, Dataset) and hasattr(processed, "__len__"):
+                    logger.info(f"Successfully processed {len(processed)} examples with smaller batch size")
+                
+                return processed
+                
             except Exception as e2:
                 logger.error(f"Failed second attempt to process CodeSearchNet: {e2}")
                 logger.error(traceback.format_exc())
-                return dataset  # Return original dataset if processing fails
+                
+                # Third try: Item-by-item processing as absolute fallback
+                try:
+                    logger.info("Falling back to item-by-item processing...")
+                    processed_examples = []
+                    
+                    # Process a limited number to avoid running out of memory
+                    max_fallback = 5000
+                    count = 0
+                    
+                    for example in dataset:
+                        if count >= max_fallback:
+                            break
+                            
+                        try:
+                            # Extract docstring and code
+                            doc = example.get("func_documentation_string", "")
+                            code = example.get("func_code_string", "")
+                            lang = example.get("language", "")
+                            
+                            # Skip if missing required fields
+                            if not doc or not code:
+                                continue
+                            
+                            # Create a prompt with language information if available
+                            if lang:
+                                prompt = f"'''{doc}'''\n# Write a {lang} function"
+                            else:
+                                prompt = f"'''{doc}'''\n# Write a function"
+                            
+                            # Direct formatting
+                            processed_text = f"User: {prompt}\nAssistant: {code}"
+                            processed_examples.append({
+                                "processed_text": processed_text,
+                                "length": len(processed_text),
+                                "language": lang
+                            })
+                            
+                            count += 1
+                        except Exception:
+                            continue
+                    
+                    logger.info(f"Fallback processing completed with {len(processed_examples)} examples")
+                    # Create a Dataset from the processed examples
+                    from datasets import Dataset as HFDataset
+                    
+                    # Extract features
+                    features = {
+                        "processed_text": [ex["processed_text"] for ex in processed_examples],
+                        "length": [ex["length"] for ex in processed_examples],
+                        "language": [ex["language"] for ex in processed_examples],
+                    }
+                    
+                    return HFDataset.from_dict(features)
+                    
+                except Exception as e3:
+                    logger.error(f"All processing attempts failed: {e3}")
+                    
+                return dataset  # Return original dataset if all processing attempts fail
     
     def process_code_alpaca(self, dataset: Union[Dataset, DatasetDict],
                            streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -1190,133 +1340,90 @@ class DataPreprocessor:
     
     def process_humaneval(self, dataset: Union[Dataset, DatasetDict],
                          streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """Process HumanEval dataset."""
-        logger.info("Processing HumanEval dataset...")
+        """Process HumanEval dataset by loading it directly from HuggingFace."""
+        logger.info("Processing HumanEval dataset via direct loading...")
         
-        # For HumanEval, we need a specialized approach since it has a specific format
-        # Direct approach without using dataset mappers that might drop examples
-        processed_examples = []
-        
+        # Always use direct loading from Hugging Face for HumanEval
         try:
-            # Get total samples for logging
-            if hasattr(dataset, "__len__"):
-                total_samples = len(dataset)
-                logger.info(f"Found {total_samples} examples in HumanEval dataset")
+            from datasets import load_dataset, Dataset as HFDataset
+            
+            # Load the dataset directly from Hugging Face
+            hf_token = os.environ.get("HF_TOKEN")
+            logger.info("Loading HumanEval directly from Hugging Face")
+            
+            try:
+                # Try with token authentication first
+                raw_dataset = load_dataset("openai/openai_humaneval", token=hf_token)
+                logger.info(f"Successfully loaded HumanEval dataset with authentication")
+            except Exception as e:
+                # Fallback to loading without token
+                logger.warning(f"Failed to load with token, trying without: {e}")
+                raw_dataset = load_dataset("openai/openai_humaneval")
+                logger.info(f"Successfully loaded HumanEval dataset without authentication")
+            
+            # Verify the dataset structure and size
+            if "test" in raw_dataset and hasattr(raw_dataset["test"], "__len__"):
+                logger.info(f"HumanEval dataset has {len(raw_dataset['test'])} examples")
             else:
-                total_samples = "unknown"
-                logger.info(f"Processing HumanEval dataset (streaming mode, unknown size)")
+                logger.warning(f"Unexpected dataset structure: {list(raw_dataset.keys())}")
             
-            # Forced iteration approach for maximum compatibility
-            samples_processed = 0
+            # Process the examples
+            processed_examples = []
             
-            # Handle both streaming and non-streaming cases
-            iterator = iter(dataset)
-            while True:
+            for example in raw_dataset["test"]:
                 try:
-                    example = next(iterator)
+                    # Extract the key fields
+                    prompt = example.get("prompt", "")
+                    solution = example.get("canonical_solution", "")
+                    task_id = example.get("task_id", "")
                     
-                    # Simple direct extraction of key fields
-                    if isinstance(example, dict):
-                        prompt = example.get("prompt", "")
-                        solution = example.get("canonical_solution", "")
-                        task_id = example.get("task_id", "")
-                        
-                        # Skip empty examples
-                        if not prompt or not solution:
-                            continue
-                        
-                        # For logging/debugging
-                        if samples_processed < 3:
-                            logger.debug(f"Example {samples_processed} - Task ID: {task_id}")
-                        
-                        processed = {
-                            "processed_text": f"User: {prompt.strip()}\nAssistant: {solution.strip()}",
-                            "length": len(prompt) + len(solution),
-                            "duplicates_removed": 0,
-                            "task_id": task_id
-                        }
-                        
-                        processed_examples.append(processed)
-                        samples_processed += 1
-                        
-                        # Log progress for large datasets
-                        if samples_processed % 50 == 0:
-                            logger.info(f"Processed {samples_processed} examples from HumanEval")
+                    # Skip empty examples
+                    if not prompt or not solution:
+                        continue
                     
-                except StopIteration:
-                    break
-                except Exception as e:
-                    logger.warning(f"Error processing example: {e}")
-                    continue
-            
-            # Final progress update
-            logger.info(f"Completed processing {samples_processed} examples from HumanEval dataset")
-            
-            # If we're in non-streaming mode and need to return a Dataset
-            if not streaming and hasattr(dataset, "__class__") and dataset.__class__.__name__ == "Dataset":
-                from datasets import Dataset as HFDataset
-                
-                # Create new Dataset with processed examples
-                if processed_examples:
-                    features = {"processed_text": [], "length": [], "task_id": []}
+                    # Create a properly formatted example
+                    processed_text = f"User: {prompt.strip()}\nAssistant: {solution.strip()}"
                     
-                    for ex in processed_examples:
-                        features["processed_text"].append(ex["processed_text"])
-                        features["length"].append(ex["length"])
-                        features["task_id"].append(ex.get("task_id", ""))
-                    
-                    return HFDataset.from_dict(features)
-                else:
-                    # Create an empty dataset with the right structure as fallback
-                    return HFDataset.from_dict({
-                        "processed_text": [],
-                        "length": [],
-                        "task_id": []
+                    # Add to processed examples
+                    processed_examples.append({
+                        "processed_text": processed_text,
+                        "length": len(processed_text),
+                        "task_id": task_id
                     })
+                except Exception as e:
+                    logger.warning(f"Error processing HumanEval example: {e}")
             
-            return processed_examples
+            logger.info(f"Successfully processed {len(processed_examples)} examples from HumanEval")
+            
+            # Return results based on whether streaming is requested
+            if not streaming:
+                # Create a new Dataset with the processed examples
+                features = {
+                    "processed_text": [ex["processed_text"] for ex in processed_examples],
+                    "length": [ex["length"] for ex in processed_examples],
+                    "task_id": [ex["task_id"] for ex in processed_examples]
+                }
+                return HFDataset.from_dict(features)
+            else:
+                return processed_examples
             
         except Exception as e:
-            logger.error(f"Error in HumanEval processing: {e}")
+            logger.error(f"Failed to process HumanEval dataset: {e}")
             logger.error(traceback.format_exc())
             
-            # Last resort: try direct loading from Hugging Face
-            try:
-                logger.info("Attempting to load HumanEval directly from Hugging Face")
-                
-                # This is a direct approach as fallback
-                from datasets import load_dataset
-                
-                hf_token = os.environ.get("HF_TOKEN")
-                raw_dataset = load_dataset("openai/openai_humaneval", token=hf_token)
-                
-                processed_examples = []
-                for example in raw_dataset["test"]:
-                    try:
-                        prompt = example.get("prompt", "")
-                        solution = example.get("canonical_solution", "")
-                        task_id = example.get("task_id", "")
-                        
-                        processed = {
-                            "processed_text": f"User: {prompt.strip()}\nAssistant: {solution.strip()}",
-                            "length": len(prompt) + len(solution),
-                            "task_id": task_id
-                        }
-                        
-                        processed_examples.append(processed)
-                    except Exception as inner_e:
-                        logger.warning(f"Error in fallback processing: {inner_e}")
-                
-                logger.info(f"Fallback approach processed {len(processed_examples)} examples")
-                return processed_examples
-                
-            except Exception as fallback_error:
-                logger.error(f"Fallback approach also failed: {fallback_error}")
-                # Return an empty result as last resort
+            # Return empty results as fallback
+            if not streaming:
+                from datasets import Dataset as HFDataset
+                return HFDataset.from_dict({
+                    "processed_text": [],
+                    "length": [],
+                    "task_id": []
+                })
+            else:
                 return []
     
     def load_and_process_all_datasets(self, dataset_config: Dict, save_path: str) -> Dict[str, Dataset]:
-        """Load and process all configured datasets."""
+        """Load and process all configured datasets with improved multi-language support."""
         processed_datasets = {}
         
         # Create save directory
@@ -1342,15 +1449,22 @@ class DataPreprocessor:
             if resources.get("memory_percent", 0) > 90:
                 logger.warning(f"System memory is very low ({resources.get('memory_percent')}%). Processing may fail.")
             
-        # Process datasets with minimal logging and optimized for low memory usage
-        total_datasets = len([name for name, cfg in dataset_config.items() if cfg.get("enabled", True)])
-        logger.info(f"Processing {total_datasets} datasets with streaming mode and low memory footprint")
+        # Group datasets by type to optimize processing
+        dataset_groups = {}
+        multi_lang_datasets = []
         
-        for i, (dataset_name, config) in enumerate(dataset_config.items()):
-            # Skip datasets that are explicitly disabled
-            if config.get("enabled") is False:
-                continue
-                
+        # First, identify all enabled datasets
+        enabled_datasets = []
+        for name, cfg in dataset_config.items():
+            if cfg.get("enabled", True):  # Default to enabled if not specified
+                enabled_datasets.append((name, cfg))
+        
+        # Count total enabled datasets
+        total_datasets = len(enabled_datasets)
+        logger.info(f"Processing {total_datasets} enabled datasets with streaming mode and low memory footprint")
+        
+        # Process datasets with special handling for multi-language ones
+        for i, (dataset_name, config) in enumerate(enabled_datasets):
             logger.info(f"[{i+1}/{total_datasets}] Processing dataset: {dataset_name}")
             
             # Check resources before processing each dataset
@@ -1366,7 +1480,52 @@ class DataPreprocessor:
                 if not use_cache:
                     os.environ["HF_DATASETS_CACHE"] = "no"
                 
-                # Load the dataset with proper error handling and minimal caching
+                # Special handling for datasets that need direct loading
+                if config['processor'] == 'humaneval':
+                    logger.info(f"Using direct loading for {dataset_name}")
+                    processor_func = getattr(self, f"process_{config['processor']}")
+                    
+                    try:
+                        # Direct processing without loading from config
+                        processed_dataset = processor_func(None, streaming=streaming)
+                        
+                        # For HumanEval, we'll save it directly
+                        save_path_for_dataset = os.path.join(save_path, f"{dataset_name}_processed")
+                        
+                        if isinstance(processed_dataset, list):
+                            # Convert to Dataset for saving
+                            from datasets import Dataset as HFDataset
+                            
+                            # Extract features
+                            if processed_dataset:
+                                features = {
+                                    "processed_text": [ex["processed_text"] for ex in processed_dataset if "processed_text" in ex],
+                                    "length": [ex["length"] for ex in processed_dataset if "length" in ex],
+                                }
+                                
+                                # Add task_id if available
+                                if "task_id" in processed_dataset[0]:
+                                    features["task_id"] = [ex.get("task_id", "") for ex in processed_dataset]
+                                
+                                dataset_obj = HFDataset.from_dict(features)
+                                dataset_obj.save_to_disk(save_path_for_dataset)
+                                logger.info(f"Saved {dataset_name} with {len(dataset_obj)} examples")
+                                processed_datasets[dataset_name] = dataset_obj
+                            else:
+                                logger.warning(f"No examples processed for {dataset_name}")
+                        else:
+                            # Save directly if it's already a Dataset
+                            processed_dataset.save_to_disk(save_path_for_dataset)
+                            logger.info(f"Saved {dataset_name} with {len(processed_dataset)} examples")
+                            processed_datasets[dataset_name] = processed_dataset
+                        
+                        # Skip the regular loading and processing flow
+                        continue
+                    except Exception as e:
+                        logger.error(f"Direct processing failed for {dataset_name}: {e}")
+                        # Fall through to regular processing as a fallback
+                
+                # Regular dataset loading from Hugging Face
                 try:
                     hf_token = os.environ.get("HF_TOKEN")
                     
@@ -1416,12 +1575,67 @@ class DataPreprocessor:
                     elif config.get("languages") is None:  # Only store single language if no languages list is provided
                         config["languages"] = [config["language"]]
                 
-                # Add support for multiple languages
+                # Special handling for multi-language datasets, especially CodeSearchNet
                 if "languages" in config and isinstance(config["languages"], list) and config["languages"]:
-                    # Just log the number of languages for brevity
-                    logger.info(f"Processing for {len(config['languages'])} languages")
-                    # For processors that have built-in language support, pass language=None to process all languages
-                    if config['processor'] in ["the_stack", "codesearchnet"]:
+                    languages = config["languages"]
+                    logger.info(f"Dataset {dataset_name} has multiple languages: {languages}")
+                    
+                    # For CodeSearchNet, process each language separately
+                    if config['processor'] == 'codesearchnet':
+                        # Process each language separately
+                        for lang in languages:
+                            try:
+                                lang_dataset_name = f"{dataset_name}_{lang}"
+                                logger.info(f"Processing language {lang} for {dataset_name}")
+                                
+                                # Process this single language
+                                processed_dataset = processor_func(dataset, streaming=streaming, language=lang)
+                                
+                                # Save this language-specific processed dataset
+                                save_path_for_lang = os.path.join(save_path, f"{lang_dataset_name}_processed")
+                                
+                                # For streaming datasets, collect and save
+                                if streaming and isinstance(processed_dataset, list):
+                                    from datasets import Dataset as HFDataset
+                                    
+                                    # Collect up to max_samples
+                                    collected_data = {"processed_text": [], "length": [], "language": []}
+                                    count = 0
+                                    
+                                    for example in processed_dataset:
+                                        if count >= max_samples:
+                                            break
+                                            
+                                        if isinstance(example, dict) and "processed_text" in example:
+                                            collected_data["processed_text"].append(example["processed_text"])
+                                            collected_data["length"].append(example.get("length", len(example["processed_text"])))
+                                            collected_data["language"].append(example.get("language", lang))
+                                            count += 1
+                                    
+                                    if collected_data["processed_text"]:
+                                        lang_dataset = HFDataset.from_dict(collected_data)
+                                        lang_dataset.save_to_disk(save_path_for_lang)
+                                        logger.info(f"Saved {lang_dataset_name} with {len(lang_dataset)} examples")
+                                        processed_datasets[lang_dataset_name] = lang_dataset
+                                else:
+                                    # Save non-streaming dataset directly
+                                    processed_dataset.save_to_disk(save_path_for_lang)
+                                    logger.info(f"Saved {lang_dataset_name} with {len(processed_dataset)} examples")
+                                    processed_datasets[lang_dataset_name] = processed_dataset
+                                
+                                # Force cleanup after each language
+                                gc.collect()
+                                self._check_resources()
+                                
+                            except Exception as e:
+                                logger.error(f"Error processing language {lang} for {dataset_name}: {e}")
+                                continue
+                        
+                        # Skip the combined dataset processing since we processed each language separately
+                        continue
+                    else:
+                        # For other processors, just pass language=None to process all languages
+                        logger.info(f"Processing for {len(languages)} languages")
                         processor_args["language"] = None
                 
                 # Add support for natural language filtering (for comments/docstrings)
@@ -1498,19 +1712,24 @@ class DataPreprocessor:
                 
                 # For streaming datasets we need to materialize and convert to non-streaming format
                 if streaming:
-                    logger.info(f"Materializing streaming dataset (taking {max_samples} samples)...")
+                    max_samples_to_take = processor_args.get("_max_samples", max_samples)
+                    logger.info(f"Materializing streaming dataset (taking {max_samples_to_take} samples)...")
                     
                     from datasets import Dataset as HFDataset
                     
                     # Collect examples incrementally to minimize memory usage
                     collected_data = {"processed_text": [], "length": []}
+                    
+                    # Add language field if available
+                    has_language = False
+                    
                     count = 0
                     errors = 0
                     
                     # Handle different return types from processor
                     if isinstance(processed_dataset, list):
                         for i, example in enumerate(processed_dataset):
-                            if count >= max_samples:
+                            if count >= max_samples_to_take:
                                 break
                             
                             try:
@@ -1519,6 +1738,14 @@ class DataPreprocessor:
                                     if isinstance(example["processed_text"], str):
                                         collected_data["processed_text"].append(example["processed_text"])
                                         collected_data["length"].append(example["length"])
+                                        
+                                        # Add language if available
+                                        if "language" in example:
+                                            if not has_language:
+                                                collected_data["language"] = []
+                                                has_language = True
+                                            collected_data["language"].append(example["language"])
+                                        
                                         # Track duplicate counts
                                         if "duplicates_removed" in example:
                                             total_duplicates_removed += example["duplicates_removed"]
@@ -1527,6 +1754,18 @@ class DataPreprocessor:
                                         # If it's a list (batch processing returned), take the first item
                                         collected_data["processed_text"].append(example["processed_text"][0])
                                         collected_data["length"].append(example["length"][0] if isinstance(example["length"], list) else example["length"])
+                                        
+                                        # Add language if available
+                                        if "language" in example:
+                                            if not has_language:
+                                                collected_data["language"] = []
+                                                has_language = True
+                                            lang_val = example["language"]
+                                            if isinstance(lang_val, list) and len(lang_val) > 0:
+                                                collected_data["language"].append(lang_val[0])
+                                            else:
+                                                collected_data["language"].append(lang_val)
+                                                
                                         count += 1
                                         
                                 # Update progress with simple counter to avoid tqdm overhead
@@ -1539,6 +1778,13 @@ class DataPreprocessor:
                                     # Free memory by saving intermediate results if collection is getting large
                                     if len(collected_data["processed_text"]) > 5000:
                                         try:
+                                            # Ensure all keys have the same length
+                                            for key in collected_data:
+                                                if len(collected_data[key]) != len(collected_data["processed_text"]):
+                                                    if key != "processed_text":  # Don't modify the main key
+                                                        # Fill with default values
+                                                        collected_data[key] = collected_data[key] + [""] * (len(collected_data["processed_text"]) - len(collected_data[key]))
+                                            
                                             # Save current batch and reset collections
                                             interim_dataset = HFDataset.from_dict(collected_data)
                                             interim_path = f"{save_path_for_dataset}_interim_{i}"
@@ -1550,6 +1796,8 @@ class DataPreprocessor:
                                             
                                             # Reset collections to free memory
                                             collected_data = {"processed_text": [], "length": []}
+                                            if has_language:
+                                                collected_data["language"] = []
                                             gc.collect()
                                         except Exception as e:
                                             # Continue collecting if saving fails
@@ -1559,11 +1807,11 @@ class DataPreprocessor:
                                 if errors <= 3 or errors % 100 == 0:  # Log only a few errors
                                     logger.warning(f"Error collecting example: {e}")
                                 if errors > 100:
-                                    logger.error("Too many errors, stopping collection")
+                                    logger.error(f"Too many errors ({errors}), stopping collection")
                                     break
                     else:
                         # Use safe iterator for regular streaming datasets
-                        for example in self._safe_dataset_iterator(processed_dataset, max_samples):
+                        for example in self._safe_dataset_iterator(processed_dataset, max_samples_to_take):
                             try:
                                 # Verify the example has the expected structure
                                 if isinstance(example, dict) and "processed_text" in example and "length" in example:
@@ -1571,6 +1819,14 @@ class DataPreprocessor:
                                     if example["processed_text"] and isinstance(example["processed_text"], str):
                                         collected_data["processed_text"].append(example["processed_text"])
                                         collected_data["length"].append(example["length"])
+                                        
+                                        # Add language if available
+                                        if "language" in example:
+                                            if not has_language:
+                                                collected_data["language"] = []
+                                                has_language = True
+                                            collected_data["language"].append(example["language"])
+                                        
                                         # Track duplicate counts
                                         if "duplicates_removed" in example:
                                             total_duplicates_removed += example["duplicates_removed"]
@@ -1578,7 +1834,7 @@ class DataPreprocessor:
                                     elif isinstance(example["processed_text"], list) and len(example["processed_text"]) > 0:
                                         # Handle case where processed_text is a list
                                         for j, text in enumerate(example["processed_text"]):
-                                            if count >= max_samples:
+                                            if count >= max_samples_to_take:
                                                 break
                                             if text and isinstance(text, str):
                                                 collected_data["processed_text"].append(text)
@@ -1587,11 +1843,29 @@ class DataPreprocessor:
                                                     collected_data["length"].append(example["length"][j])
                                                 else:
                                                     collected_data["length"].append(0)  # Default length
+                                                
+                                                # Add language if available
+                                                if "language" in example:
+                                                    if not has_language:
+                                                        collected_data["language"] = []
+                                                        has_language = True
+                                                    if isinstance(example["language"], list) and j < len(example["language"]):
+                                                        collected_data["language"].append(example["language"][j])
+                                                    else:
+                                                        collected_data["language"].append("")
+                                                
                                                 count += 1
                                                 
                                     # Free memory by saving intermediate results if collection is getting large
                                     if len(collected_data["processed_text"]) > 5000:
                                         try:
+                                            # Ensure all keys have the same length
+                                            for key in collected_data:
+                                                if len(collected_data[key]) != len(collected_data["processed_text"]):
+                                                    if key != "processed_text":  # Don't modify the main key
+                                                        # Fill with default values
+                                                        collected_data[key] = collected_data[key] + [""] * (len(collected_data["processed_text"]) - len(collected_data[key]))
+                                            
                                             # Save current batch and reset collections
                                             interim_dataset = HFDataset.from_dict(collected_data)
                                             interim_path = f"{save_path_for_dataset}_interim_{count}"
@@ -1603,6 +1877,8 @@ class DataPreprocessor:
                                             
                                             # Reset collections to free memory
                                             collected_data = {"processed_text": [], "length": []}
+                                            if has_language:
+                                                collected_data["language"] = []
                                             gc.collect()
                                         except Exception as e:
                                             # Continue collecting if saving fails
@@ -1612,7 +1888,7 @@ class DataPreprocessor:
                                 if errors <= 3 or errors % 100 == 0:  # Log only a few errors
                                     logger.warning(f"Error processing example: {e}")
                                 if errors > 100:
-                                    logger.error("Too many errors, stopping collection")
+                                    logger.error(f"Too many errors ({errors}), stopping collection")
                                     break
                     
                     # Check resources before creating the final dataset
@@ -1623,10 +1899,11 @@ class DataPreprocessor:
                         logger.error(f"No examples could be collected for {dataset_name}")
                         continue
                         
-                    # Ensure both lists have the same length
-                    min_len = min(len(collected_data["processed_text"]), len(collected_data["length"]))
-                    collected_data["processed_text"] = collected_data["processed_text"][:min_len]
-                    collected_data["length"] = collected_data["length"][:min_len]
+                    # Ensure all fields have the same length
+                    for key in collected_data:
+                        if key != "processed_text" and len(collected_data[key]) != len(collected_data["processed_text"]):
+                            # Fill with default values
+                            collected_data[key] = collected_data[key] + [""] * (len(collected_data["processed_text"]) - len(collected_data[key]))
                     
                     # Convert to HF Dataset and save
                     try:
@@ -1699,5 +1976,18 @@ class DataPreprocessor:
         
         # Final resource check
         self._check_resources(force=True)
+        
+        # Log summary of processed datasets
+        if processed_datasets:
+            logger.info(f"Successfully processed {len(processed_datasets)} datasets:")
+            for name, dataset in processed_datasets.items():
+                if isinstance(dataset, Dataset) and hasattr(dataset, "__len__"):
+                    logger.info(f"  - {name}: {len(dataset)} examples")
+                elif isinstance(dataset, dict) and "parts" in dataset:
+                    logger.info(f"  - {name}: saved in {len(dataset['parts'])} parts")
+                else:
+                    logger.info(f"  - {name}: dataset processed")
+        else:
+            logger.warning("No datasets were successfully processed")
         
         return processed_datasets 

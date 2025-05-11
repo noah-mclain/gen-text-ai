@@ -7,6 +7,7 @@ This repository contains a comprehensive pipeline for fine-tuning the DeepSeek-C
 - Preprocessing of multiple code datasets (CodeSearchNet, CodeAlpaca, MBPP, etc.)
   - Dataset deduplication to remove redundant prompt+completion pairs
   - Consistent formatting for fine-tuning
+  - **Multi-language support** with automatic processing of all programming languages
 - Parameter-Efficient Fine-Tuning (PEFT) with LoRA
 - Optimization with Unsloth for faster training
 - 4-bit quantization for memory efficiency
@@ -56,12 +57,16 @@ pip install -r requirements.txt
   - Improved filtering of null, empty, or too-short samples
   - Ensured consistent UTF-8 encoding for all datasets
   - Added multi-language support for CodeSearchNet and The Stack datasets (Python, Java, JavaScript, PHP, Ruby, Go, C++, C, C#)
+  - **NEW: Enhanced language-specific processing that preserves language information in processed datasets**
+  - **NEW: Optimized processing of large multi-language datasets with robust error handling**
+  - **NEW: Improved memory management during multi-language dataset processing**
 
 - **Improved Training Process**:
 
   - Added explicit dataset shuffling during training for better model convergence
   - Fixed dataset splitting to ensure proper train/validation/test distribution
   - Implemented proper data formatting with User/Assistant pattern for DeepSeek-Coder
+  - **NEW: Added language tracking during training to ensure balanced representation across languages**
 
 - **Fixed dataset preprocessing**:
 
@@ -70,6 +75,8 @@ pip install -r requirements.txt
   - Added 'enabled' flag support in dataset configuration to selectively process datasets
   - Fixed the configuration for The Stack dataset by using correct data_dir parameter instead of name parameter
   - Improved language-specific handling in dataset processors
+  - **NEW: Added parallel language-specific processing for CodeSearchNet to ensure all languages are processed correctly**
+  - **NEW: Memory-optimized language processing with incremental saving to prevent OOM errors**
 
 - **Enhanced Google Drive Integration**:
 
@@ -84,6 +91,8 @@ pip install -r requirements.txt
   - Fixed batch processing to handle empty datasets
   - Protected against division by zero in batch size calculation
   - Added streaming mode for large datasets
+  - **NEW: Implemented memory-efficient multi-language processing with incremental saving**
+  - **NEW: Added language distribution tracking to monitor balance across programming languages**
 
 ## Usage
 
@@ -111,6 +120,18 @@ Process specific datasets:
 python main.py --mode process --datasets codesearchnet mbpp humaneval
 ```
 
+Process CodeSearchNet with all languages:
+
+```bash
+python main.py --mode process --datasets codesearchnet_all
+```
+
+Process specific languages from CodeSearchNet:
+
+```bash
+python main.py --mode process --datasets codesearchnet_python codesearchnet_java codesearchnet_javascript
+```
+
 For memory-efficient processing:
 
 ```bash
@@ -125,10 +146,16 @@ Train the model with the configuration in `config/training_config.json`:
 python main.py --mode train
 ```
 
+Train with all CodeSearchNet languages (recommended approach):
+
+```bash
+python main.py --mode train --datasets codesearchnet_all code_alpaca humaneval
+```
+
 Enable Google Drive integration for larger datasets:
 
 ```bash
-python main.py --mode train --use_drive
+python main.py --mode train --use_drive --datasets codesearchnet_all code_alpaca mbpp
 ```
 
 Push to Hugging Face Hub after training:
@@ -165,6 +192,9 @@ python main_api.py --mode quick-stack --skip-preprocessing --auto-time --headles
 
 # Add specific datasets
 python main_api.py --mode quick-stack --datasets the_stack_filtered mbpp code_alpaca --auto-time --headless
+
+# Train with all CodeSearchNet languages and The Stack
+python main_api.py --mode quick-stack --datasets the_stack_filtered codesearchnet_all code_alpaca --auto-time --headless
 ```
 
 For more details, see [DIRECT_STACK_GUIDE.md](DIRECT_STACK_GUIDE.md).
@@ -243,62 +273,70 @@ Edit `config/dataset_config.json` to configure datasets for preprocessing. Examp
     "processor": "mbpp",
     "split": "train"
   },
-  "the_stack_python": {
-    "path": "bigcode/the-stack",
-    "data_dir": "data/python",
-    "processor": "the_stack",
-    "split": "train",
-    "language": "python",
-    "enabled": true
-  },
-  "the_stack_all": {
+  "the_stack_filtered": {
     "path": "bigcode/the-stack",
     "processor": "the_stack",
     "split": "train",
+    "languages": [
+      "python",
+      "java",
+      "javascript",
+      "c",
+      "cpp",
+      "c-sharp",
+      "typescript",
+      "html",
+      "sql",
+      "tex",
+      "dockerfile"
+    ],
+    "natural_languages": ["en", "ar"],
+    "sampling_ratio": 0.05,
+    "max_samples": 30000,
+    "max_processing_time": 180,
     "enabled": true
   }
 }
 ```
 
-Available language options:
+### Memory-Optimized Training Commands
 
-- **CodeSearchNet**: python, java, javascript, php, ruby, go
-- **The Stack**: python, java, javascript, php, ruby, go, c, cpp (c++), csharp (c#), and many more
+For training with large multi-language datasets, use these memory-optimized commands:
 
-Process single language datasets:
-
-```bash
-python main.py --mode process --datasets the_stack_python codesearchnet_java
-```
-
-Process all languages:
+#### Low-Memory Processing (8GB+ RAM)
 
 ```bash
-python main.py --mode process --datasets the_stack_all codesearchnet_all
+# Process CodeSearchNet with all languages
+python main.py --mode process --datasets codesearchnet_all --streaming --no_cache --max_samples 5000
 ```
 
-### Training Configuration
+#### Medium-Memory Processing (16GB+ RAM)
 
-Edit `config/training_config.json` to configure the training process. Example:
+```bash
+# Process CodeSearchNet with all languages and higher sample count
+python main.py --mode process --datasets codesearchnet_all humaneval mbpp --streaming --max_samples 10000
+```
 
-```json
-{
-  "model": {
-    "base_model": "deepseek-ai/deepseek-coder-6.7b-base",
-    "use_unsloth": true,
-    "use_4bit": true
-  },
-  "peft": {
-    "lora_alpha": 16,
-    "r": 16,
-    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]
-  },
-  "training": {
-    "output_dir": "models/deepseek-coder-finetune",
-    "num_train_epochs": 3,
-    "per_device_train_batch_size": 2
-  }
-}
+#### High-Memory Processing (32GB+ RAM)
+
+```bash
+# Process all datasets with optimal settings
+python main.py --mode process --streaming --max_samples 20000
+```
+
+### Multi-Language Fine-Tuning Commands
+
+For fine-tuning with specific language combinations:
+
+```bash
+# Fine-tune on Python and JavaScript only
+python main.py --mode train --datasets codesearchnet_python codesearchnet_javascript code_alpaca
+
+# Fine-tune on all supported languages
+python main.py --mode train --datasets codesearchnet_all code_alpaca humaneval
+
+# Fine-tune with The Stack filtered dataset plus CodeSearchNet
+python main_api.py --mode quick-stack --datasets the_stack_filtered codesearchnet_all --auto-time
 ```
 
 ## Advanced Evaluation Metrics
