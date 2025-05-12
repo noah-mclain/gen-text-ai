@@ -10,7 +10,7 @@ from typing import List, Dict, Optional
 # Import drive utils
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.drive_api_utils import DriveAPI, setup_drive_directories, save_to_drive, load_from_drive
+from utils.drive_sync import sync_to_drive, configure_sync_method
 
 # Try to set HF token from credentials
 try:
@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 def process_datasets(config_path: str, datasets: Optional[List[str]] = None, 
                     streaming: bool = False, no_cache: bool = False, 
                     use_drive_api: bool = False, credentials_path: Optional[str] = None,
-                    drive_base_dir: Optional[str] = None, headless: bool = False):
+                    drive_base_dir: Optional[str] = None, headless: bool = False,
+                    skip_local_storage: bool = False):
     """Process datasets according to the configuration."""
     
     # Check for existing HF_TOKEN environment variable first
@@ -84,15 +85,23 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
     # Process datasets
     output_dir = "data/processed"
     
-    # Update output directory if using Drive API
-    drive_api = None
-    directory_ids = None
-    
+    # Configure Google Drive syncing
     if use_drive_api:
-        from utils.drive_api_utils import initialize_drive_api, setup_drive_directories
-        
-        logger.info("Initializing Google Drive API for dataset storage")
-        drive_api = initialize_drive_api(credentials_path, headless=headless)
+        # Configure whether to use rclone or the Google Drive API
+        # By default, use rclone if available since it's more reliable
+        try:
+            # Check if rclone is available
+            import subprocess
+            result = subprocess.run(
+                ["rclone", "version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False
+            )
+            use_rclone = result.returncode == 0
+        except:
+            use_rclone = False
         
         # Ensure drive_base_dir is a string and not a boolean or None
         if drive_base_dir is None or drive_base_dir is True:
@@ -100,38 +109,53 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
             drive_base_dir = "DeepseekCoder"
             logger.warning(f"Invalid drive_base_dir provided, using default: {drive_base_dir}")
         
-        if drive_api and drive_api.authenticated:
-            logger.info(f"Setting up directories in Google Drive under {drive_base_dir}")
-            try:
-                directory_ids = setup_drive_directories(drive_api, drive_base_dir)
-                
-                if directory_ids and "data" in directory_ids:
-                    logger.info("Google Drive directories successfully set up")
-                else:
-                    logger.error("Failed to set up Google Drive directories for datasets")
-            except Exception as e:
-                logger.error(f"Error setting up Google Drive directories: {str(e)}")
+        # Configure the drive sync method
+        configure_sync_method(use_rclone=use_rclone, base_dir=drive_base_dir)
+        logger.info(f"Configured Drive sync using {'rclone' if use_rclone else 'Google Drive API'}")
+    
+    # If skipping local storage, create a temporary directory for processing
+    if skip_local_storage and use_drive_api:
+        import tempfile
+        temp_dir = tempfile.mkdtemp(prefix="dataset_processing_")
+        logger.info(f"Using temporary directory for processing: {temp_dir}")
+        output_dir = os.path.join(temp_dir, "processed")
+        os.makedirs(output_dir, exist_ok=True)
     
     # Process the datasets
     processed_datasets = preprocessor.load_and_process_all_datasets(dataset_config, output_dir)
     
     # Upload processed datasets if using Drive API
-    if use_drive_api and drive_api and drive_api.authenticated and directory_ids:
-        from utils.drive_api_utils import save_to_drive
-        
-        logger.info("Uploading processed datasets to Google Drive")
+    if use_drive_api:
+        logger.info("Syncing processed datasets to Google Drive")
         try:
-            if "data" in directory_ids and "processed" in directory_ids:
-                save_to_drive(drive_api, output_dir, directory_ids["processed"])
-                logger.info("Successfully processed and uploaded datasets")
-            elif "preprocessed" in directory_ids:
-                # Fallback to the preprocessed key
-                save_to_drive(drive_api, output_dir, directory_ids["preprocessed"])
-                logger.info("Successfully processed and uploaded datasets to 'preprocessed' folder")
-            else:
-                logger.error("Could not find appropriate directory to upload processed datasets")
+            # Sync the processed datasets to Drive
+            for dataset_name in processed_datasets:
+                dataset_path = os.path.join(output_dir, dataset_name)
+                if os.path.exists(dataset_path):
+                    # Sync to the "preprocessed" directory in Drive
+                    logger.info(f"Syncing dataset {dataset_name} to Drive")
+                    success = sync_to_drive(
+                        dataset_path, 
+                        "preprocessed", 
+                        delete_source=skip_local_storage,
+                        update_only=False  # We want to ensure all files are synced
+                    )
+                    
+                    if success:
+                        logger.info(f"Successfully synced dataset {dataset_name} to Drive")
+                    else:
+                        logger.error(f"Failed to sync dataset {dataset_name} to Drive")
+            
+            # If using a temporary directory, clean it up
+            if skip_local_storage and 'temp_dir' in locals():
+                import shutil
+                try:
+                    shutil.rmtree(temp_dir)
+                    logger.info(f"Cleaned up temporary directory: {temp_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temporary directory: {e}")
         except Exception as e:
-            logger.error(f"Error uploading datasets to Google Drive: {str(e)}")
+            logger.error(f"Error syncing datasets to Google Drive: {str(e)}")
     
     logger.info(f"Processed {len(processed_datasets)} datasets")
 
@@ -163,6 +187,8 @@ def main():
                         help="Load datasets in streaming mode to save memory")
     parser.add_argument("--no_cache", action="store_true",
                         help="Disable caching for datasets to save disk space")
+    parser.add_argument("--skip_local_storage", action="store_true",
+                        help="Skip storing datasets locally, sync directly to Drive")
     
     args = parser.parse_args()
     
@@ -174,7 +200,8 @@ def main():
         args.use_drive_api, 
         args.credentials_path,
         args.drive_base_dir, 
-        args.headless
+        args.headless,
+        args.skip_local_storage
     )
 
 if __name__ == "__main__":

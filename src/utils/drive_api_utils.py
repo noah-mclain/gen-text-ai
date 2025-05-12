@@ -70,20 +70,33 @@ class DriveAPI:
                         # Use console flow for headless environments
                         logger.info("Using console-based authentication flow for headless environment")
                         
+                        # Always use these redirect URIs regardless of what's in credentials.json
+                        redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+                        
                         # Generate authorization URL with explicit redirect_uri for OOB flow
                         auth_url, _ = flow.authorization_url(
                             access_type='offline',
                             include_granted_scopes='true',
-                            redirect_uri='urn:ietf:wg:oauth:2.0:oob')  # Explicitly set redirect_uri
+                            prompt='consent',  # Force prompt to ensure refresh token is included
+                            redirect_uri=redirect_uri)
                         
                         print(f"\nPlease go to this URL to authorize access:\n{auth_url}\n")
                         auth_code = input("Enter the authorization code: ")
                         
                         # Specify the same redirect_uri in fetch_token
-                        flow.fetch_token(code=auth_code, redirect_uri='urn:ietf:wg:oauth:2.0:oob')
+                        flow.fetch_token(code=auth_code, redirect_uri=redirect_uri)
                         self.creds = flow.credentials
                     else:
                         # Use local server flow for environments with a browser
+                        redirect_uri = 'http://localhost:8080'
+                        # Configure flow with explicit redirect URI before running server
+                        auth_url, _ = flow.authorization_url(
+                            access_type='offline',
+                            include_granted_scopes='true', 
+                            prompt='consent',
+                            redirect_uri=redirect_uri)
+                            
+                        # Now run the local server with the same redirect URI
                         self.creds = flow.run_local_server(port=8080)
                 
                 # Save the credentials for the next run
