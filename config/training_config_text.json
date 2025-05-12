@@ -6,7 +6,7 @@
     "use_nested_quant": true,
     "bnb_4bit_compute_dtype": "float16",
     "use_gradient_checkpointing": true,
-    "flash_attention": true
+    "xformers_attention": true
   },
   "peft": {
     "lora_alpha": 16,

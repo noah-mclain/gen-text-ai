@@ -380,10 +380,13 @@ class DeepseekFineTuner:
         logger.info(f"Using batch size: {per_device_batch_size}, " +
                    f"grad accumulation: {self.training_config['gradient_accumulation_steps']}")
         
-        # Configure Flash Attention if available
+        # Configure attention implementation
         if torch.cuda.get_device_capability()[0] >= 8:  # For A6000 (Ampere) and newer
-            attn_implementation = "flash_attention_2"
-            logger.info(f"Using Flash Attention 2 for faster training")
+            if self.model_config.get("xformers_attention", True):
+                attn_implementation = "xformers"
+                logger.info(f"Using xformers attention for faster training")
+            else:
+                attn_implementation = "eager"
         else:
             attn_implementation = "eager"
         

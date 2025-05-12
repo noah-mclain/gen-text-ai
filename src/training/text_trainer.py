@@ -335,9 +335,15 @@ class FlanUL2TextTrainer:
         if self.model_config.get("use_gradient_checkpointing", True) and not UNSLOTH_AVAILABLE:
             model.gradient_checkpointing_enable()
         
-        # Enable Flash Attention 2 if available and requested
-        if self.model_config.get("flash_attention", True) and hasattr(model, "config"):
-            model.config.use_flash_attention_2 = True
+        # Enable xformers attention if available and requested
+        if self.model_config.get("xformers_attention", True) and hasattr(model, "config"):
+            try:
+                import xformers
+                # Enable memory efficient attention
+                model.config._attn_implementation = "xformers"
+                logger.info("Using xformers memory efficient attention")
+            except ImportError:
+                logger.warning("xformers not installed. Falling back to default attention.")
         
         # Log model parameters
         logger.info("Model initialized with the following configuration:")
