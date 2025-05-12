@@ -175,6 +175,8 @@ def main():
     # Google Drive API options
     parser.add_argument("--use_drive_api", action="store_true", 
                         help="Use Google Drive API for storage (for Paperspace)")
+    parser.add_argument("--use_drive", action="store_true", 
+                        help="Use Google Drive with rclone (preferred)")
     parser.add_argument("--credentials_path", type=str, default="credentials.json",
                         help="Path to Google Drive API credentials JSON file")
     parser.add_argument("--drive_base_dir", type=str, default="DeepseekCoder",
@@ -197,7 +199,7 @@ def main():
         args.datasets, 
         args.streaming, 
         args.no_cache,
-        args.use_drive_api, 
+        args.use_drive_api or args.use_drive, 
         args.credentials_path,
         args.drive_base_dir, 
         args.headless,

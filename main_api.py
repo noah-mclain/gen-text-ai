@@ -26,6 +26,7 @@ def ensure_directories():
     ]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
+        logger.info(f"Ensured directory exists: {d}")
 
 def run_command(command, description=None):
     """Run a shell command and log its output."""
@@ -58,7 +59,8 @@ def run_command(command, description=None):
         return False
 
 def process_datasets(config_path, datasets=None, streaming=False, no_cache=False, 
-                    use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
+                    use_drive_api=False, use_drive=False, credentials_path=None, 
+                    drive_base_dir=None, headless=False, skip_local_storage=False):
     """Process datasets for fine-tuning."""
     cmd = f"python -m src.data.process_datasets --config {config_path}"
     if datasets:
@@ -74,10 +76,19 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
         if headless:
             cmd += " --headless"
+    elif use_drive:
+        cmd += f" --use_drive --drive_base_dir {drive_base_dir}"
+        if headless:
+            cmd += " --headless"
+    
+    # Add the skip_local_storage parameter
+    if skip_local_storage:
+        cmd += " --skip_local_storage"
     
     return run_command(cmd, "Processing datasets")
 
-def train_model(config_path, data_dir, use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
+def train_model(config_path, data_dir, use_drive_api=False, use_drive=False, 
+              credentials_path=None, drive_base_dir=None, headless=False):
     """Train the model."""
     # Check if PYTHONPATH includes the project root, if not, add it to the command
     pythonpath_cmd = ""
@@ -90,11 +101,16 @@ def train_model(config_path, data_dir, use_drive_api=False, credentials_path=Non
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
         if headless:
             cmd += " --headless"
+    elif use_drive:
+        cmd += f" --use_drive --drive_base_dir {drive_base_dir}"
+        if headless:
+            cmd += " --headless"
     
     return run_command(cmd, "Training model")
 
 def evaluate_model(model_path, base_model, output_dir="results", 
-                 use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
+                 use_drive_api=False, use_drive=False, credentials_path=None, 
+                 drive_base_dir=None, headless=False):
     """Evaluate the model."""
     cmd = f"python -m src.evaluation.evaluate --model_path {model_path} --base_model {base_model} --output_dir {output_dir} --eval_humaneval --eval_mbpp --eval_ds1000"
     
@@ -102,16 +118,25 @@ def evaluate_model(model_path, base_model, output_dir="results",
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
         if headless:
             cmd += " --headless"
+    elif use_drive:
+        cmd += f" --use_drive --drive_base_dir {drive_base_dir}"
+        if headless:
+            cmd += " --headless"
     
     return run_command(cmd, "Evaluating model")
 
 def visualize_results(training_log, results_dir, output_dir="visualizations", 
-                     use_drive_api=False, credentials_path=None, drive_base_dir=None, headless=False):
+                     use_drive_api=False, use_drive=False, credentials_path=None, 
+                     drive_base_dir=None, headless=False):
     """Visualize results."""
     cmd = f"python -m src.utils.visualize --training_log {training_log} --results_dir {results_dir} --output_dir {output_dir}"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
+        if headless:
+            cmd += " --headless"
+    elif use_drive:
+        cmd += f" --use_drive --drive_base_dir {drive_base_dir}"
         if headless:
             cmd += " --headless"
     
@@ -220,12 +245,16 @@ def main():
     # Google Drive API options (for Paperspace)
     parser.add_argument("--use_drive_api", action="store_true",
                         help="Use Google Drive API instead of mounting (for Paperspace)")
+    parser.add_argument("--use_drive", action="store_true",
+                        help="Use Google Drive integration with rclone (preferred)")
     parser.add_argument("--credentials_path", type=str, default="credentials.json",
                         help="Path to Google Drive API credentials JSON file")
     parser.add_argument("--drive_base_dir", type=str, default="DeepseekCoder",
                         help="Base directory on Google Drive")
     parser.add_argument("--headless", action="store_true",
                         help="Use headless authentication for environments without a browser")
+    parser.add_argument("--skip_local_storage", action="store_true",
+                        help="Skip storing datasets locally, sync directly to Drive")
     
     # Quick Stack mode options
     parser.add_argument("--max-hours", type=float, default=None,
@@ -237,6 +266,9 @@ def main():
     
     args = parser.parse_args()
     
+    # Ensure directories exist before doing anything else
+    ensure_directories()
+    
     # Check for HF_TOKEN environment variable
     if os.environ.get("HF_TOKEN"):
         logger.info("Using Hugging Face token from environment variables")
@@ -244,72 +276,63 @@ def main():
         logger.warning("HF_TOKEN environment variable not set. Some datasets might be inaccessible.")
         logger.warning("Set your token using: export HF_TOKEN=your_huggingface_token")
     
-    # Ensure directories exist
-    ensure_directories()
-    
     # Special handling for quick-stack mode
     if args.mode == "quick-stack":
-        logger.info("Running in quick Stack training mode")
+        # Set up for the Quick Stack pipeline
+        logger.info("Starting Quick Stack pipeline")
         
-        # Set max training time (auto-calculate or use provided value)
-        max_hours = args.max_hours
-        if args.auto_time or max_hours is None:
+        # Determine optimal training time
+        if args.auto_time:
             max_hours = calculate_hours_until_midnight()
-            logger.info(f"Auto-calculated {max_hours} hours until midnight")
-            
-        # Always set streaming and no_cache for quick stack mode
-        args.streaming = True
-        args.no_cache = True
+            logger.info(f"Auto-calculated training time: {max_hours} hours")
+        else:
+            max_hours = args.max_hours or 10.0
+            logger.info(f"Using specified training time: {max_hours} hours")
         
-        # Default to the_stack_filtered if no datasets specified
-        if args.datasets is None:
-            args.datasets = ["the_stack_filtered"]
-            logger.info("Using the_stack_filtered dataset by default")
-        
-        # Optimize training config for time constraint
+        # Optimize training config for the available time
         optimize_training_config(args.training_config, max_hours)
         
-        # Replace mode with "all" to run the full pipeline
-        logger.info(f"Running optimized Stack training pipeline to complete in {max_hours} hours")
-        
-        # Decide whether to run process step
+        # Run the optimized pipeline for The Stack
         if not args.skip_preprocessing:
-            logger.info("Running preprocessing step for Stack dataset")
+            # Special dataset list that includes the Stack
+            stack_datasets = ["the_stack_filtered"]
+            
+            # Add other datasets if specified
+            if args.datasets:
+                stack_datasets.extend(args.datasets)
+            else:
+                # Default set of additional datasets
+                stack_datasets.extend(["codesearchnet_all", "code_alpaca", "mbpp", "humaneval", "codeparrot"])
+            
+            logger.info(f"Processing datasets for Quick Stack pipeline: {', '.join(stack_datasets)}")
+            
             if not process_datasets(
-                args.dataset_config, 
-                args.datasets, 
-                streaming=args.streaming, 
+                args.dataset_config,
+                datasets=stack_datasets,
+                streaming=args.streaming,
                 no_cache=args.no_cache,
-                use_drive_api=args.use_drive_api, 
+                use_drive_api=args.use_drive_api,
+                use_drive=args.use_drive,
                 credentials_path=args.credentials_path, 
                 drive_base_dir=args.drive_base_dir,
-                headless=args.headless
+                headless=args.headless,
+                skip_local_storage=args.skip_local_storage
             ):
                 logger.error("Dataset processing failed")
-                return
-        else:
-            logger.info("Skipping preprocessing step, using direct loading")
+                return 1
         
-        # Run training with optimized config
-        logger.info("Starting training with time-optimized configuration")
-        
-        # Add the current directory to PYTHONPATH if not already there
-        project_root = os.getcwd()
-        if project_root not in os.environ.get("PYTHONPATH", ""):
-            os.environ["PYTHONPATH"] = f"{project_root}:{os.environ.get('PYTHONPATH', '')}"
-            logger.info(f"Added {project_root} to PYTHONPATH for module imports")
-            
+        # Train with the optimized config
         if not train_model(
-            args.training_config, 
+            args.training_config,
             "data/processed",
-            use_drive_api=args.use_drive_api, 
+            use_drive_api=args.use_drive_api,
+            use_drive=args.use_drive,
             credentials_path=args.credentials_path, 
             drive_base_dir=args.drive_base_dir,
             headless=args.headless
         ):
             logger.error("Training failed")
-            return
-        
+            return 1
         logger.info(f"Quick Stack training completed successfully")
         return
     
@@ -349,77 +372,82 @@ def main():
             training_config = json.load(f)
     
     # Run the pipeline based on the mode
-    if args.mode in ["all", "process"]:
+    if args.mode == "all" or args.mode == "process":
         if not process_datasets(
-            args.dataset_config, 
-            args.datasets, 
-            streaming=args.streaming, 
+            args.dataset_config,
+            datasets=args.datasets,
+            streaming=args.streaming,
             no_cache=args.no_cache,
-            use_drive_api=args.use_drive_api, 
+            use_drive_api=args.use_drive_api,
+            use_drive=args.use_drive,
             credentials_path=args.credentials_path, 
             drive_base_dir=args.drive_base_dir,
-            headless=args.headless
+            headless=args.headless,
+            skip_local_storage=args.skip_local_storage
         ):
             logger.error("Dataset processing failed")
-            if args.mode != "all":
-                return
+            return 1
     
-    if args.mode in ["all", "train"]:
+    if args.mode == "all" or args.mode == "train":
         if not train_model(
-            args.training_config, 
+            args.training_config,
             "data/processed",
-            use_drive_api=args.use_drive_api, 
+            use_drive_api=args.use_drive_api,
+            use_drive=args.use_drive,
             credentials_path=args.credentials_path, 
             drive_base_dir=args.drive_base_dir,
             headless=args.headless
         ):
             logger.error("Training failed")
-            if args.mode != "all":
-                return
+            return 1
     
-    if args.mode in ["all", "evaluate"]:
-        # For "all" mode, use the trained model path from the config
-        model_path = args.model_path
-        base_model = args.base_model
+    if args.mode == "all" or args.mode == "evaluate":
+        # Make sure required args are provided
+        if not args.model_path:
+            logger.error("--model_path is required for evaluate mode")
+            return 1
         
-        if args.mode == "all":
-            output_dir = training_config.get("training", {}).get("output_dir", "models/deepseek-coder-finetune")
-            model_path = output_dir
-            base_model = training_config.get("model", {}).get("base_model")
-        
-        if not model_path:
-            logger.error("Model path is required for evaluation")
-            return
+        # If we're evaluating an adapter, we need the base model too
+        is_adapter = "adapter" in args.model_path or "lora" in args.model_path.lower()
+        if is_adapter and not args.base_model:
+            logger.error("--base_model is required when evaluating an adapter")
+            return 1
+            
+        base_model = args.base_model or "deepseek-ai/deepseek-coder-6.7b-base"
         
         if not evaluate_model(
-            model_path, 
+            args.model_path,
             base_model,
-            use_drive_api=args.use_drive_api, 
+            use_drive_api=args.use_drive_api,
+            use_drive=args.use_drive,
             credentials_path=args.credentials_path, 
             drive_base_dir=args.drive_base_dir,
             headless=args.headless
         ):
             logger.error("Evaluation failed")
-            if args.mode != "all":
-                return
+            return 1
     
-    if args.mode in ["all", "visualize"]:
-        # For "all" mode, use the trained model's log
-        training_log = os.path.join(
-            training_config.get("training", {}).get("output_dir", "models/deepseek-coder-finetune"),
-            "trainer_state.json"
-        )
+    if args.mode == "all" or args.mode == "visualize":
+        # Find the most recent training log
+        training_logs = Path("logs").glob("*.log")
+        try:
+            training_log = max(training_logs, key=os.path.getmtime)
+            training_log = str(training_log)
+        except (ValueError, FileNotFoundError):
+            training_log = None
+            logger.warning("No training logs found, skipping visualization")
         
-        if not visualize_results(
-            training_log, 
+        if training_log and not visualize_results(
+            training_log,
             "results", 
             use_drive_api=args.use_drive_api,
+            use_drive=args.use_drive,
             credentials_path=args.credentials_path, 
             drive_base_dir=args.drive_base_dir,
             headless=args.headless
         ):
             logger.error("Visualization failed")
-            return
+            return 1
     
     # If using Google Drive API, upload results
     if args.use_drive_api and drive_api and directory_ids:
