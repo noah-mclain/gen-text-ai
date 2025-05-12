@@ -6,13 +6,46 @@ import subprocess
 import json
 import datetime
 import tempfile
+import sys
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import Drive API utils
-from src.utils.drive_api_utils import initialize_drive_api, setup_drive_directories, save_to_drive, load_from_drive
+# Set up CUDA environment variables to prevent common issues
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0;8.6"
+os.environ["TORCH_NVCC_FLAGS"] = "-Xfatbin -compress-all"
+
+# Set CUBLAS workspace config to avoid CUDA OOM errors
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+# Enable safe PyTorch fallback mode
+os.environ["PYTORCH_ALLOW_NET_FALLBACK"] = "1"
+
+# Check for GPU and PyTorch compatibility
+try:
+    import torch
+    if torch.cuda.is_available():
+        logger.info(f"CUDA available: {torch.cuda.is_available()}")
+        logger.info(f"CUDA version: {torch.version.cuda}")
+        logger.info(f"CUDNN version: {torch.backends.cudnn.version()}")
+        logger.info(f"GPU device: {torch.cuda.get_device_name(0)}")
+    else:
+        logger.warning("CUDA is not available. Using CPU mode.")
+except ImportError as e:
+    logger.error(f"Failed to import PyTorch: {e}")
+    logger.warning("Continuing without PyTorch pre-check. This may lead to issues later.")
+except Exception as e:
+    logger.error(f"PyTorch/CUDA initialization error: {e}")
+    logger.warning("Setting environment variables to attempt fallback to CPU mode")
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    
+# Import Drive API utils after PyTorch to avoid import order issues
+try:
+    from src.utils.drive_api_utils import initialize_drive_api, setup_drive_directories, save_to_drive, load_from_drive
+except ImportError as e:
+    logger.error(f"Failed to import Drive utils: {e}")
 
 def ensure_directories():
     """Ensure all necessary directories exist."""
@@ -36,12 +69,17 @@ def run_command(command, description=None):
     logger.info(f"Command: {command}")
     
     try:
+        # Modify environment for the subprocess
+        env = os.environ.copy()
+        env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+        
         process = subprocess.Popen(
             command, 
             shell=True, 
             stdout=subprocess.PIPE, 
             stderr=subprocess.STDOUT,
-            universal_newlines=True
+            universal_newlines=True,
+            env=env
         )
         
         # Stream and log output
