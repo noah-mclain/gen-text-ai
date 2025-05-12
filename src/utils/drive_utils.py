@@ -95,19 +95,32 @@ def get_credentials(credentials_path: str = CREDENTIALS_PATH, token_path: str = 
                 return None
                 
             try:
+                # Create flow without specifying redirect_uri in constructor
                 flow = InstalledAppFlow.from_client_secrets_file(
                     credentials_path, SCOPES)
                 
-                # For headless environment, use console-based authentication
-                # The run_console() method doesn't exist in newer versions, so we need to handle this differently
-                print("\n\nVisit the following URL to authorize this application:")
-                auth_url = flow.authorization_url()[0]
-                print(f"\n{auth_url}\n")
-                
-                # Get authorization code from user
-                auth_code = input("Enter the authorization code: ")
-                flow.fetch_token(code=auth_code)
-                creds = flow.credentials
+                # Try browser-based authentication first
+                try:
+                    print("\nLaunching web browser for authentication...")
+                    creds = flow.run_local_server(port=8080)
+                except Exception:
+                    # Fall back to console-based authentication
+                    print("\nBrowser-based authentication failed. Falling back to manual authentication.")
+                    
+                    # Generate authorization URL without specifying redirect_uri
+                    auth_url, _ = flow.authorization_url(
+                        access_type='offline',
+                        include_granted_scopes='true')
+                    
+                    print("\nVisit the following URL to authorize this application:")
+                    print(f"\n{auth_url}\n")
+                    
+                    # Get authorization code from user
+                    auth_code = input("Enter the authorization code: ")
+                    
+                    # Don't specify redirect_uri in fetch_token if not used in authorization_url
+                    flow.fetch_token(code=auth_code)
+                    creds = flow.credentials
                 
                 # Save the credentials for future use
                 with open(token_path, 'w') as token:

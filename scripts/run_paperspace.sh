@@ -136,24 +136,21 @@ else
   echo -e "${GREEN}HF_TOKEN is already set in environment${NC}"
 fi
 
-# Verify Google Drive credentials
-if [ ! -f "$CREDENTIALS_PATH" ]; then
-  echo -e "${RED}Error: credentials.json file not found at $CREDENTIALS_PATH${NC}"
-  echo -e "${YELLOW}Google Drive API integration will be disabled${NC}"
-  echo -e "${YELLOW}Please download your credentials.json file from the Google Cloud Console:${NC}"
-  echo -e "${YELLOW}1. Go to https://console.cloud.google.com/${NC}"
-  echo -e "${YELLOW}2. Create a new project if you don't have one${NC}"
-  echo -e "${YELLOW}3. Enable the Google Drive API${NC}"
-  echo -e "${YELLOW}4. Create OAuth 2.0 credentials${NC}"
-  echo -e "${YELLOW}5. Download the credentials JSON file and rename it to credentials.json${NC}"
-  USE_DRIVE_API=false
+# Authenticate with Google Drive API
+echo -e "${BLUE}Authenticating with Google Drive API...${NC}"
+python scripts/google_drive_manager.py --action setup --headless
+
+# Set up folder structure in Google Drive
+echo -e "${BLUE}Setting up folders in Google Drive...${NC}"
+python scripts/google_drive_manager.py --action create_folders --base_dir "$DRIVE_BASE_DIR" --headless
+
+# Check that authentication worked
+echo -e "${BLUE}Verifying Google Drive authentication...${NC}"
+if python scripts/google_drive_manager.py --action check --headless; then
+  echo -e "${GREEN}Google Drive authentication successful!${NC}"
 else
-  echo -e "${GREEN}Google Drive credentials found at $CREDENTIALS_PATH${NC}"
-  USE_DRIVE_API=true
-  
-  # Authenticate with Google Drive API
-  echo -e "${BLUE}Authenticating with Google Drive API...${NC}"
-  python scripts/authenticate_headless.py --credentials "$CREDENTIALS_PATH"
+  echo -e "${RED}Google Drive authentication failed. Continuing with local storage only.${NC}"
+  USE_DRIVE_API=false
 fi
 
 # Run different stages based on mode

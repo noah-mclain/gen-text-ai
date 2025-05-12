@@ -49,42 +49,39 @@ Paperspace Gradient environments don't support FUSE filesystem mounting or the `
 
 ### 3. Authentication in Headless Environments
 
-You have two options for authentication in headless environments:
-
-#### Option 1: Using the standalone script (recommended)
-
-This script doesn't require project imports and works in any directory:
+We now provide a comprehensive Google Drive manager script that handles authentication in both regular and headless environments:
 
 ```bash
-python scripts/direct_auth.py --credentials credentials.json
+# Authenticate in headless environments like Paperspace
+python scripts/google_drive_manager.py --action setup --headless
+
+# Create necessary directory structure in your Drive
+python scripts/google_drive_manager.py --action create_folders --base_dir DeepseekCoder --headless
 ```
 
-#### Option 2: Using the project-aware script
-
-This script requires proper Python path setup:
-
-```bash
-# First make sure the project root is in the Python path
-export PYTHONPATH="/path/to/gen-text-ai:$PYTHONPATH"
-python scripts/authenticate_headless.py --credentials credentials.json
-```
-
-With either option, you'll see the authentication process:
+When running the headless authentication:
 
 1. The script will generate and display an authorization URL
 2. Copy this URL and open it in a browser on your local machine (not in Paperspace)
 3. Log in with your Google account and grant the requested permissions
-4. You'll be redirected to a page (usually showing an error, which is expected)
-5. **Important:** Copy the ENTIRE URL from your browser's address bar after redirection
-6. Paste this URL back into the terminal when prompted
-7. The script will extract the authorization code from the URL and complete the authentication
-8. The authentication token will be saved as `token.pickle` and reused for future sessions
+4. You'll be redirected or shown an authorization code
+5. Copy the authorization code and paste it back into the terminal when prompted
+6. The authentication token will be saved and reused for future sessions
 
-If the script cannot extract the code from the URL, it will ask you to manually find and enter the "code" parameter from the URL, which will look something like:
+To verify that authentication worked correctly:
 
+```bash
+python scripts/google_drive_manager.py --action check --headless
 ```
-http://localhost/?code=4/XXXX_LONG_CODE_HERE_XXXX&scope=https://www.googleapis.com/auth/drive
-```
+
+> **Important**: When setting up your Google Cloud credentials, make sure to include both of these redirect URIs:
+>
+> ```
+> http://localhost:8080
+> urn:ietf:wg:oauth:2.0:oob
+> ```
+>
+> The second URI is required for headless authentication to work properly.
 
 ## Improved Google Drive Integration
 
@@ -214,7 +211,7 @@ For convenience, we've provided a script that runs the entire pipeline with head
 The script automatically:
 
 1. Sets up the proper Python path
-2. Authenticates with Google Drive
+2. Authenticates with Google Drive using the consolidated manager script
 3. Runs the complete pipeline with all necessary flags
 
 You can customize the script's behavior with command-line arguments:
@@ -227,6 +224,21 @@ To use specific libraries for the DS-1000 benchmark:
 
 ```bash
 ./scripts/run_paperspace.sh --mode evaluate --ds1000-libs numpy pandas matplotlib
+```
+
+## Using the Drive Manager Directly
+
+The Google Drive manager provides several useful functions for managing files:
+
+```bash
+# List files in your Drive
+python scripts/google_drive_manager.py --action list --headless
+
+# Upload a directory of results
+python scripts/google_drive_manager.py --action upload --local_path ./results --remote_folder your_folder_id --headless
+
+# Download a file from Drive
+python scripts/google_drive_manager.py --action download --remote_file file_id --local_path ./local_file.txt --headless
 ```
 
 ## Accessing Your Files on Google Drive
@@ -259,14 +271,14 @@ For large datasets or systems with limited memory:
 
    ```bash
    rm token.pickle
-   python scripts/direct_auth.py --credentials credentials.json
+   python scripts/google_drive_manager.py --action setup --headless
    ```
 
 3. **ModuleNotFoundError for 'src'**: This indicates Python can't find the project modules:
 
    ```bash
    # Use the standalone script instead:
-   python scripts/direct_auth.py --credentials credentials.json
+   python scripts/google_drive_manager.py --action setup --headless
 
    # Or set the PYTHONPATH:
    export PYTHONPATH="/path/to/gen-text-ai:$PYTHONPATH"

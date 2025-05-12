@@ -86,6 +86,20 @@ pip install -r requirements.txt
   - Support for story generation, instruction following, and chat
   - Integration with Google Drive for storing model checkpoints
 
+- **Enhanced Google Drive Integration**:
+
+  - Fixed authorization issues related to missing redirect_uri parameter
+  - Added setup script for easier credential configuration
+  - Improved authentication flow to handle headless environments
+  - Added test script to verify Drive integration is working properly
+  - Comprehensive documentation in [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md)
+  - Fixed duplicate directory creation in Google Drive
+  - Added automatic overwriting of existing files and folders to prevent duplicates
+  - Improved file ID caching and clearing to ensure latest versions are accessed
+  - Added proper error handling for 404 errors when files don't exist during deletion attempts
+  - Improved logging for better troubleshooting
+  - Added proper error handling for authentication and file operations
+
 - **Enhanced Preprocessing Pipeline**:
 
   - Implemented deduplication of prompt+completion pairs to remove redundant examples
@@ -114,15 +128,6 @@ pip install -r requirements.txt
   - **NEW: Added parallel language-specific processing for CodeSearchNet to ensure all languages are processed correctly**
   - **NEW: Memory-optimized language processing with incremental saving to prevent OOM errors**
 
-- **Enhanced Google Drive Integration**:
-
-  - Fixed duplicate directory creation in Google Drive
-  - Added automatic overwriting of existing files and folders to prevent duplicates
-  - Improved file ID caching and clearing to ensure latest versions are accessed
-  - Added proper error handling for 404 errors when files don't exist during deletion attempts
-  - Improved logging for better troubleshooting
-  - Added proper error handling for authentication and file operations
-
 - **Memory Efficiency Improvements**:
   - Fixed batch processing to handle empty datasets
   - Protected against division by zero in batch size calculation
@@ -131,6 +136,35 @@ pip install -r requirements.txt
   - **NEW: Added language distribution tracking to monitor balance across programming languages**
 
 ## Usage
+
+### Google Drive Integration
+
+For setting up and using Google Drive integration:
+
+```bash
+# Install required packages
+pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+# Set up Google Drive authentication
+python scripts/google_drive_manager.py --action setup
+
+# For headless environments like Paperspace notebooks:
+python scripts/google_drive_manager.py --action setup --headless
+
+# Test the integration
+python scripts/google_drive_manager.py --action test
+
+# Create directory structure in Google Drive
+python scripts/google_drive_manager.py --action create_folders --base_dir your_project_folder
+
+# Upload files or directories
+python scripts/google_drive_manager.py --action upload --local_path /path/to/file --remote_folder folder_id
+
+# List files in a Drive folder
+python scripts/google_drive_manager.py --action list --remote_folder folder_id
+```
+
+For detailed Google Drive setup instructions, see [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md).
 
 ### Text Generation with FLAN-UL2
 

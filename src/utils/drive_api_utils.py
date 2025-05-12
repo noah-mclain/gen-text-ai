@@ -62,16 +62,29 @@ class DriveAPI:
                         logger.error(f"Credentials file not found at {self.credentials_path}")
                         return False
                     
+                    # Create flow without specifying redirect_uri in constructor
                     flow = InstalledAppFlow.from_client_secrets_file(
                         self.credentials_path, SCOPES)
                     
                     if headless:
                         # Use console flow for headless environments
                         logger.info("Using console-based authentication flow for headless environment")
-                        self.creds = flow.run_console()
+                        
+                        # Generate authorization URL with explicit redirect_uri for OOB flow
+                        auth_url, _ = flow.authorization_url(
+                            access_type='offline',
+                            include_granted_scopes='true',
+                            redirect_uri='urn:ietf:wg:oauth:2.0:oob')  # Explicitly set redirect_uri
+                        
+                        print(f"\nPlease go to this URL to authorize access:\n{auth_url}\n")
+                        auth_code = input("Enter the authorization code: ")
+                        
+                        # Specify the same redirect_uri in fetch_token
+                        flow.fetch_token(code=auth_code, redirect_uri='urn:ietf:wg:oauth:2.0:oob')
+                        self.creds = flow.credentials
                     else:
                         # Use local server flow for environments with a browser
-                        self.creds = flow.run_local_server(port=0)
+                        self.creds = flow.run_local_server(port=8080)
                 
                 # Save the credentials for the next run
                 with open(self.token_path, 'wb') as token:

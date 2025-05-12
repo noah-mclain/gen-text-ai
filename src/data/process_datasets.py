@@ -172,6 +172,7 @@ def main():
         args.streaming, 
         args.no_cache,
         args.use_drive_api, 
+        args.credentials_path,
         args.drive_base_dir, 
         args.headless
     )
