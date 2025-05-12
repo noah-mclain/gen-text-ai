@@ -47,7 +47,7 @@ def check_numpy():
             return {
                 "version": numpy_version,
                 "compatibility_issue": True,
-                "fix_command": "pip install numpy==1.24.3"
+                "fix_package": "numpy==1.24.3"
             }
         
         return {
@@ -139,7 +139,8 @@ def create_fix_script(recommended_vars, numpy_info):
         if numpy_info.get("compatibility_issue", False):
             f.write("\n# Fix NumPy compatibility issue\n")
             f.write("echo \"Fixing NumPy compatibility issue...\"\n")
-            f.write(f"pip install {numpy_info.get('fix_command', 'numpy==1.24.3').split(' ')[1]} -q\n")
+            numpy_package = numpy_info.get("fix_package", "numpy==1.24.3")
+            f.write(f"pip install {numpy_package} -q\n")
             f.write("echo \"NumPy downgraded to compatible version\"\n")
         
         f.write("\necho \"Environment fixes applied successfully\"\n")
@@ -195,9 +196,10 @@ def main():
             print(f"Set {key}={value}")
         
         # Fix NumPy if needed
-        if numpy_info.get("compatibility_issue", False) and numpy_info.get("fix_command"):
+        if numpy_info.get("compatibility_issue", False) and numpy_info.get("fix_package"):
             print("\nFixing NumPy compatibility issue...")
-            subprocess.run(numpy_info["fix_command"], shell=True, check=False)
+            numpy_package = numpy_info.get("fix_package", "numpy==1.24.3")
+            subprocess.run(f"pip install {numpy_package}", shell=True, check=False)
             print("NumPy fixed!")
         
         print("\nAttempting to import PyTorch again...")
