@@ -25,7 +25,7 @@ echo "Setting up Google Drive authentication..."
 python scripts/setup_google_drive.py
 if [ $? -ne 0 ]; then
     # Launch without Drive integration
-    ./scripts/process_stack_direct.sh --max-hours $hours_to_midnight
+./scripts/process_stack_direct.sh --max-hours $hours_to_midnight
 else
     # Launch with Drive integration
     ./scripts/process_stack_direct.sh --max-hours $hours_to_midnight --drive

@@ -85,10 +85,10 @@ if [ "$USE_DRIVE" = true ]; then
     DRIVE_OPTS=""
   else
     echo "Google Drive authentication successful. Will use Drive for storage."
-    DRIVE_OPTS="--use_drive --drive_base_dir $DRIVE_BASE_DIR"
-    if [ "$SKIP_LOCAL" = true ]; then
-      DRIVE_OPTS="$DRIVE_OPTS --skip_local_storage"
-    fi
+  DRIVE_OPTS="--use_drive --drive_base_dir $DRIVE_BASE_DIR"
+  if [ "$SKIP_LOCAL" = true ]; then
+    DRIVE_OPTS="$DRIVE_OPTS --skip_local_storage"
+  fi
   fi
 else
   DRIVE_OPTS=""

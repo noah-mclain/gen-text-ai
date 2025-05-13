@@ -146,25 +146,25 @@ def main():
                 # Test drive access
                 if test_drive_mounting():
                     logger.info(f"Google Drive integration set up successfully with base directory: {args.drive_base_dir}")
+                
+                # If pushing to HF Hub is enabled through command line, update config
+                if args.push_to_hub and os.path.exists(args.config):
+                    import json
+                    with open(args.config, 'r') as f:
+                        config = json.load(f)
                     
-                    # If pushing to HF Hub is enabled through command line, update config
-                    if args.push_to_hub and os.path.exists(args.config):
-                        import json
-                        with open(args.config, 'r') as f:
-                            config = json.load(f)
-                        
-                        if "training" not in config:
-                            config["training"] = {}
-                        
-                        config["training"]["push_to_hub"] = True
-                        if args.hub_model_id:
-                            config["training"]["hub_model_id"] = args.hub_model_id
-                        
-                        with open(args.config, 'w') as f:
-                            json.dump(config, f, indent=2)
-                        
-                        logger.info(f"Updated config to push to Hub with model ID: {args.hub_model_id or 'auto-generated'}")
-                else:
+                    if "training" not in config:
+                        config["training"] = {}
+                    
+                    config["training"]["push_to_hub"] = True
+                    if args.hub_model_id:
+                        config["training"]["hub_model_id"] = args.hub_model_id
+                    
+                    with open(args.config, 'w') as f:
+                        json.dump(config, f, indent=2)
+                    
+                    logger.info(f"Updated config to push to Hub with model ID: {args.hub_model_id or 'auto-generated'}")
+            else:
                     logger.warning("Failed to access Google Drive. Using local storage instead.")
                     args.use_drive = False
             else:
@@ -176,7 +176,7 @@ def main():
             args.use_drive = False
     elif args.use_drive and not GOOGLE_DRIVE_AVAILABLE:
         logger.warning("Google Drive integration not available. Using local storage instead.")
-        args.use_drive = False
+            args.use_drive = False
     
     # Process datasets if needed
     if args.process_only or not os.listdir(args.data_dir):
