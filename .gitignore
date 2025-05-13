@@ -172,7 +172,7 @@ logs/
 # Backups
 backups/
 .json.bak
-archive/
+archived/
 scripts/archived/
 
 # Temporary files

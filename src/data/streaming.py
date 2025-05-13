@@ -54,8 +54,10 @@ def load_streaming_dataset(
                 
                 # Convert to iterable dataset for streaming if needed
                 if not isinstance(dataset, IterableDataset):
+                    logger.info(f"Converting local dataset {dataset_name} to streaming format")
                     dataset = dataset.to_iterable_dataset(num_shards=num_workers)
                 
+                logger.info(f"✅ Successfully loaded dataset {dataset_name} from local storage")
                 return dataset
             except Exception as local_err:
                 logger.warning(f"Failed to load local dataset {dataset_name}: {local_err}. Falling back to Hub.")
@@ -78,14 +80,29 @@ def load_streaming_dataset(
                     logger.info(f"Using path '{dataset_path}' from config for dataset '{dataset_name}'")
         except Exception as config_err:
             logger.warning(f"Error loading dataset config: {config_err}. Using dataset name as path.")
+        
+        # Special case for HumanEval which only has a test split
+        if dataset_name == "humaneval" or dataset_path == "openai/openai_humaneval":
+            logger.info("HumanEval dataset detected, using 'test' split instead of 'train'")
+            split = "test"
             
         # Try to load from Hugging Face datasets
-        logger.info(f"Loading dataset from Hugging Face: {dataset_path}")
-        dataset = load_dataset(
-            dataset_path, 
-            streaming=True,
-            split=split
-        )
+        logger.info(f"Loading dataset from Hugging Face: {dataset_path} (split: {split})")
+        try:
+            dataset = load_dataset(
+                dataset_path, 
+                streaming=True,
+                split=split
+            )
+            logger.info(f"✅ Successfully loaded {dataset_name} from Hugging Face Hub")
+        except Exception as e:
+            logger.error(f"Error loading streaming dataset {dataset_name} from Hugging Face: {e}")
+            # Return empty dataset as fallback
+            logger.warning(f"⚠️ Returning empty dataset for {dataset_name} due to loading error")
+            return Dataset.from_dict({
+                "input_ids": [],
+                "attention_mask": []
+            }).to_iterable_dataset()
         
         # Apply tokenization function
         def tokenize_function(examples):

@@ -33,6 +33,10 @@ echo "Fixing DeepSpeed configuration..."
 python scripts/fix_deepspeed.py
 # Set explicit path to make sure accelerate can find it
 export ACCELERATE_DEEPSPEED_CONFIG_FILE=$(pwd)/ds_config_a6000.json
+# Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
+export ACCELERATE_DEEPSPEED_PLUGIN_TYPE=deepspeed
+# Optional but recommended for better performance
+export TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT=1
 echo "DeepSpeed config at: $ACCELERATE_DEEPSPEED_CONFIG_FILE"
 
 # Copy DeepSpeed config to Paperspace notebooks directory if running there
@@ -94,42 +98,87 @@ else
   echo "Estimated training time: $MAX_HOURS hours"
 fi
 
-# Pre-download datasets with retry mechanism
-echo "Pre-downloading datasets to ensure availability..."
+# Pre-download datasets with retry mechanism (fallback option)
+echo "Pre-warming dataset cache for faster loading..."
 python -c "from datasets import load_dataset; load_dataset('code-search-net/code_search_net', split='train', streaming=True, trust_remote_code=True)"
 python -c "from datasets import load_dataset; load_dataset('sahil2801/CodeAlpaca-20k', split='train', streaming=True, trust_remote_code=True)"
 python -c "from datasets import load_dataset; load_dataset('mbpp', split='train', streaming=True, trust_remote_code=True)"
 python -c "from datasets import load_dataset; load_dataset('codeparrot/codeparrot-clean', split='train', streaming=True, trust_remote_code=True)"
-python -c "from datasets import load_dataset; load_dataset('openai/openai_humaneval', streaming=True, trust_remote_code=True)"
+python -c "from datasets import load_dataset; load_dataset('openai/openai_humaneval', split='test', streaming=True, trust_remote_code=True)"
 python -c "from datasets import load_dataset; load_dataset('ise-uiuc/Magicoder-OSS-Instruct-75K', split='train', streaming=True, trust_remote_code=True)"
 
+# ===== DATASET PREPARATION FLOW =====
+# 1. Check Google Drive for preprocessed datasets
+# 2. Download available preprocessed datasets
+# 3. Process only datasets not found on Drive
+# 4. Train on all datasets
+
 # Check if datasets are already available on Google Drive
-echo "Checking for pre-processed datasets on Google Drive..."
-# Save the list of datasets that need processing
-DATASETS_TO_PROCESS=$(python -c "
+echo "===== CHECKING FOR PRE-PROCESSED DATASETS ====="
+if [ "${SKIP_DRIVE:-False}" = "False" ]; then
+    echo "Google Drive integration is ENABLED. Looking for pre-processed datasets on Drive..."
+else
+    echo "Google Drive integration is DISABLED (SKIP_DRIVE=$SKIP_DRIVE). Using local datasets only."
+fi
+
+# Get list of datasets that need processing vs ones available on Drive
+echo "Running dataset availability check..."
+DATASET_STATUS=$(python -c "
 from src.utils.drive_dataset_checker import prepare_datasets
 import json
+import os
+import sys
 
 config_path = 'config/dataset_config.json'
-available, needed, _ = prepare_datasets(config_path, skip_drive=${SKIP_DRIVE:-False})
+skip_drive = ${SKIP_DRIVE:-False}
 
-print(','.join(needed))
+# This gets datasets available locally or on Drive, and those still needed
+available, needed, download_time = prepare_datasets(
+    config_path, 
+    output_dir='data/processed',
+    skip_drive=skip_drive
+)
+
+print('AVAILABLE=' + ','.join(available), file=sys.stdout)
+print('NEEDED=' + ','.join(needed), file=sys.stdout)
+print('DOWNLOAD_TIME=' + str(download_time), file=sys.stdout)
 ")
+
+# Parse results
+AVAILABLE_DATASETS=$(echo "$DATASET_STATUS" | grep "AVAILABLE=" | cut -d'=' -f2)
+DATASETS_TO_PROCESS=$(echo "$DATASET_STATUS" | grep "NEEDED=" | cut -d'=' -f2)
+DOWNLOAD_TIME=$(echo "$DATASET_STATUS" | grep "DOWNLOAD_TIME=" | cut -d'=' -f2)
+
+# Show status
+echo "===== DATASET STATUS ====="
+echo "Already available datasets: $AVAILABLE_DATASETS"
+echo "Datasets that need processing: $DATASETS_TO_PROCESS"
+echo "Download time from Drive: $DOWNLOAD_TIME seconds"
 
 # Only process datasets if there are any that need processing
 if [ -n "$DATASETS_TO_PROCESS" ]; then
+    echo "===== PROCESSING DATASETS ====="
     echo "Processing datasets: $DATASETS_TO_PROCESS"
+    
     python main_api.py \
         --mode process \
         --datasets $DATASETS_TO_PROCESS \
         --streaming \
         --no_cache \
         --dataset_config config/dataset_config.json \
+        $USE_DRIVE_FLAG \
         2>&1 | tee logs/dataset_processing_$(date +%Y%m%d_%H%M%S).log
+        
+    if [ $? -ne 0 ]; then
+        echo "⚠️ Dataset processing encountered errors. Training may use incomplete data."
+    else
+        echo "✅ Dataset processing completed successfully."
+    fi
 else
-    echo "All datasets already available. Skipping dataset processing step."
+    echo "✅ All datasets already available. Skipping dataset processing step."
 fi
 
+echo "===== STARTING TRAINING ====="
 # Train with direct module call (bypassing main_api.py)
 echo "Starting training with direct module call (avoids argument mismatch)..."
 python -m src.training.train \

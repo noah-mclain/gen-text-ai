@@ -75,8 +75,11 @@ mkdir -p logs
 mkdir -p data/processed
 mkdir -p text_models/flan-ul2-fine-tuned
 
+# Set up Google Drive environment
+mkdir -p text_models/flan-ul2-fine-tuned
+
 # Set up Google Drive authentication
-if [ "$USE_DRIVE" = true ]; then
+if [ "${USE_DRIVE:-True}" = "True" ]; then
   echo "Setting up Google Drive authentication..."
   
   # Set text model-specific drive base directory
@@ -86,7 +89,7 @@ if [ "$USE_DRIVE" = true ]; then
   python scripts/setup_google_drive.py --base_dir "$DRIVE_BASE_DIR"
   if [ $? -ne 0 ]; then
     echo "Google Drive authentication failed. Proceeding without Drive integration."
-    USE_DRIVE=false
+    USE_DRIVE="False"
     DRIVE_OPTS=""
   else
     echo "Google Drive authentication successful. Will use Drive for storage."
@@ -109,36 +112,18 @@ else:
     # If validation failed, disable Drive
     if [ $? -ne 0 ]; then
       echo "Google Drive access validation failed. Proceeding without Drive integration."
-      USE_DRIVE=false
+      USE_DRIVE="False"
       DRIVE_OPTS=""
     fi
   fi
 else
+  USE_DRIVE="False"
   DRIVE_OPTS=""
   echo "Google Drive integration disabled"
 fi
 
-# Print training configuration
-echo "==== Training Configuration ===="
-echo "Batch size: $BATCH_SIZE"
-echo "Gradient accumulation steps: $GRAD_ACCUMULATION"
-echo "Learning rate: $LR"
-echo "Max steps: $MAX_STEPS"
-echo "Save steps: $SAVE_STEPS"
-echo "Warmup steps: $WARMUP_STEPS"
-if [ "$USE_DRIVE" = true ]; then
-  echo "Google Drive: Enabled (Base dir: $DRIVE_BASE_DIR)"
-  if [ "$SKIP_LOCAL" = true ]; then
-    echo "Local storage: Skip after backup to Drive"
-  else
-    echo "Local storage: Keep local copies"
-  fi
-else
-  echo "Google Drive: Disabled"
-fi
-
 # Step 1: Get dataset names from the config file
-echo "==== Getting text dataset names from config ===="
+echo "===== IDENTIFYING TEXT DATASETS FROM CONFIG ====="
 TEXT_DATASETS=$(python -c "
 import json
 import sys
@@ -157,19 +142,86 @@ except Exception as e:
     print('openassistant gpteacher_general pile')  # Fallback list
     sys.stderr.write(f'Error reading dataset config: {e}\\n')
 ")
+echo "Datasets in configuration: $TEXT_DATASETS"
 
-# Step 2: Process datasets with all the enabled ones from config
-echo "==== Processing text datasets with optimizations ===="
-echo "Datasets to process: $TEXT_DATASETS"
-python -m src.data.process_datasets \
-  --config config/dataset_config_text.json \
-  --datasets $TEXT_DATASETS \
-  --streaming \
-  --no_cache \
-  $DRIVE_OPTS
+# Step 2: Check which datasets are already processed and available on Drive
+echo "===== CHECKING FOR PRE-PROCESSED DATASETS ====="
+if [ "${USE_DRIVE}" = "True" ]; then
+    echo "Google Drive integration is ENABLED. Looking for pre-processed datasets in Drive folder: $DRIVE_BASE_DIR"
+else
+    echo "Google Drive integration is DISABLED. Using local datasets only."
+fi
+
+# Run the dataset checker to identify available vs needed datasets
+echo "Running dataset availability check..."
+DATASET_STATUS=$(python -c "
+from src.utils.drive_dataset_checker import prepare_datasets
+import json
+import sys
+import os
+
+config_path = 'config/dataset_config_text.json'
+skip_drive = ${USE_DRIVE} != 'True'
+drive_folder = '${DRIVE_BASE_DIR}/preprocessed' if not skip_drive else None
+
+try:
+    # This gets datasets available locally or on Drive, and those still needed
+    available, needed, download_time = prepare_datasets(
+        config_path, 
+        output_dir='data/processed',
+        drive_folder=drive_folder,
+        skip_drive=skip_drive
+    )
+    
+    print('AVAILABLE=' + ','.join(available), file=sys.stdout)
+    print('NEEDED=' + ','.join(needed), file=sys.stdout)
+    print('DOWNLOAD_TIME=' + str(download_time), file=sys.stdout)
+except Exception as e:
+    print(f'Error checking datasets: {e}', file=sys.stderr)
+    # Fallback to processing all datasets
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+        all_datasets = [name for name, info in config.items() if info.get('enabled', True)]
+    print('AVAILABLE=', file=sys.stdout)
+    print('NEEDED=' + ','.join(all_datasets), file=sys.stdout)
+    print('DOWNLOAD_TIME=0', file=sys.stdout)
+")
+
+# Parse results
+AVAILABLE_DATASETS=$(echo "$DATASET_STATUS" | grep "AVAILABLE=" | cut -d'=' -f2)
+DATASETS_TO_PROCESS=$(echo "$DATASET_STATUS" | grep "NEEDED=" | cut -d'=' -f2)
+DOWNLOAD_TIME=$(echo "$DATASET_STATUS" | grep "DOWNLOAD_TIME=" | cut -d'=' -f2)
+
+# Show status
+echo "===== DATASET STATUS ====="
+echo "Already available datasets: $AVAILABLE_DATASETS"
+echo "Datasets that need processing: $DATASETS_TO_PROCESS"
+echo "Download time from Drive: $DOWNLOAD_TIME seconds"
+
+# Step 3: Process only the datasets that need processing
+if [ -n "$DATASETS_TO_PROCESS" ]; then
+    echo "===== PROCESSING DATASETS ====="
+    echo "Processing datasets: $DATASETS_TO_PROCESS"
+    
+    python -m src.data.process_datasets \
+      --config config/dataset_config_text.json \
+      --datasets $DATASETS_TO_PROCESS \
+      --streaming \
+      --no_cache \
+      $DRIVE_OPTS \
+      --verbose
+      
+    if [ $? -ne 0 ]; then
+        echo "⚠️ Dataset processing encountered errors. Training may use incomplete data."
+    else  
+        echo "✅ Dataset processing completed successfully."
+    fi
+else
+    echo "✅ All datasets already available. Skipping dataset processing step."
+fi
 
 # Fix DeepSpeed configuration before training
-echo "==== Setting up DeepSpeed configuration ===="
+echo "===== SETTING UP DEEPSPEED CONFIGURATION ====="
 # Run the DeepSpeed fix script
 python scripts/fix_deepspeed.py
 
@@ -178,11 +230,15 @@ export DS_ACCELERATOR=cuda
 export DS_OFFLOAD_PARAM=cpu
 export DS_OFFLOAD_OPTIMIZER=cpu
 export ACCELERATE_USE_DEEPSPEED=true
-# Set explicit path to ensure accelerate can find it
 export ACCELERATE_DEEPSPEED_CONFIG_FILE=$(pwd)/ds_config_a6000.json
+# Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
+export ACCELERATE_DEEPSPEED_PLUGIN_TYPE=deepspeed
+# Optional but recommended for better performance
+export TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT=1
+
 echo "DeepSpeed config at: $ACCELERATE_DEEPSPEED_CONFIG_FILE"
 
-# Step 3: Train the model with checkpointing and logging to Drive
+# Step 4: Train the model with checkpointing and logging to Drive
 echo "==== Training FLAN-UL2 with optimizations and Drive integration ===="
 python train_text_flan.py \
   --config config/training_config_text.json \
@@ -192,7 +248,7 @@ python train_text_flan.py \
   --debug \
   2>&1 | tee logs/train_flan_ul2_a6000_$(date +%Y%m%d_%H%M%S).log
 
-# Step 4: Sync any remaining results to Drive if enabled
+# Step 5: Sync any remaining results to Drive if enabled
 if [ "$USE_DRIVE" = true ]; then
   echo "==== Syncing all results to Google Drive ===="
   python scripts/sync_to_drive.py --sync-all \
