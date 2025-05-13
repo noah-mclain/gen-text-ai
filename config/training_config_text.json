@@ -47,12 +47,22 @@
     "push_to_hub": false,
     "use_deepspeed": true,
     "deepspeed": {
-      "zero_stage": 3,
-      "offload_optimizer": {
-        "device": "cpu"
+      "fp16": {
+        "enabled": true
       },
-      "offload_param": {
-        "device": "cpu"
+      "zero_optimization": {
+        "stage": 3,
+        "offload_optimizer": {
+          "device": "cpu",
+          "pin_memory": true
+        },
+        "offload_param": {
+          "device": "cpu",
+          "pin_memory": true
+        },
+        "overlap_comm": true,
+        "contiguous_gradients": true,
+        "reduce_scatter": true
       },
       "gradient_clipping": 1.0
     },

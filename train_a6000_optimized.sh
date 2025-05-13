@@ -22,19 +22,25 @@ echo "Setting default training time to $MAX_HOURS hours based on $NUM_EPOCHS epo
 # Create Triton autotune directory to prevent df error
 mkdir -p /root/.triton/autotune 2>/dev/null || true
 
+# Set DeepSpeed environment variables
+export DS_ACCELERATOR=cuda
+export DS_OFFLOAD_PARAM=cpu
+export DS_OFFLOAD_OPTIMIZER=cpu
+export ACCELERATE_USE_DEEPSPEED=true
+
+# Fix DeepSpeed configuration - ensure the config is valid and accessible
+echo "Fixing DeepSpeed configuration..."
+python scripts/fix_deepspeed.py
+# Set explicit path to make sure accelerate can find it
+export ACCELERATE_DEEPSPEED_CONFIG_FILE=$(pwd)/ds_config_a6000.json
+echo "DeepSpeed config at: $ACCELERATE_DEEPSPEED_CONFIG_FILE"
+
 # Copy DeepSpeed config to Paperspace notebooks directory if running there
 if [ -d "/notebooks" ]; then
   echo "Paperspace environment detected. Copying DeepSpeed config to /notebooks directory..."
   cp ds_config_a6000.json /notebooks/ds_config_a6000.json
   echo "Config copied successfully to /notebooks/ds_config_a6000.json"
 fi
-
-# Set DeepSpeed environment variables
-export DS_ACCELERATOR=cuda
-export DS_OFFLOAD_PARAM=cpu
-export DS_OFFLOAD_OPTIMIZER=cpu
-export ACCELERATE_USE_DEEPSPEED=true
-export ACCELERATE_DEEPSPEED_CONFIG_FILE=ds_config_a6000.json
 
 # Check if HF_TOKEN is set
 if [ -z "$HF_TOKEN" ]; then

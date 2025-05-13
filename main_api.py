@@ -9,6 +9,8 @@ import tempfile
 import sys
 from pathlib import Path
 
+from src.utils.drive_api_utils import initialize_drive_api, save_to_drive
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -211,7 +213,7 @@ def optimize_training_config(config_path, max_hours):
         # Update for faster training
         if "training" in config:
             # Limit epochs
-            config["training"]["num_train_epochs"] = 1
+            config["training"]["num_train_epochs"] = 12
             
             # Increase batch size if possible
             if config["training"].get("per_device_train_batch_size", 8) < 12:

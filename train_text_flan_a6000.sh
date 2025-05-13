@@ -168,6 +168,20 @@ python -m src.data.process_datasets \
   --no_cache \
   $DRIVE_OPTS
 
+# Fix DeepSpeed configuration before training
+echo "==== Setting up DeepSpeed configuration ===="
+# Run the DeepSpeed fix script
+python scripts/fix_deepspeed.py
+
+# Set DeepSpeed environment variables
+export DS_ACCELERATOR=cuda
+export DS_OFFLOAD_PARAM=cpu
+export DS_OFFLOAD_OPTIMIZER=cpu
+export ACCELERATE_USE_DEEPSPEED=true
+# Set explicit path to ensure accelerate can find it
+export ACCELERATE_DEEPSPEED_CONFIG_FILE=$(pwd)/ds_config_a6000.json
+echo "DeepSpeed config at: $ACCELERATE_DEEPSPEED_CONFIG_FILE"
+
 # Step 3: Train the model with checkpointing and logging to Drive
 echo "==== Training FLAN-UL2 with optimizations and Drive integration ===="
 python train_text_flan.py \
