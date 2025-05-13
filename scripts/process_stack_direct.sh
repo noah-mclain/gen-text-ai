@@ -28,10 +28,8 @@ echo -e "${GREEN}PYTHONPATH: $PYTHONPATH${NC}"
 # Default configuration
 CONFIG="config/dataset_config_updated.json"
 TRAINING_CONFIG="config/training_config.json"
-CREDENTIALS_PATH="credentials.json"
-USE_DRIVE_API=false
+USE_DRIVE=false
 DRIVE_BASE_DIR="DeepseekCoder"
-HEADLESS=true
 SKIP_PREPROCESSING=true
 MAX_TRAIN_TIME=4  # Hours available for training
 
@@ -46,21 +44,13 @@ while [[ $# -gt 0 ]]; do
       TRAINING_CONFIG="$2"
       shift 2
       ;;
-    --credentials)
-      CREDENTIALS_PATH="$2"
-      shift 2
-      ;;
     --drive)
-      USE_DRIVE_API=true
+      USE_DRIVE=true
       shift
       ;;
     --drive-dir)
       DRIVE_BASE_DIR="$2"
       shift 2
-      ;;
-    --browser)
-      HEADLESS=false
-      shift
       ;;
     --process)
       SKIP_PREPROCESSING=false
@@ -75,10 +65,8 @@ while [[ $# -gt 0 ]]; do
       echo -e "${YELLOW}Options:${NC}"
       echo "  --config FILE       Path to dataset config (default: config/dataset_config_updated.json)"
       echo "  --training FILE     Path to training config (default: config/training_config.json)"
-      echo "  --credentials FILE  Path to Google API credentials (default: credentials.json)"
       echo "  --drive             Enable Google Drive integration"
       echo "  --drive-dir DIR     Google Drive base directory (default: DeepseekCoder)"
-      echo "  --browser           Use browser auth instead of headless"
       echo "  --process           Run preprocessing step (default: skip preprocessing)"
       echo "  --max-hours N       Maximum training time in hours (default: 4)"
       echo "  --help              Show this help message"
@@ -177,27 +165,21 @@ END
 cp "${TMP_CONFIG}" "${TRAINING_CONFIG}"
 echo -e "${GREEN}Updated training configuration for faster training${NC}"
 
+# Prepare drive options flag
+if [ "$USE_DRIVE" = "true" ]; then
+  DRIVE_OPTS="--use_drive --drive_base_dir $DRIVE_BASE_DIR"
+  echo -e "${GREEN}Using Google Drive integration with base directory: $DRIVE_BASE_DIR${NC}"
+else
+  DRIVE_OPTS=""
+  echo -e "${YELLOW}Google Drive integration is disabled${NC}"
+fi
+
 # Process datasets if needed
 if [ "$SKIP_PREPROCESSING" = "false" ]; then
     echo -e "${BLUE}Processing datasets before training...${NC}"
     
     # Build command
-    PROCESS_CMD="python main_api.py --mode process --dataset_config $CONFIG --streaming --no_cache --datasets the_stack_filtered"
-    
-    # Add Google Drive integration if enabled
-    if [ "$USE_DRIVE_API" = "true" ]; then
-      if [ -f "$CREDENTIALS_PATH" ]; then
-        PROCESS_CMD="$PROCESS_CMD --use_drive_api --credentials_path $CREDENTIALS_PATH --drive_base_dir $DRIVE_BASE_DIR"
-        
-        if [ "$HEADLESS" = "true" ]; then
-          PROCESS_CMD="$PROCESS_CMD --headless"
-        fi
-      else
-        echo -e "${RED}Credentials file not found at $CREDENTIALS_PATH${NC}"
-        echo -e "${RED}Cannot use Google Drive API without credentials${NC}"
-        USE_DRIVE_API=false
-      fi
-    fi
+    PROCESS_CMD="python main_api.py --mode process --dataset_config $CONFIG --streaming --no_cache --datasets the_stack_filtered $DRIVE_OPTS"
     
     # Print and execute the processing command
     echo -e "${BLUE}===================${NC}"
@@ -217,21 +199,7 @@ fi
 echo -e "${BLUE}Starting training with time-optimized configuration...${NC}"
 
 # Build command with direct loading and time optimizations
-TRAIN_CMD="python main_api.py --mode train --training_config $TRAINING_CONFIG --streaming"
-
-# Add Google Drive integration if enabled
-if [ "$USE_DRIVE_API" = "true" ]; then
-  if [ -f "$CREDENTIALS_PATH" ]; then
-    TRAIN_CMD="$TRAIN_CMD --use_drive_api --credentials_path $CREDENTIALS_PATH --drive_base_dir $DRIVE_BASE_DIR"
-    
-    if [ "$HEADLESS" = "true" ]; then
-      TRAIN_CMD="$TRAIN_CMD --headless"
-    fi
-  else
-    echo -e "${RED}Credentials file not found at $CREDENTIALS_PATH${NC}"
-    echo -e "${RED}Cannot use Google Drive API without credentials${NC}"
-  fi
-fi
+TRAIN_CMD="python main_api.py --mode train --training_config $TRAINING_CONFIG --streaming $DRIVE_OPTS"
 
 # Print and execute the training command
 echo -e "${BLUE}===================${NC}"
@@ -248,16 +216,26 @@ eval "$TRAIN_CMD"
 
 # Check result
 TRAIN_RESULT=$?
-END_TIME=$(date +%s)
-DURATION=$((END_TIME - START_TIME))
-HOURS=$((DURATION / 3600))
-MINUTES=$(((DURATION % 3600) / 60))
-
 if [ $TRAIN_RESULT -eq 0 ]; then
-  echo -e "${GREEN}Training completed successfully in ${HOURS}h ${MINUTES}m!${NC}"
-  echo -e "${GREEN}Model is ready for use.${NC}"
+  echo -e "${GREEN}Training completed successfully!${NC}"
+  
+  # Sync results to Drive if enabled
+  if [ "$USE_DRIVE" = "true" ]; then
+    echo -e "${BLUE}Syncing results to Google Drive...${NC}"
+    python scripts/sync_to_drive.py --sync-all --base-dir "$DRIVE_BASE_DIR"
+  fi
 else
-  echo -e "${RED}Training failed with exit code $TRAIN_RESULT after ${HOURS}h ${MINUTES}m${NC}"
-  echo -e "${YELLOW}Check logs for details.${NC}"
-  exit 1
-fi 
+  echo -e "${RED}Training failed with exit code $TRAIN_RESULT${NC}"
+fi
+
+# Calculate and display runtime
+END_TIME=$(date +%s)
+RUNTIME=$((END_TIME - START_TIME))
+HOURS=$((RUNTIME / 3600))
+MINUTES=$(( (RUNTIME % 3600) / 60 ))
+SECONDS=$((RUNTIME % 60))
+
+echo -e "${BLUE}===================${NC}"
+echo -e "${GREEN}Training Complete${NC}"
+echo -e "${GREEN}Total runtime: ${HOURS}h ${MINUTES}m ${SECONDS}s${NC}"
+echo -e "${BLUE}===================${NC}" 

@@ -20,8 +20,16 @@ echo "Starting training with approximately $hours_to_midnight hours until midnig
 echo "Using The Stack dataset with language filters (Python, Java, JavaScript, C, C++, C#, TypeScript, HTML, SQL, TeX, Dockerfile)"
 echo "Filtering for English and Arabic natural languages in comments"
 
-# Launch the training script with the calculated time constraint
-./scripts/process_stack_direct.sh --max-hours $hours_to_midnight
+# Set up Google Drive authentication first
+echo "Setting up Google Drive authentication..."
+python scripts/setup_google_drive.py
+if [ $? -ne 0 ]; then
+    # Launch without Drive integration
+    ./scripts/process_stack_direct.sh --max-hours $hours_to_midnight
+else
+    # Launch with Drive integration
+    ./scripts/process_stack_direct.sh --max-hours $hours_to_midnight --drive
+fi
 
 # Done
 echo "Training is complete."

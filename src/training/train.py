@@ -96,35 +96,42 @@ except (ImportError, ModuleNotFoundError):
 
 # Import drive utils with fallbacks
 try:
-    from src.utils.drive_utils import mount_google_drive, setup_drive_directories
+    from src.utils.google_drive_manager import (
+        drive_manager, 
+        test_authentication, 
+        test_drive_mounting, 
+        configure_sync_method
+    )
+    GOOGLE_DRIVE_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
     try:
         # Try relative import
         sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from utils.drive_utils import mount_google_drive, setup_drive_directories
+        from utils.google_drive_manager import (
+            drive_manager,
+            test_authentication,
+            test_drive_mounting,
+            configure_sync_method
+        )
+        GOOGLE_DRIVE_AVAILABLE = True
     except (ImportError, ModuleNotFoundError):
-        print("WARNING: drive_utils not found. Creating fallback functions.")
+        print("WARNING: google_drive_manager not found. Creating fallback functions.")
+        GOOGLE_DRIVE_AVAILABLE = False
         
-        def mount_google_drive():
-            """Fallback Google Drive mounting function"""
+        def test_authentication():
+            """Fallback Google Drive authentication check"""
+            print("Google Drive authentication not available")
+            return False
+        
+        def test_drive_mounting():
+            """Fallback for checking if drive is mounted"""
             print("Google Drive mounting not available")
             return False
         
-        def setup_drive_directories(base_dir):
-            """Fallback for setting up Google Drive directories"""
-            print(f"Cannot set up directories in Google Drive under {base_dir}")
+        def configure_sync_method(base_dir=None):
+            """Fallback for configuring sync method"""
+            print(f"Cannot configure sync method for Google Drive under {base_dir}")
             return None
-
-# Fallback for drive mounting check
-try:
-    from src.utils.drive_utils import is_drive_mounted
-except (ImportError, ModuleNotFoundError):
-    try:
-        from utils.drive_utils import is_drive_mounted
-    except (ImportError, ModuleNotFoundError):
-        def is_drive_mounted():
-            """Fallback for checking if drive is mounted"""
-            return False
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -189,39 +196,67 @@ def main():
     logger.info(f"Using config path: {args.config}")
     logger.info(f"Using data directory: {args.data_dir}")
     
-    # Setup Google Drive if requested
-    drive_paths = None
-    if args.use_drive:
-        logger.info("Attempting to mount Google Drive...")
+    # Check for HF_TOKEN environment variable
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token and args.push_to_hub:
+        logger.warning("HF_TOKEN environment variable not found but --push_to_hub is enabled.")
+        logger.warning("You may encounter authentication issues when pushing to Hugging Face Hub.")
+        logger.warning("Set the token with: export HF_TOKEN=your_huggingface_token")
+    elif hf_token:
+        logger.info("HF_TOKEN environment variable found. Will use for Hugging Face Hub operations.")
+        # Set as default token for Hugging Face
         try:
-            if mount_google_drive():
-                logger.info(f"Setting up directories in Google Drive under {args.drive_base_dir}")
-                drive_paths = setup_drive_directories(os.path.join("/content/drive/MyDrive", args.drive_base_dir))
+            import huggingface_hub
+            huggingface_hub.login(token=hf_token)
+            logger.info("Logged in to Hugging Face Hub")
+        except ImportError:
+            logger.warning("huggingface_hub package not found. Install with: pip install huggingface-hub")
+    
+    # Setup Google Drive if requested
+    if args.use_drive and GOOGLE_DRIVE_AVAILABLE:
+        logger.info("Attempting to set up Google Drive integration...")
+        try:
+            # Configure the drive manager with the base directory
+            configure_sync_method(base_dir=args.drive_base_dir)
+            
+            # Test authentication
+            if test_authentication():
+                logger.info("Successfully authenticated with Google Drive")
                 
-                # If pushing to HF Hub is enabled through command line, update config
-                if args.push_to_hub and os.path.exists(args.config):
-                    import json
-                    with open(args.config, 'r') as f:
-                        config = json.load(f)
+                # Test drive access
+                if test_drive_mounting():
+                    logger.info(f"Google Drive integration set up successfully with base directory: {args.drive_base_dir}")
                     
-                    if "training" not in config:
-                        config["training"] = {}
-                    
-                    config["training"]["push_to_hub"] = True
-                    if args.hub_model_id:
-                        config["training"]["hub_model_id"] = args.hub_model_id
-                    
-                    with open(args.config, 'w') as f:
-                        json.dump(config, f, indent=2)
-                    
-                    logger.info(f"Updated config to push to Hub with model ID: {args.hub_model_id or 'auto-generated'}")
+                    # If pushing to HF Hub is enabled through command line, update config
+                    if args.push_to_hub and os.path.exists(args.config):
+                        import json
+                        with open(args.config, 'r') as f:
+                            config = json.load(f)
+                        
+                        if "training" not in config:
+                            config["training"] = {}
+                        
+                        config["training"]["push_to_hub"] = True
+                        if args.hub_model_id:
+                            config["training"]["hub_model_id"] = args.hub_model_id
+                        
+                        with open(args.config, 'w') as f:
+                            json.dump(config, f, indent=2)
+                        
+                        logger.info(f"Updated config to push to Hub with model ID: {args.hub_model_id or 'auto-generated'}")
+                else:
+                    logger.warning("Failed to access Google Drive. Using local storage instead.")
+                    args.use_drive = False
             else:
-                logger.warning("Failed to mount Google Drive. Using local storage instead.")
+                logger.warning("Failed to authenticate with Google Drive. Using local storage instead.")
                 args.use_drive = False
         except Exception as e:
             logger.error(f"Error during Google Drive setup: {e}")
             logger.warning("Failed to setup Google Drive. Using local storage instead.")
             args.use_drive = False
+    elif args.use_drive and not GOOGLE_DRIVE_AVAILABLE:
+        logger.warning("Google Drive integration not available. Using local storage instead.")
+        args.use_drive = False
     
     # Try/except around the entire training process to catch and log any errors
     try:
@@ -230,7 +265,7 @@ def main():
         tuner = DeepseekFineTuner(
             args.config, 
             use_drive=args.use_drive, 
-            drive_base_dir=os.path.join("/content/drive/MyDrive", args.drive_base_dir) if args.use_drive else None
+            drive_base_dir=args.drive_base_dir
         )
         
         # Start training

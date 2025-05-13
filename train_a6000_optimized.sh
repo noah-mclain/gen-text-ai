@@ -15,16 +15,12 @@ export DS_OFFLOAD_OPTIMIZER=cpu
 export ACCELERATE_USE_DEEPSPEED=true
 export ACCELERATE_DEEPSPEED_CONFIG_FILE=ds_config_a6000.json
 
-# Check for service account credentials
-if [ -f "service-account.json" ]; then
-  echo "Using service account authentication for Google Drive"
-  export GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/service-account.json
-  # Extract service account email for sharing info
-  SERVICE_EMAIL=$(grep -o '"client_email": "[^"]*' service-account.json | cut -d'"' -f4)
-  if [ ! -z "$SERVICE_EMAIL" ]; then
-    echo "Service account email: $SERVICE_EMAIL"
-    echo "Make sure your Google Drive folders are shared with this email"
-  fi
+# Check if HF_TOKEN is set
+if [ -z "$HF_TOKEN" ]; then
+  echo "Warning: HF_TOKEN is not set. Some datasets might be inaccessible and you won't be able to push to Hugging Face Hub."
+  echo "You should set it using: export HF_TOKEN=your_huggingface_token"
+else
+  echo "HF_TOKEN is set. Will use for authentication with Hugging Face Hub."
 fi
 
 # Fix Unsloth import order warning
@@ -38,15 +34,20 @@ print("✅ Imports properly ordered for optimal performance")
 EOL
 python import_wrapper.py
 
-# Check if HF_TOKEN is set
-if [ -z "$HF_TOKEN" ]; then
-  echo "Warning: HF_TOKEN is not set. Some datasets might be inaccessible."
-  echo "You should set it using: export HF_TOKEN=your_huggingface_token"
-fi
-
 # Make directories
 mkdir -p logs
 mkdir -p data/processed
+
+# Set up Google Drive authentication first
+echo "Setting up Google Drive authentication..."
+python scripts/setup_google_drive.py
+if [ $? -ne 0 ]; then
+    echo "Google Drive authentication setup failed. Will proceed without Drive integration."
+    USE_DRIVE_FLAG=""
+else
+    echo "Google Drive authentication successful. Will use Drive for storage."
+    USE_DRIVE_FLAG="--use_drive --drive_base_dir DeepseekCoder"
+fi
 
 # Clean any cached files for better memory management
 echo "Cleaning cache directories..."
@@ -98,8 +99,8 @@ echo "Starting training with direct module call (avoids argument mismatch)..."
 python -m src.training.train \
     --config config/training_config.json \
     --data_dir data/processed \
-    --use_drive \
-    --drive_base_dir DeepseekCoder \
+    $USE_DRIVE_FLAG \
+    --push_to_hub \
     2>&1 | tee logs/train_a6000_optimized_$(date +%Y%m%d_%H%M%S).log
 
 # Check exit status
@@ -111,6 +112,12 @@ if [ $EXIT_STATUS -eq 0 ]; then
   
   # Create completion marker file with timestamp for tracking
   echo "Training completed at $(date)" > logs/training_complete_$(date +%Y%m%d_%H%M%S).txt
+  
+  # Sync results to Drive if available
+  if [ -n "$USE_DRIVE_FLAG" ]; then
+    echo "Syncing results to Google Drive..."
+    python scripts/sync_to_drive.py --sync-all
+  fi
 else
   echo "Training failed with exit code $EXIT_STATUS. Check the logs for details."
 fi
