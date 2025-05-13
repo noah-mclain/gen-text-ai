@@ -467,18 +467,30 @@ class FlanUL2TextTrainer:
         if self.training_config.get("use_deepspeed", True):
             # Try different potential locations for the DeepSpeed config
             potential_paths = [
+                os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", ""),  # From environment variable first
+                os.environ.get("HF_DS_CONFIG", ""),  # Also check HF-specific var
                 "/notebooks/ds_config_a6000.json",  # Absolute path on Paperspace
                 os.path.join(os.getcwd(), "ds_config_a6000.json"),  # Current working directory
-                os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")  # From environment variable
+                os.path.join(os.getcwd(), "config", "ds_config_zero3.json"),  # Config directory
+                os.path.join(os.getcwd(), "models", "ds_config.json")  # Models directory
             ]
+            
+            ds_config_file = None
             
             for path in potential_paths:
                 if path and os.path.exists(path):
                     logger.info(f"Found DeepSpeed config at: {path}")
-                    args.deepspeed = path
+                    ds_config_file = path
                     break
                     
-            if not args.deepspeed:
+            if ds_config_file:
+                args.deepspeed = ds_config_file
+                # Ensure the env variable is also set for transformers internal use
+                os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = ds_config_file
+                os.environ["HF_DS_CONFIG"] = ds_config_file
+                # Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
+                os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
+            else:
                 # Use the deepspeed configuration from the training config or create a default one
                 import tempfile
                 import json
@@ -509,6 +521,11 @@ class FlanUL2TextTrainer:
                 ds_config_file.close()
                 
                 args.deepspeed = ds_config_file.name
+                # Ensure the env variable is also set for transformers internal use
+                os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = ds_config_file.name
+                os.environ["HF_DS_CONFIG"] = ds_config_file.name
+                # Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
+                os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
                 logger.info(f"Created temporary DeepSpeed config at: {ds_config_file.name}")
         
         return args

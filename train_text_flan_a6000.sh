@@ -233,10 +233,13 @@ export ACCELERATE_USE_DEEPSPEED=true
 export ACCELERATE_DEEPSPEED_CONFIG_FILE=$(pwd)/ds_config_a6000.json
 # Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
 export ACCELERATE_DEEPSPEED_PLUGIN_TYPE=deepspeed
+# Make sure HF_DS_CONFIG is set for transformers to recognize DeepSpeed config
+export HF_DS_CONFIG=$(pwd)/ds_config_a6000.json
 # Optional but recommended for better performance
 export TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT=1
 
 echo "DeepSpeed config at: $ACCELERATE_DEEPSPEED_CONFIG_FILE"
+echo "DeepSpeed plugin type: $ACCELERATE_DEEPSPEED_PLUGIN_TYPE"
 
 # Step 4: Train the model with checkpointing and logging to Drive
 echo "==== Training FLAN-UL2 with optimizations and Drive integration ===="

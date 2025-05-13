@@ -125,9 +125,13 @@ def fix_deepspeed_config():
         except Exception as e:
             logger.error(f"Failed to set up DeepSpeed config at {path}: {e}")
     
-    # Explicitly set the environment variable
+    # Explicitly set the environment variable for config file
     os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = potential_paths[0]
     logger.info(f"Set ACCELERATE_DEEPSPEED_CONFIG_FILE to {potential_paths[0]}")
+    
+    # Set the plugin type environment variable to fix 'NoneType' has no attribute 'hf_ds_config' error
+    os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
+    logger.info("Set ACCELERATE_DEEPSPEED_PLUGIN_TYPE to 'deepspeed'")
     
     # Also add to models directory for completeness
     models_dir = os.path.join(project_root, "models")
@@ -152,4 +156,5 @@ if __name__ == "__main__":
     print("DeepSpeed configs with proper ZeRO settings have been placed in all potential locations.")
     print("\nRun the following on a fresh shell to ensure the environment is set correctly:")
     print("export ACCELERATE_DEEPSPEED_CONFIG_FILE=/notebooks/ds_config_a6000.json")
+    print("export ACCELERATE_DEEPSPEED_PLUGIN_TYPE=deepspeed")
     print("=" * 60 + "\n") 
