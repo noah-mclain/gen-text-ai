@@ -27,6 +27,7 @@ psutil>=5.9.0
 pytest>=7.0.0
 langid
 langdetect
+zstandard
 # Google Drive API dependencies (for Paperspace)
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.1.0
