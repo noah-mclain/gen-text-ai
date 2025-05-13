@@ -245,27 +245,29 @@ def main():
     # Add optional arguments
     parser.add_argument("--show-rclone", action="store_true",
                       help="Show instructions for setting up rclone")
+    parser.add_argument("--base_dir", type=str, default="DeepseekCoder",
+                      help="Base directory name on Google Drive")
     
     args = parser.parse_args()
     
-    # If user just wants rclone instructions
     if args.show_rclone:
         print_rclone_instructions()
         return 0
     
+    # Load and set configuration
     try:
-        success = setup_google_drive()
-        if success:
-            return 0
-        else:
-            print("\nGoogle Drive setup failed.")
-            return 1
-    except KeyboardInterrupt:
-        print("\nSetup cancelled by user.")
-        return 1
+        from src.utils.google_drive_manager import drive_manager, configure_sync_method
+        # Set the base directory
+        if args.base_dir:
+            configure_sync_method(base_dir=args.base_dir)
+            logger.info(f"Set Drive base directory to: {args.base_dir}")
     except Exception as e:
-        print(f"\nUnexpected error: {str(e)}")
-        return 1
+        logger.error(f"Error configuring Drive base directory: {e}")
+        
+    # Run the setup
+    success = setup_google_drive()
+    
+    return 0 if success else 1
 
 if __name__ == "__main__":
     sys.exit(main()) 

@@ -75,20 +75,43 @@ mkdir -p logs
 mkdir -p data/processed
 mkdir -p text_models/flan-ul2-fine-tuned
 
-# Set drive options
+# Set up Google Drive authentication
 if [ "$USE_DRIVE" = true ]; then
   echo "Setting up Google Drive authentication..."
-  python scripts/setup_google_drive.py
+  
+  # Set text model-specific drive base directory
+  export DRIVE_BASE_DIR="${DRIVE_BASE_DIR:-FlanUL2Text}"
+  echo "Using text-specific Drive base directory: $DRIVE_BASE_DIR"
+  
+  python scripts/setup_google_drive.py --base_dir "$DRIVE_BASE_DIR"
   if [ $? -ne 0 ]; then
     echo "Google Drive authentication failed. Proceeding without Drive integration."
     USE_DRIVE=false
     DRIVE_OPTS=""
   else
     echo "Google Drive authentication successful. Will use Drive for storage."
-  DRIVE_OPTS="--use_drive --drive_base_dir $DRIVE_BASE_DIR"
-  if [ "$SKIP_LOCAL" = true ]; then
-    DRIVE_OPTS="$DRIVE_OPTS --skip_local_storage"
-  fi
+    DRIVE_OPTS="--use_drive --drive_base_dir $DRIVE_BASE_DIR"
+    if [ "$SKIP_LOCAL" = true ]; then
+      DRIVE_OPTS="$DRIVE_OPTS --skip_local_storage"
+    fi
+    
+    # Validate authentication by testing if we can access the drive
+    python -c "
+import sys
+from src.utils.google_drive_manager import test_drive_mounting
+if not test_drive_mounting():
+    print('Failed to access Google Drive after authentication')
+    sys.exit(1)
+else:
+    print('Successfully validated Google Drive access')
+" 
+    
+    # If validation failed, disable Drive
+    if [ $? -ne 0 ]; then
+      echo "Google Drive access validation failed. Proceeding without Drive integration."
+      USE_DRIVE=false
+      DRIVE_OPTS=""
+    fi
   fi
 else
   DRIVE_OPTS=""
@@ -114,16 +137,38 @@ else
   echo "Google Drive: Disabled"
 fi
 
-# Step 1: Process datasets first
+# Step 1: Get dataset names from the config file
+echo "==== Getting text dataset names from config ===="
+TEXT_DATASETS=$(python -c "
+import json
+import sys
+try:
+    with open('config/dataset_config_text.json', 'r') as f:
+        config = json.load(f)
+        # Filter only enabled datasets
+        enabled_datasets = [name for name, info in config.items() 
+                           if info.get('enabled', True)]
+        if enabled_datasets:
+            print(' '.join(enabled_datasets))
+        else:
+            # Default datasets if none are enabled
+            print('openassistant gpteacher_general pile synthetic_persona writingprompts')
+except Exception as e:
+    print('openassistant gpteacher_general pile')  # Fallback list
+    sys.stderr.write(f'Error reading dataset config: {e}\\n')
+")
+
+# Step 2: Process datasets with all the enabled ones from config
 echo "==== Processing text datasets with optimizations ===="
+echo "Datasets to process: $TEXT_DATASETS"
 python -m src.data.process_datasets \
   --config config/dataset_config_text.json \
-  --datasets openassistant gpt_teacher pile_filtered \
+  --datasets $TEXT_DATASETS \
   --streaming \
   --no_cache \
   $DRIVE_OPTS
 
-# Step 2: Train the model with checkpointing and logging to Drive
+# Step 3: Train the model with checkpointing and logging to Drive
 echo "==== Training FLAN-UL2 with optimizations and Drive integration ===="
 python train_text_flan.py \
   --config config/training_config_text.json \
@@ -133,7 +178,7 @@ python train_text_flan.py \
   --debug \
   2>&1 | tee logs/train_flan_ul2_a6000_$(date +%Y%m%d_%H%M%S).log
 
-# Step 3: Sync any remaining results to Drive if enabled
+# Step 4: Sync any remaining results to Drive if enabled
 if [ "$USE_DRIVE" = true ]; then
   echo "==== Syncing all results to Google Drive ===="
   python scripts/sync_to_drive.py --sync-all \

@@ -106,8 +106,8 @@ class DataPreprocessor:
             return False
         
         try:
-            # Detect language with langdetect
-            lang_code = detect(text[:1000])  # Only use first 1000 chars for speed
+            # Use our own detect_language method instead of undefined 'detect' function
+            lang_code = self.detect_language(text[:1000])  # Only use first 1000 chars for speed
             
             # Convert allowed_languages to lowercase for case-insensitive matching
             allowed_languages_lower = [lang.lower() for lang in allowed_languages]
@@ -1991,3 +1991,136 @@ class DataPreprocessor:
             logger.warning("No datasets were successfully processed")
         
         return processed_datasets 
+    
+    def process_openassistant(self, dataset: Union[Dataset, DatasetDict],
+                       streaming: bool = False) -> Union[Dataset, DatasetDict]:
+        """Process OpenAssistant dataset for text generation fine-tuning."""
+        logger.info("Processing OpenAssistant dataset...")
+        
+        # For streaming mode, process examples one at a time
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually using our safe iterator
+            for example in self._safe_dataset_iterator(dataset):
+                try:
+                    # Check if it's a prompt (role is "prompter") or response (role is "assistant")
+                    if example.get('role') == 'prompter':
+                        instruction = example.get('text', '')
+                        response = ""
+                    elif example.get('role') == 'assistant':
+                        instruction = ""
+                        response = example.get('text', '')
+                    else:
+                        # Skip examples with unknown roles
+                        continue
+                    
+                    # Skip if both instruction and response are empty
+                    if not instruction and not response:
+                        continue
+                    
+                    # Create a processed example
+                    processed = {
+                        "processed_text": f"Instruction: {instruction}\nResponse: {response}",
+                        "length": len(instruction) + len(response),
+                        "language": example.get('lang', 'en'),
+                        "source": "openassistant"
+                    }
+                    
+                    processed_examples.append(processed)
+                except Exception as e:
+                    logger.warning(f"Error processing OpenAssistant example: {e}")
+                    continue
+            
+            return processed_examples
+        else:
+            # For batch processing mode
+            def process_sample(examples):
+                # Ensure we have valid inputs
+                if not isinstance(examples, dict):
+                    logger.warning(f"Expected dictionary, got {type(examples)}")
+                    return {"processed_text": [], "length": [], "language": [], "source": []}
+                
+                # Get relevant fields
+                roles = examples.get("role", [])
+                texts = examples.get("text", [])
+                langs = examples.get("lang", [])
+                
+                # Ensure all are lists
+                if not isinstance(roles, list):
+                    roles = [roles]
+                if not isinstance(texts, list):
+                    texts = [texts]
+                if not isinstance(langs, list):
+                    langs = [langs] * len(roles)
+                
+                # Get batch size
+                batch_size = min(len(roles), len(texts))
+                if batch_size == 0:
+                    return {"processed_text": [], "length": [], "language": [], "source": []}
+                
+                # Process each example
+                processed_texts = []
+                lengths = []
+                languages = []
+                sources = []
+                
+                for i in range(batch_size):
+                    role = roles[i] if i < len(roles) else ""
+                    text = texts[i] if i < len(texts) else ""
+                    lang = langs[i] if i < len(langs) else "en"
+                    
+                    # Determine if it's an instruction or response
+                    if role == "prompter":
+                        instruction = text
+                        response = ""
+                    elif role == "assistant":
+                        instruction = ""
+                        response = text
+                    else:
+                        # Skip examples with unknown roles
+                        continue
+                    
+                    # Skip if both are empty
+                    if not instruction and not response:
+                        continue
+                    
+                    # Create processed text
+                    processed_text = f"Instruction: {instruction}\nResponse: {response}"
+                    processed_texts.append(processed_text)
+                    lengths.append(len(instruction) + len(response))
+                    languages.append(lang)
+                    sources.append("openassistant")
+                
+                return {
+                    "processed_text": processed_texts,
+                    "length": lengths,
+                    "language": languages,
+                    "source": sources
+                }
+            
+            try:
+                # Try batch processing with removable columns
+                if hasattr(dataset, "column_names"):
+                    processed = dataset.map(
+                        process_sample,
+                        batched=True,
+                        remove_columns=dataset.column_names if not streaming else None,
+                        batch_size=100
+                    )
+                else:
+                    # Fallback for streaming datasets
+                    processed = dataset.map(
+                        process_sample,
+                        batched=True,
+                        batch_size=100
+                    )
+                
+                logger.info(f"Successfully processed {len(processed) if hasattr(processed, '__len__') else 'unknown'} OpenAssistant examples")
+                return processed
+                
+            except Exception as e:
+                logger.error(f"Error processing OpenAssistant dataset: {e}")
+                logger.error(traceback.format_exc())
+                # Return a simple placeholder
+                return dataset
