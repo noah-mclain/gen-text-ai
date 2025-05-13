@@ -807,6 +807,55 @@ class DeepseekFineTuner:
         if use_deepspeed and deepspeed_config_path:
             training_args_dict["deepspeed"] = deepspeed_config_path
         
+        # Handle evaluation strategy when no eval dataset is available
+        if self.training_config.get("evaluation_strategy") == "steps" and "eval_steps" in self.training_config:
+            # Create evaluation dataset or change strategy to 'no' if we can't create one
+            try:
+                # Try to create a small evaluation set from training data
+                logger.info("Creating evaluation dataset from training data")
+                
+                # If the dataset is an IterableDataset, we need a special approach
+                if isinstance(train_dataset, IterableDataset):
+                    # We're in streaming mode, set evaluation_strategy to 'no'
+                    logger.info("Streaming dataset detected, changing evaluation_strategy to 'no'")
+                    training_args_dict["evaluation_strategy"] = "no"
+                    if "load_best_model_at_end" in training_args_dict:
+                        training_args_dict.pop("load_best_model_at_end")
+                    if "metric_for_best_model" in training_args_dict:
+                        training_args_dict.pop("metric_for_best_model")
+                    eval_dataset = None
+                else:
+                    # Take a small subset of train dataset for evaluation (1-5%)
+                    eval_size = min(int(len(train_dataset) * 0.05), 1000)  # Max 1000 examples
+                    if eval_size > 0:
+                        # Shuffle train dataset and select a subset
+                        indices = list(range(len(train_dataset)))
+                        import random
+                        random.shuffle(indices)
+                        eval_indices = indices[:eval_size]
+                        eval_dataset = train_dataset.select(eval_indices)
+                        logger.info(f"Created evaluation dataset with {len(eval_dataset)} examples")
+                    else:
+                        # Dataset too small, disable evaluation
+                        logger.info("Training dataset too small for evaluation, changing evaluation_strategy to 'no'")
+                        training_args_dict["evaluation_strategy"] = "no"
+                        if "load_best_model_at_end" in training_args_dict:
+                            training_args_dict.pop("load_best_model_at_end")
+                        if "metric_for_best_model" in training_args_dict:
+                            training_args_dict.pop("metric_for_best_model")
+                        eval_dataset = None
+            except Exception as e:
+                logger.warning(f"Error creating evaluation dataset: {e}")
+                logger.info("Changing evaluation_strategy to 'no'")
+                training_args_dict["evaluation_strategy"] = "no"
+                if "load_best_model_at_end" in training_args_dict:
+                    training_args_dict.pop("load_best_model_at_end")
+                if "metric_for_best_model" in training_args_dict:
+                    training_args_dict.pop("metric_for_best_model")
+                eval_dataset = None
+        else:
+            eval_dataset = None
+        
         # Create training arguments
         training_args = TrainingArguments(**training_args_dict)
         
@@ -822,7 +871,7 @@ class DeepseekFineTuner:
                 model=model,
                 args=training_args,
                 train_dataset=train_dataset,
-                eval_dataset=None,  # We'll handle evaluation separately
+                eval_dataset=eval_dataset,
                 tokenizer=self.tokenizer,
                 data_collator=data_collator,
                 callbacks=[
