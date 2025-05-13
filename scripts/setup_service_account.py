@@ -115,10 +115,17 @@ def setup_service_account():
     dest_dir = os.getcwd()
     dest_path = os.path.join(dest_dir, "service-account.json")
     
-    # Make a copy of the file
+    # Make a copy of the file if it's not already in the right place
     try:
-        shutil.copy2(file_path, dest_path)
-        print(f"\n✅ Service account credentials copied to {dest_path}")
+        # Convert to absolute paths for comparison
+        abs_file_path = os.path.abspath(file_path)
+        abs_dest_path = os.path.abspath(dest_path)
+        
+        if abs_file_path == abs_dest_path:
+            print(f"\n✅ Service account credentials are already at the correct location: {dest_path}")
+        else:
+            shutil.copy2(file_path, dest_path)
+            print(f"\n✅ Service account credentials copied to {dest_path}")
     except Exception as e:
         print(f"Error copying file: {str(e)}")
         return False
@@ -170,17 +177,23 @@ def setup_service_account():
             
             # Try to import and use the drive manager
             print("\nTesting Google Drive connection...")
-            from scripts.google_drive_manager import test_authentication, test_drive_mounting
-            
-            if test_authentication():
-                print("✅ Authentication successful!")
-                if test_drive_mounting():
-                    print("✅ Google Drive access successful!")
-                    return True
+            try:
+                from scripts.google_drive_manager import test_authentication, test_drive_mounting
+                
+                if test_authentication():
+                    print("✅ Authentication successful!")
+                    if test_drive_mounting():
+                        print("✅ Google Drive access successful!")
+                        return True
+                    else:
+                        print("❌ Failed to access Google Drive. Are the folders shared with the service account email?")
                 else:
-                    print("❌ Failed to access Google Drive. Are the folders shared with the service account email?")
-            else:
-                print("❌ Authentication failed. Please check the credentials file.")
+                    print("❌ Authentication failed. Please check the credentials file.")
+            except ImportError as e:
+                print(f"❌ Error importing Google Drive manager: {str(e)}")
+                print("Make sure the scripts/google_drive_manager.py file exists and all dependencies are installed.")
+                print("You can install dependencies with: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
+                return False
         except Exception as e:
             print(f"Error testing setup: {str(e)}")
     
