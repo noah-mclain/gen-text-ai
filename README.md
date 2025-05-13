@@ -99,6 +99,8 @@ pip install -r requirements.txt
   - Added proper error handling for 404 errors when files don't exist during deletion attempts
   - Improved logging for better troubleshooting
   - Added proper error handling for authentication and file operations
+  - **NEW: Added dataset checking to avoid redundant processing by detecting pre-processed datasets on Drive**
+  - **NEW: Optimized training pipeline to only process datasets not available locally or on Drive**
 
 - **Enhanced Preprocessing Pipeline**:
 
@@ -110,6 +112,7 @@ pip install -r requirements.txt
   - **NEW: Enhanced language-specific processing that preserves language information in processed datasets**
   - **NEW: Optimized processing of large multi-language datasets with robust error handling**
   - **NEW: Improved memory management during multi-language dataset processing**
+  - **NEW: Smart dataset detection to skip already processed datasets**
 
 - **Improved Training Process**:
 

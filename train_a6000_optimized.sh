@@ -44,9 +44,11 @@ python scripts/setup_google_drive.py
 if [ $? -ne 0 ]; then
     echo "Google Drive authentication setup failed. Will proceed without Drive integration."
     USE_DRIVE_FLAG=""
+    SKIP_DRIVE="--skip_drive"
 else
     echo "Google Drive authentication successful. Will use Drive for storage."
     USE_DRIVE_FLAG="--use_drive --drive_base_dir DeepseekCoder"
+    SKIP_DRIVE=""
 fi
 
 # Clean any cached files for better memory management
@@ -84,15 +86,32 @@ python -c "from datasets import load_dataset; load_dataset('codeparrot/codeparro
 python -c "from datasets import load_dataset; load_dataset('openai/openai_humaneval', streaming=True, trust_remote_code=True)"
 python -c "from datasets import load_dataset; load_dataset('ise-uiuc/Magicoder-OSS-Instruct-75K', split='train', streaming=True, trust_remote_code=True)"
 
-# Process datasets first
-echo "Processing datasets..."
-python main_api.py \
-    --mode process \
-    --datasets the_stack_filtered codesearchnet_all code_alpaca humaneval mbpp codeparrot instruct_code \
-    --streaming \
-    --no_cache \
-    --dataset_config config/dataset_config.json \
-    2>&1 | tee logs/dataset_processing_$(date +%Y%m%d_%H%M%S).log
+# Check if datasets are already available on Google Drive
+echo "Checking for pre-processed datasets on Google Drive..."
+# Save the list of datasets that need processing
+DATASETS_TO_PROCESS=$(python -c "
+from src.utils.drive_dataset_checker import prepare_datasets
+import json
+
+config_path = 'config/dataset_config.json'
+available, needed, _ = prepare_datasets(config_path, skip_drive=${SKIP_DRIVE:-False})
+
+print(','.join(needed))
+")
+
+# Only process datasets if there are any that need processing
+if [ -n "$DATASETS_TO_PROCESS" ]; then
+    echo "Processing datasets: $DATASETS_TO_PROCESS"
+    python main_api.py \
+        --mode process \
+        --datasets $DATASETS_TO_PROCESS \
+        --streaming \
+        --no_cache \
+        --dataset_config config/dataset_config.json \
+        2>&1 | tee logs/dataset_processing_$(date +%Y%m%d_%H%M%S).log
+else
+    echo "All datasets already available. Skipping dataset processing step."
+fi
 
 # Train with direct module call (bypassing main_api.py)
 echo "Starting training with direct module call (avoids argument mismatch)..."

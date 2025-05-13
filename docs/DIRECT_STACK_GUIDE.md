@@ -25,6 +25,23 @@ This command:
 - Uses the filtered Stack dataset with specific languages
 - Optimizes training parameters for time constraints
 - Handles both processing and training in one step
+- **NEW**: Checks for already processed datasets on Google Drive to avoid redundant processing
+
+## Smart Dataset Detection
+
+The training pipeline now automatically checks for pre-processed datasets:
+
+1. First checks if datasets exist locally in your data directory
+2. If not found locally, checks if they exist on Google Drive
+3. Downloads available datasets from Drive rather than reprocessing
+4. Only processes datasets that aren't available locally or on Drive
+
+This provides significant time savings by avoiding redundant dataset processing.
+
+```bash
+# Train with A6000 optimized script (includes dataset checking)
+./train_a6000_optimized.sh
+```
 
 ## Multi-Language Dataset Support
 

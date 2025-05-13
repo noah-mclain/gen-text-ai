@@ -49,11 +49,19 @@ This document summarizes the improvements made to the data preprocessing workflo
    - Added type checking and conversion for robust processing
 
 7. **Streaming Mode Improvements**
+
    - Enhanced handling of streaming datasets with better batching
    - Fixed the "object of type 'int' has no len()" error in streaming mode
    - Improved memory efficiency for large datasets
    - **NEW**: Forced streaming mode to minimize RAM/VRAM usage
    - **NEW**: Split large datasets into smaller chunks to avoid OOM errors
+
+8. **Google Drive Dataset Checking**
+   - **NEW**: Added smart dataset detection to check for pre-processed datasets on Google Drive
+   - **NEW**: Implemented automatic download of available datasets from Drive instead of reprocessing
+   - **NEW**: Added functionality to only process datasets not already available locally or on Drive
+   - **NEW**: Integrated drive dataset checking in training scripts for automatic optimization
+   - **NEW**: Added proper tracking of datasets during download to report progress
 
 ## Timeout Mechanisms
 
