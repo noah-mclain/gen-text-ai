@@ -22,28 +22,27 @@ sys.path.append(str(project_root))
 
 # Try to import drive_sync
 try:
-    from src.utils.drive_sync import (
+    from src.utils.google_drive_manager import (
         sync_to_drive, 
         sync_from_drive, 
         configure_sync_method,
         DRIVE_FOLDERS
     )
 except ImportError:
-    logger.error("Failed to import drive_sync module. Make sure src/utils/drive_sync.py exists.")
+    logger.error("Failed to import google_drive_manager module. Make sure src/utils/google_drive_manager.py exists.")
     sys.exit(1)
 
-def setup_sync(base_dir: str = "DeepseekCoder", use_rclone: bool = True):
+def setup_sync(base_dir: str = "DeepseekCoder"):
     """
     Configure drive sync with the specified settings.
     
     Args:
         base_dir: Base directory on Google Drive
-        use_rclone: Whether to use rclone (True) or Google Drive API (False)
     """
     try:
         # Setup drive sync
-        configure_sync_method(use_rclone=use_rclone, base_dir=base_dir)
-        logger.info(f"Configured drive sync to use {'rclone' if use_rclone else 'Google Drive API'}")
+        configure_sync_method(base_dir=base_dir)
+        logger.info(f"Configured drive sync to use Google Drive API")
         logger.info(f"Using base directory: {base_dir}")
         return True
     except Exception as e:
@@ -75,8 +74,7 @@ def sync_datasets_to_drive(delete_local: bool = False):
             success = sync_to_drive(
                 dataset_dir,
                 "preprocessed",
-                delete_source=delete_local,
-                update_only=False
+                delete_source=delete_local
             )
             
             if success:
@@ -95,8 +93,7 @@ def sync_datasets_to_drive(delete_local: bool = False):
             success = sync_to_drive(
                 metadata_file,
                 "preprocessed",
-                delete_source=delete_local,
-                update_only=False
+                delete_source=delete_local
             )
             
             if success:
@@ -130,8 +127,7 @@ def sync_models_to_drive(model_dir: str, is_text_model: bool = False, delete_loc
         success = sync_to_drive(
             model_dir,
             target_folder,
-            delete_source=delete_local,
-            update_only=False
+            delete_source=delete_local
         )
         
         if success:
@@ -165,8 +161,7 @@ def sync_logs_to_drive(logs_dir: str = "logs", is_text_model: bool = False, dele
         success = sync_to_drive(
             logs_dir,
             target_folder,
-            delete_source=delete_local,
-            update_only=False
+            delete_source=delete_local
         )
         
         if success:
@@ -196,8 +191,7 @@ def sync_results_to_drive(results_dir: str = "results", delete_local: bool = Fal
         success = sync_to_drive(
             results_dir,
             "results",
-            delete_source=delete_local,
-            update_only=False
+            delete_source=delete_local
         )
         
         if success:
@@ -233,8 +227,7 @@ def sync_checkpoints_to_drive(checkpoints_dir: str, model_name: str, is_text_mod
         success = sync_to_drive(
             checkpoints_dir,
             remote_path,
-            delete_source=delete_local,
-            update_only=False
+            delete_source=delete_local
         )
         
         if success:
@@ -284,8 +277,6 @@ def main():
     # Setup options
     parser.add_argument("--base-dir", type=str, default="DeepseekCoder",
                         help="Base directory name on Google Drive")
-    parser.add_argument("--use-api", action="store_true", 
-                        help="Use Google Drive API instead of rclone")
     
     # Actions
     action_group = parser.add_mutually_exclusive_group(required=True)
@@ -319,7 +310,7 @@ def main():
     args = parser.parse_args()
     
     # Set up drive sync
-    if not setup_sync(args.base_dir, not args.use_api):
+    if not setup_sync(args.base_dir):
         sys.exit(1)
     
     # Execute the requested action
