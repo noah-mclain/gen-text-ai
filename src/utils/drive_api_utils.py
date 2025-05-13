@@ -15,38 +15,37 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Add project root to path for absolute imports
-module_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if module_path not in sys.path:
-    sys.path.append(module_path)
-
 # Import from the consolidated module
 try:
     from src.utils.google_drive_manager import (
         # Classes and main functionality
         DriveManager,
         drive_manager,
+        sync_to_drive,
+        sync_from_drive,
         configure_sync_method,
         test_authentication,
         test_drive_mounting,
         
         # Constants
         DRIVE_FOLDERS,
+        SCOPES,
         GOOGLE_API_AVAILABLE
     )
     
-    logger.info("Successfully imported from google_drive_manager")
-    DRIVE_API_AVAILABLE = True
+    logger.debug("Successfully redirected from drive_api_utils to google_drive_manager")
+    DRIVE_API_AVAILABLE = GOOGLE_API_AVAILABLE
     
 except ImportError as e:
     logger.error(f"Error importing from google_drive_manager: {e}")
-    logger.warning("Drive API functionality will be limited")
+    logger.warning("Drive API functionality will not be available")
     DRIVE_API_AVAILABLE = False
     
-    # Define fallback variables and functions
-    DRIVE_API_AVAILABLE = False
+    # Define empty constants
     DRIVE_FOLDERS = {}
+    SCOPES = []
     
+    # Define dummy class
     class DriveManager:
         def __init__(self, *args, **kwargs):
             logger.error("DriveManager not available - google_drive_manager could not be imported")
@@ -54,6 +53,7 @@ except ImportError as e:
         def authenticate(self):
             return False
 
+# Re-export compatibility functions that maintain the old API
 def initialize_drive_api(credentials_path=None, headless=False, token_path=None):
     """
     Initialize the Google Drive API.
@@ -222,4 +222,14 @@ def load_from_drive(drive_folder_key, local_path, manager=None):
         return mgr.download_folder(folder_id, local_path)
     except Exception as e:
         logger.error(f"Error loading from Drive: {e}")
-        return False 
+        return False
+
+# Define the exported symbols
+__all__ = [
+    'DriveManager',
+    'drive_manager',
+    'initialize_drive_api',
+    'DRIVE_API_AVAILABLE',
+    'DRIVE_FOLDERS',
+    'SCOPES'
+] 

@@ -689,4 +689,19 @@ def test_drive_mounting():
         return True
     except Exception as e:
         logger.error(f"✗ Failed to access Google Drive: {str(e)}")
-        return False 
+        return False
+
+# Define all exported symbols for clarity
+__all__ = [
+    'DriveManager',
+    'drive_manager',
+    'sync_to_drive',
+    'sync_from_drive',
+    'configure_sync_method',
+    'test_authentication',
+    'test_drive_mounting',
+    'DRIVE_FOLDERS',
+    'SCOPES',
+    'GOOGLE_API_AVAILABLE',
+    'CREDENTIALS_PATHS'
+] 

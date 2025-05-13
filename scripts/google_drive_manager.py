@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Google Drive Manager Import Script
+Google Drive Manager Redirect
 
-This file ensures backward compatibility by importing and re-exporting
-all functionality from the main google_drive_manager module.
+This file ensures that all imports of google_drive_manager from the scripts directory
+are directed to the main implementation in src/utils/google_drive_manager.py.
+
+This avoids duplication of code and ensures consistency across the project.
 """
 
 import os
@@ -19,77 +21,25 @@ logger = logging.getLogger(__name__)
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
+# Define the path to the actual implementation
+implementation_path = os.path.join(project_root, 'src', 'utils', 'google_drive_manager.py')
+
+# Verify that the implementation exists
+if not os.path.exists(implementation_path):
+    logger.error(f"Main implementation not found at {implementation_path}")
+    logger.error("Please ensure the src/utils/google_drive_manager.py file exists")
+    raise ImportError("google_drive_manager.py implementation not found")
+
+# Import directly from the main module
 try:
-    # Import everything from the main module
-    from src.utils.google_drive_manager import (
-        drive_manager,
-        sync_to_drive,
-        sync_from_drive,
-        configure_sync_method,
-        test_authentication,
-        test_drive_mounting,
-        DRIVE_FOLDERS,
-        SCOPES
-    )
-    
+    # Import everything from the main module to make it available to importers
+    from src.utils.google_drive_manager import *
     logger.debug("Successfully imported from src.utils.google_drive_manager")
     
 except ImportError as e:
     logger.error(f"Failed to import from src.utils.google_drive_manager: {e}")
-    
-    # Define fallback functions
-    def sync_to_drive(*args, **kwargs):
-        logger.error("Drive sync not available. Import of google_drive_manager failed.")
-        return False
-        
-    def sync_from_drive(*args, **kwargs):
-        logger.error("Drive sync not available. Import of google_drive_manager failed.")
-        return False
-        
-    def configure_sync_method(*args, **kwargs):
-        logger.error("Drive sync not available. Import of google_drive_manager failed.")
-        return None
-        
-    def test_authentication():
-        logger.error("Drive authentication not available. Import of google_drive_manager failed.")
-        return False
-    
-    def test_drive_mounting():
-        logger.error("Drive mounting not available. Import of google_drive_manager failed.")
-        return False
-        
-    # Define empty drive folders dict
-    DRIVE_FOLDERS = {
-        "data": "data",
-        "models": "models",
-        "logs": "logs",
-        "results": "results"
-    }
-    
-    # Define scopes
-    SCOPES = ['https://www.googleapis.com/auth/drive']
-    
-    # Create dummy drive manager class
-    class DummyDriveManager:
-        def __init__(self):
-            self.authenticated = False
-            self.folder_ids = {}
-        
-        def authenticate(self):
-            logger.error("Drive authentication not available. Import of google_drive_manager failed.")
-            return False
-    
-    # Create drive manager instance
-    drive_manager = DummyDriveManager()
+    logger.error("Make sure the python path includes the project root directory")
+    raise
 
-# Export all symbols
-__all__ = [
-    'drive_manager',
-    'sync_to_drive',
-    'sync_from_drive',
-    'configure_sync_method',
-    'test_authentication',
-    'test_drive_mounting',
-    'DRIVE_FOLDERS',
-    'SCOPES'
-] 
+# Inform users about the redirect
+logger.debug(f"google_drive_manager redirected from scripts to {implementation_path}") 

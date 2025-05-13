@@ -2,8 +2,8 @@
 Google Drive Sync (Compatibility Module)
 
 This is a bridge module that provides backward compatibility for code 
-that still uses the old drive_sync and drive_api_utils imports. This
-redirects to the consolidated google_drive_manager module.
+that still uses the old drive_sync imports. This redirects to the 
+consolidated google_drive_manager module.
 """
 
 import logging
@@ -15,39 +15,29 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Add project root to path for absolute imports
-module_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if module_path not in sys.path:
-    sys.path.append(module_path)
-
 # Import from the consolidated module
 try:
     from src.utils.google_drive_manager import (
-        # Main functions and classes
-        DriveManager,
+        # Re-export the main functionality
         drive_manager,
         sync_to_drive,
         sync_from_drive,
         configure_sync_method,
         test_authentication,
         test_drive_mounting,
-        
-        # Constants and globals
-        SCOPES,
         DRIVE_FOLDERS,
-        CREDENTIALS_PATHS,
-        GOOGLE_API_AVAILABLE
+        SCOPES
     )
     
-    logger.info("Successfully imported from google_drive_manager")
+    logger.debug("Successfully redirected from drive_sync to google_drive_manager")
     DRIVE_SYNC_AVAILABLE = True
     
 except ImportError as e:
     logger.error(f"Error importing from google_drive_manager: {e}")
-    logger.warning("Drive sync functionality will be limited")
+    logger.warning("Drive sync functionality will not be available")
     DRIVE_SYNC_AVAILABLE = False
     
-    # Define fallback functions
+    # Define dummy functions for backward compatibility
     def sync_to_drive(*args, **kwargs):
         logger.error("Drive sync not available - google_drive_manager could not be imported")
         return False
@@ -55,33 +45,34 @@ except ImportError as e:
     def sync_from_drive(*args, **kwargs):
         logger.error("Drive sync not available - google_drive_manager could not be imported")
         return False
-        
-    def configure_sync_method(*args, **kwargs):
-        logger.error("Drive sync not available - google_drive_manager could not be imported")
-        return None
-        
-    def test_authentication():
-        logger.error("Drive authentication not available - google_drive_manager could not be imported")
-        return False
-        
-    def test_drive_mounting():
-        logger.error("Drive mounting test not available - google_drive_manager could not be imported")
-        return False
-
-    # Define empty class for fallback
-    class DriveManager:
-        def __init__(self, *args, **kwargs):
-            logger.error("DriveManager not available - google_drive_manager could not be imported")
+    
+    # Define empty constants
+    DRIVE_FOLDERS = {}
+    SCOPES = []
+    
+    # Define a dummy drive manager
+    class DummyDriveManager:
+        def __init__(self):
+            self.authenticated = False
+            self.folder_ids = {}
         
         def authenticate(self):
             return False
-            
-        def upload_file(self, *args, **kwargs):
-            return False
-            
-        def download_file(self, *args, **kwargs):
-            return False
+    
+    drive_manager = DummyDriveManager()
 
+# Define the exported symbols
+__all__ = [
+    'drive_manager',
+    'sync_to_drive',
+    'sync_from_drive',
+    'configure_sync_method',
+    'test_authentication',
+    'test_drive_mounting',
+    'DRIVE_FOLDERS',
+    'SCOPES',
+    'DRIVE_SYNC_AVAILABLE'
+]
 
 # Aliases and compatibility functions for the old drive_api_utils module
 def get_authenticated_service(*args, **kwargs):

@@ -22,6 +22,10 @@ import torch
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # Import other libraries after unsloth
 import transformers
 from transformers import (
@@ -96,6 +100,7 @@ except (ImportError, ModuleNotFoundError):
 
 # Import drive utils with fallbacks
 try:
+    # First try the main implementation
     from src.utils.google_drive_manager import (
         drive_manager, 
         test_authentication, 
@@ -103,39 +108,67 @@ try:
         configure_sync_method
     )
     GOOGLE_DRIVE_AVAILABLE = True
+    logger.info("Successfully imported Google Drive manager from src.utils")
 except (ImportError, ModuleNotFoundError):
     try:
-        # Try relative import
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from utils.google_drive_manager import (
+        # Next try the scripts redirect
+        from scripts.google_drive_manager import (
             drive_manager,
             test_authentication,
             test_drive_mounting,
             configure_sync_method
         )
         GOOGLE_DRIVE_AVAILABLE = True
+        logger.info("Successfully imported Google Drive manager from scripts")
     except (ImportError, ModuleNotFoundError):
-        print("WARNING: google_drive_manager not found. Creating fallback functions.")
-        GOOGLE_DRIVE_AVAILABLE = False
-        
-        def test_authentication():
-            """Fallback Google Drive authentication check"""
-            print("Google Drive authentication not available")
-            return False
-        
-        def test_drive_mounting():
-            """Fallback for checking if drive is mounted"""
-            print("Google Drive mounting not available")
-            return False
-        
-        def configure_sync_method(base_dir=None):
-            """Fallback for configuring sync method"""
-            print(f"Cannot configure sync method for Google Drive under {base_dir}")
-            return None
-
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+        # Last attempt with modified path - but use explicit import
+        try:
+            # Add utils path to system path
+            utils_path = os.path.join(project_root, 'src', 'utils')
+            if utils_path not in sys.path:
+                sys.path.append(utils_path)
+                
+            # Use explicit import from src.utils
+            try:
+                from src.utils.google_drive_manager import (
+                    drive_manager,
+                    test_authentication,
+                    test_drive_mounting,
+                    configure_sync_method
+                )
+                GOOGLE_DRIVE_AVAILABLE = True
+                logger.info("Successfully imported Google Drive manager from modified path")
+            except (ImportError, ModuleNotFoundError):
+                raise  # Re-raise to fall through to the fallback
+        except (ImportError, ModuleNotFoundError):
+            # Fallback to dummy implementations
+            logger.warning("Google Drive manager not found. Using fallback implementations.")
+            GOOGLE_DRIVE_AVAILABLE = False
+            
+            class DummyDriveManager:
+                def __init__(self):
+                    self.authenticated = False
+                    self.folder_ids = {}
+                
+                def authenticate(self):
+                    return False
+            
+            drive_manager = DummyDriveManager()
+            
+            def test_authentication():
+                """Fallback Google Drive authentication check"""
+                logger.warning("Google Drive authentication not available")
+                return False
+            
+            def test_drive_mounting():
+                """Fallback for checking if drive is mounted"""
+                logger.warning("Google Drive mounting not available")
+                return False
+            
+            def configure_sync_method(base_dir=None):
+                """Fallback for configuring sync method"""
+                logger.warning(f"Cannot configure sync method for Google Drive under {base_dir}")
+                return None
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune deepseek-coder models")

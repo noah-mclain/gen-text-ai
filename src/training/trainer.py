@@ -17,6 +17,10 @@ import numpy as np
 from datetime import datetime
 import pkg_resources
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 from src.data.dataset_utils import load_from_disk
 
 # Get transformers version for compatibility handling
@@ -120,16 +124,51 @@ except (ImportError, ModuleNotFoundError):
 
 # Try multiple import paths for Google Drive utilities
 try:
-    from src.utils.google_drive_manager import save_model_to_drive, get_drive_path, is_drive_mounted
+    # First try the new path structure
+    from src.utils.google_drive_manager import drive_manager, sync_to_drive, sync_from_drive
+    
+    def save_model_to_drive(model_path, remote_dir=None):
+        """Save model to Google Drive using the new utility functions"""
+        try:
+            return sync_to_drive(model_path, remote_dir or "models")
+        except Exception as e:
+            logger.error(f"Error saving model to Drive: {e}")
+            return False
+            
+    def get_drive_path(local_path, drive_base_path, fallback_path=None):
+        """Get the equivalent path on Google Drive"""
+        return drive_base_path + "/" + os.path.basename(local_path) if drive_manager.authenticated else (fallback_path or local_path)
+        
+    def is_drive_mounted():
+        """Check if Google Drive is authenticated and available"""
+        return drive_manager.authenticated
+        
 except (ImportError, ModuleNotFoundError):
+    # Try the legacy imports
     try:
-        from utils.google_drive_manager import save_model_to_drive, get_drive_path, is_drive_mounted
+        from scripts.google_drive_manager import drive_manager, sync_to_drive, sync_from_drive
+        
+        def save_model_to_drive(model_path, remote_dir=None):
+            """Save model to Google Drive using the new utility functions"""
+            try:
+                return sync_to_drive(model_path, remote_dir or "models")
+            except Exception as e:
+                logger.error(f"Error saving model to Drive: {e}")
+                return False
+                
+        def get_drive_path(local_path, drive_base_path, fallback_path=None):
+            """Get the equivalent path on Google Drive"""
+            return drive_base_path + "/" + os.path.basename(local_path) if drive_manager.authenticated else (fallback_path or local_path)
+            
+        def is_drive_mounted():
+            """Check if Google Drive is authenticated and available"""
+            return drive_manager.authenticated
     except (ImportError, ModuleNotFoundError):
-        print("Warning: google_drive_manager not found. Creating fallback functions.")
+        logger.warning("google_drive_manager not found. Creating fallback functions.")
         
         def save_model_to_drive(*args, **kwargs):
             """Fallback function when drive_utils is not available"""
-            print("Google Drive integration not available - model not saved to drive.")
+            logger.warning("Google Drive integration not available - model not saved to drive.")
             return False
             
         def get_drive_path(local_path, drive_base_path, fallback_path=None):
@@ -156,9 +195,6 @@ class TensorLoggingCallback(TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
         # Implement tensor logging here
         pass
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 class DeepseekFineTuner:
     def __init__(self, config_path: str, use_drive: bool = False, drive_base_dir: Optional[str] = None):
@@ -248,66 +284,38 @@ class DeepseekFineTuner:
         renames = {
             # Parameters that changed names across transformers versions
             "evaluation_strategy": ["eval_strategy"],
-            "eval_steps": ["evaluation_steps"],
-            "save_strategy": ["checkpoint_strategy"],
-            "lr_scheduler_type": ["scheduler_type"],
-            "gradient_accumulation_steps": ["accumulate_grad_batches"],
-            "group_by_length": ["length_column_name"],
-            "ddp_find_unused_parameters": ["find_unused_parameters"],
-            "optim": ["optimizer"],
+            "save_strategy": ["save_steps_strategy"],
+            "logging_strategy": ["log_strategy"]
         }
         
-        # Transformers 4.0 specific mappings
-        if TRANSFORMERS_MAJOR == 4 and TRANSFORMERS_MINOR < 6:
-            # In very old versions (pre-4.6), use these mappings
-            strategy_map = {
-                "steps": "eval_steps",
-                "epoch": "epoch",
-                "no": "no"
-            }
+        # Handle base_model_prefix differently based on version
+        import inspect
         
-        # Set output_dir directly
-        if "output_dir" in param_dict:
-            compatible_params["output_dir"] = param_dict["output_dir"]
-        
-        # Log what parameters are available in the TrainingArguments class
-        available_attrs = dir(args_obj)
-        logger.debug(f"Available TrainingArguments parameters: {[attr for attr in available_attrs if not attr.startswith('_')]}")
-        
-        # Process each parameter
-        for key, value in param_dict.items():
-            if key == "output_dir":
-                continue  # already handled
-                
-            # Direct parameter match
-            if hasattr(args_obj, key):
-                compatible_params[key] = value
-                continue
+        # Get the signature of the args_obj constructor
+        if hasattr(args_obj, "__init__"):
+            signature = inspect.signature(args_obj.__init__)
+            valid_params = list(signature.parameters.keys())
             
-            # Try known renames
-            found_rename = False
-            if key in renames:
-                for alt_name in renames[key]:
-                    if hasattr(args_obj, alt_name):
-                        compatible_params[alt_name] = value
-                        logger.info(f"Mapped parameter '{key}' to '{alt_name}'")
-                        found_rename = True
-                        break
-            
-            # Handle special case for evaluation_strategy
-            if key == "evaluation_strategy" and not found_rename and TRANSFORMERS_MAJOR == 4 and TRANSFORMERS_MINOR < 6:
-                # In older versions, this was split into multiple flags
-                if value == "steps" and hasattr(args_obj, "evaluate_during_training"):
-                    compatible_params["evaluate_during_training"] = True
-                    if "eval_steps" in param_dict:
-                        if hasattr(args_obj, "eval_steps"):
-                            compatible_params["eval_steps"] = param_dict["eval_steps"]
-                    found_rename = True
-            
-            # Log if we couldn't find a compatible parameter
-            if not found_rename and key not in ["evaluation_strategy", "eval_steps", "save_strategy"]:
-                # Don't warn about known problematic parameters that we'll handle separately
-                logger.warning(f"Parameter '{key}' not found in training arguments and no suitable rename found")
+            # Filter parameters
+            for key, value in param_dict.items():
+                # Check if the parameter is valid
+                if key in valid_params:
+                    compatible_params[key] = value
+                else:
+                    # Try renamed parameters
+                    renamed = False
+                    if key in renames:
+                        for alt_key in renames[key]:
+                            if alt_key in valid_params:
+                                compatible_params[alt_key] = value
+                                renamed = True
+                                break
+                    
+                    if not renamed:
+                        logger.debug(f"Parameter '{key}' is not compatible with {args_obj.__class__.__name__}")
+        else:
+            # If we can't inspect, just pass through all parameters
+            compatible_params = param_dict
         
         return compatible_params
     
@@ -620,72 +628,68 @@ class DeepseekFineTuner:
         # Initialize streaming flag
         self.is_streaming = False
         
-        # Load processed datasets
-        processed_datasets = {}
-        for dataset_name, weight in self.dataset_config.get("dataset_weights", {}).items():
-            dataset_processed_path = os.path.join(data_dir, f"{dataset_name}_processed")
-            
-            if os.path.exists(dataset_processed_path):
-                try:
-                    dataset = load_from_disk(dataset_processed_path)
-                    
-                    # Add to the list of processed datasets
-                    processed_datasets[dataset_name] = {
-                        "dataset": dataset,
-                        "weight": weight
-                    }
-                    
-                    logger.info(f"Loaded dataset {dataset_name} with {len(dataset)} examples and weight {weight}")
-                except Exception as e:
-                    logger.error(f"Error loading dataset {dataset_name}: {e}")
-            else:
-                logger.warning(f"Dataset {dataset_name} not found at {dataset_processed_path}")
+        # Check for streaming datasets first (since user doesn't save locally)
+        streaming_datasets = {}
+        logger.info("Checking for streaming datasets")
         
-        if not processed_datasets:
-            # Try looking for datasets in streaming format
-            streaming_datasets = {}
+        for dataset_name, weight in self.dataset_config.get("dataset_weights", {}).items():
+            try:
+                # Import dataset loader functions
+                from src.data.streaming import load_streaming_dataset
+                
+                # Load streaming dataset
+                dataset = load_streaming_dataset(
+                    dataset_name,
+                    self.tokenizer,
+                    self.dataset_config.get("streaming_config", {}),
+                    num_workers=torch.cuda.device_count() if torch.cuda.is_available() else 1
+                )
+                
+                # Add to the list of streaming datasets
+                streaming_datasets[dataset_name] = {
+                    "dataset": dataset,
+                    "weight": weight
+                }
+                
+                logger.info(f"Loaded streaming dataset {dataset_name} with weight {weight}")
+            except Exception as e:
+                logger.info(f"Streaming dataset {dataset_name} not available: {e}")
+                
+        # If streaming datasets are available, use them
+        processed_datasets = {}
+        if streaming_datasets:
+            processed_datasets = streaming_datasets
+            self.is_streaming = True
+            logger.info("Using streaming datasets")
             
-            logger.info("No processed datasets found, checking for streaming datasets")
+            # Update training args to specify max_steps for streaming datasets
+            if "max_steps" not in self.training_config:
+                # Set a default value based on num_train_epochs if available
+                epochs = self.training_config.get("num_train_epochs", 1)
+                self.training_config["max_steps"] = int(100000 * epochs)  # A reasonable default
+                logger.info(f"Setting max_steps to {self.training_config['max_steps']} for streaming datasets")
+        else:
+            # Only check local files if streaming is not available
             for dataset_name, weight in self.dataset_config.get("dataset_weights", {}).items():
-                try:
-                    # Import dataset loader functions
-                    from src.data.streaming import load_streaming_dataset
-                    
-                    # Load streaming dataset
-                    dataset = load_streaming_dataset(
-                        dataset_name,
-                        self.tokenizer,
-                        self.dataset_config.get("streaming_config", {}),
-                        num_workers=torch.cuda.device_count() if torch.cuda.is_available() else 1
-                    )
-                    
-                    # Add to the list of streaming datasets
-                    streaming_datasets[dataset_name] = {
-                        "dataset": dataset,
-                        "weight": weight
-                    }
-                    
-                    logger.info(f"Loaded streaming dataset {dataset_name} with weight {weight}")
-                except Exception as e:
-                    logger.error(f"Error loading streaming dataset {dataset_name}: {e}")
+                dataset_processed_path = os.path.join(data_dir, f"{dataset_name}_processed")
+                
+                if os.path.exists(dataset_processed_path):
+                    try:
+                        dataset = load_from_disk(dataset_processed_path)
+                        
+                        # Add to the list of processed datasets
+                        processed_datasets[dataset_name] = {
+                            "dataset": dataset,
+                            "weight": weight
+                        }
+                        
+                        logger.info(f"Loaded dataset {dataset_name} with {len(dataset)} examples and weight {weight}")
+                    except Exception as e:
+                        logger.info(f"Error loading dataset {dataset_name}: {e}")
             
-            if streaming_datasets:
-                # Use streaming datasets
-                processed_datasets = streaming_datasets
-                
-                # Set is_streaming flag to adjust training configuration
-                self.is_streaming = True
-                logger.info("Using streaming datasets")
-                
-                # Update training args to specify max_steps for streaming datasets
-                if "max_steps" not in self.training_config:
-                    # Set a default value based on num_train_epochs if available
-                    epochs = self.training_config.get("num_train_epochs", 1)
-                    self.training_config["max_steps"] = int(100000 * epochs)  # A reasonable default
-                    logger.info(f"Setting max_steps to {self.training_config['max_steps']} for streaming datasets")
-            else:
-                logger.error("No datasets found for training!")
-                return {"error": "No datasets found"}
+        if not processed_datasets:
+            logger.error("No datasets found for training!")
+            return {"error": "No datasets found"}
         
         # Create a combined dataset
         train_dataset = self._combine_datasets(processed_datasets)
@@ -710,10 +714,16 @@ class DeepseekFineTuner:
             self.training_config["max_steps"] = 100000
             logger.info(f"Set max_steps to {self.training_config['max_steps']} for streaming datasets")
             
+        # Filter incompatible training arguments based on the Transformers version
+        filtered_training_config = self._check_parameter_compatibility(
+            TrainingArguments, 
+            {k: v for k, v in self.training_config.items() if k != "output_dir"}
+        )
+        
         # Create training arguments
         training_args = TrainingArguments(
             output_dir=self.training_config.get("output_dir", "models/deepseek-coder-finetune"),
-            **{k: v for k, v in self.training_config.items() if k != "output_dir"}
+            **filtered_training_config
         )
         
         logger.info("Creating data collator")
