@@ -47,7 +47,7 @@ pip install -r requirements.txt
 
 ## Project Structure
 
-```
+```bash
 .
 ├── config/                       # Configuration files
 │   ├── dataset_config.json       # Code dataset configuration

@@ -6,7 +6,7 @@ This module provides functionality for loading and processing datasets in a stre
 import os
 import logging
 from typing import Dict, Any, Optional
-from datasets import load_dataset, IterableDataset, Dataset
+from datasets import load_dataset, IterableDataset, Dataset, load_from_disk
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,8 @@ def load_streaming_dataset(
     dataset_name: str,
     tokenizer,
     config: Dict[str, Any] = None,
-    num_workers: int = 1
+    num_workers: int = 1,
+    data_dir: str = "data/processed"
 ) -> IterableDataset:
     """
     Load a dataset in streaming mode.
@@ -24,6 +25,7 @@ def load_streaming_dataset(
         tokenizer: Tokenizer to use for preprocessing
         config: Configuration settings for streaming
         num_workers: Number of workers for parallel processing
+        data_dir: Directory containing processed datasets
         
     Returns:
         An IterableDataset for streaming
@@ -41,6 +43,24 @@ def load_streaming_dataset(
     streaming_config = {**default_config, **config}
     
     try:
+        # First check if the dataset exists locally in processed form
+        local_dataset_path = os.path.join(data_dir, f"{dataset_name}_processed")
+        if os.path.exists(local_dataset_path):
+            try:
+                # Load the dataset from disk
+                logger.info(f"Loading dataset {dataset_name} from local path: {local_dataset_path}")
+                dataset = load_from_disk(local_dataset_path)
+                
+                # Convert to iterable dataset for streaming if needed
+                if not isinstance(dataset, IterableDataset):
+                    dataset = dataset.to_iterable_dataset(num_shards=num_workers)
+                
+                return dataset
+            except Exception as local_err:
+                logger.warning(f"Failed to load local dataset {dataset_name}: {local_err}. Falling back to Hub.")
+        else:
+            logger.info(f"Local dataset not found at {local_dataset_path}, trying Hub...")
+            
         # Try to load from Hugging Face datasets
         dataset = load_dataset(
             dataset_name, 
@@ -68,8 +88,7 @@ def load_streaming_dataset(
         tokenized_dataset = dataset.map(
             tokenize_function,
             batched=True,
-            batch_size=streaming_config["batch_size"],
-            num_proc=num_workers
+            batch_size=streaming_config["batch_size"]
         )
         
         return tokenized_dataset

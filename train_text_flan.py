@@ -164,9 +164,9 @@ def main():
                         json.dump(config, f, indent=2)
                     
                     logger.info(f"Updated config to push to Hub with model ID: {args.hub_model_id or 'auto-generated'}")
-            else:
-                    logger.warning("Failed to access Google Drive. Using local storage instead.")
-                    args.use_drive = False
+                else:
+                        logger.warning("Failed to access Google Drive. Using local storage instead.")
+                        args.use_drive = False
             else:
                 logger.warning("Failed to authenticate with Google Drive. Using local storage instead.")
                 args.use_drive = False
@@ -176,7 +176,7 @@ def main():
             args.use_drive = False
     elif args.use_drive and not GOOGLE_DRIVE_AVAILABLE:
         logger.warning("Google Drive integration not available. Using local storage instead.")
-            args.use_drive = False
+        args.use_drive = False
     
     # Process datasets if needed
     if args.process_only or not os.listdir(args.data_dir):

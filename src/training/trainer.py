@@ -412,14 +412,23 @@ class DeepseekFineTuner:
                    f"grad accumulation: {self.training_config['gradient_accumulation_steps']}")
         
         # Configure attention implementation
-        if torch.cuda.get_device_capability()[0] >= 8:  # For A6000 (Ampere) and newer
-            if self.model_config.get("xformers_attention", True):
-                attn_implementation = "xformers"
-                logger.info(f"Using xformers attention for faster training")
-            else:
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            try:
+                capability = torch.cuda.get_device_capability()[0]
+                if capability >= 8:  # For A6000 (Ampere) and newer
+                    if self.model_config.get("xformers_attention", True):
+                        attn_implementation = "xformers"
+                        logger.info(f"Using xformers attention for faster training")
+                    else:
+                        attn_implementation = "eager"
+                else:
+                    attn_implementation = "eager"
+            except Exception as e:
+                logger.warning(f"Error checking CUDA capabilities: {e}")
                 attn_implementation = "eager"
         else:
             attn_implementation = "eager"
+            logger.info("Using eager attention implementation for CPU training")
         
         if use_unsloth:
             model, _ = FastLanguageModel.from_pretrained(
@@ -642,7 +651,8 @@ class DeepseekFineTuner:
                     dataset_name,
                     self.tokenizer,
                     self.dataset_config.get("streaming_config", {}),
-                    num_workers=torch.cuda.device_count() if torch.cuda.is_available() else 1
+                    num_workers=torch.cuda.device_count() if torch.cuda.is_available() else 1,
+                    data_dir=data_dir
                 )
                 
                 # Add to the list of streaming datasets

@@ -16,11 +16,21 @@
       "device": "cpu",
       "pin_memory": true
     },
+    "offload_param": {
+      "device": "cpu",
+      "pin_memory": true
+    },
     "contiguous_gradients": true,
     "overlap_comm": true,
     "reduce_scatter": true,
     "reduce_bucket_size": 5e8,
-    "allgather_bucket_size": 5e8
+    "allgather_bucket_size": 5e8,
+    "stage3_prefetch_bucket_size": 5e8,
+    "stage3_param_persistence_threshold": 1e6,
+    "sub_group_size": 1e9,
+    "stage3_max_live_parameters": 1e9,
+    "stage3_max_reuse_distance": 1e9,
+    "stage3_gather_16bit_weights_on_model_save": true
   },
   "gradient_accumulation_steps": 8,
   "gradient_clipping": 1.0,
