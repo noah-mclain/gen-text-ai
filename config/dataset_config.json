@@ -74,7 +74,8 @@
     "processor": "the_stack",
     "split": "train",
     "language": "python",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_java": {
     "path": "bigcode/the-stack",
@@ -82,7 +83,8 @@
     "processor": "the_stack",
     "split": "train",
     "language": "java",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_javascript": {
     "path": "bigcode/the-stack",
@@ -90,7 +92,8 @@
     "processor": "the_stack",
     "split": "train",
     "language": "javascript",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_php": {
     "path": "bigcode/the-stack",
@@ -98,7 +101,8 @@
     "processor": "the_stack",
     "split": "train",
     "language": "php",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_ruby": {
     "path": "bigcode/the-stack",
@@ -106,7 +110,8 @@
     "processor": "the_stack",
     "split": "train",
     "language": "ruby",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_go": {
     "path": "bigcode/the-stack",
@@ -114,7 +119,8 @@
     "processor": "the_stack",
     "split": "train",
     "language": "go",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_c": {
     "path": "bigcode/the-stack",
@@ -122,7 +128,8 @@
     "processor": "the_stack",
     "split": "train",
     "language": "c",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_cpp": {
     "path": "bigcode/the-stack",
@@ -130,7 +137,8 @@
     "processor": "the_stack",
     "split": "train",
     "language": "cpp",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_csharp": {
     "path": "bigcode/the-stack",
@@ -138,13 +146,15 @@
     "processor": "the_stack",
     "split": "train",
     "language": "csharp",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_all": {
     "path": "bigcode/the-stack",
     "processor": "the_stack",
     "split": "train",
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   },
   "the_stack_filtered": {
     "path": "bigcode/the-stack",
@@ -156,8 +166,9 @@
     "sampling_ratio": 0.1,
     "max_samples": 30000,
     "max_processing_time": 300,
-    "enabled": true,
-    "debug": true
+    "enabled": false,
+    "debug": true,
+    "comment": "Disabled due to dataset processing issues"
   },
   "humaneval": {
     "path": "openai/openai_humaneval",

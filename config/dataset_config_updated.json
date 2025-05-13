@@ -38,6 +38,7 @@
     "sampling_ratio": 0.05,
     "max_samples": 30000,
     "max_processing_time": 180,
-    "enabled": true
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
   }
 }
