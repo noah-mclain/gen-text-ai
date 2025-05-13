@@ -44,6 +44,7 @@ sys.path.append(str(project_root))
 # Try to import Google API libraries
 try:
     from google.oauth2.credentials import Credentials
+    from google.oauth2 import service_account
     from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
@@ -62,6 +63,9 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 
 # Global service object
 _drive_service = None
+
+# Service account credentials environment variable
+SERVICE_ACCOUNT_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
 
 def create_credentials_template():
     """Create a template credentials.json file with instructions."""
@@ -159,6 +163,50 @@ def check_credentials_format():
         logger.error(f"Error checking credentials: {e}")
         return False
 
+def get_service_account_credentials() -> Optional[Credentials]:
+    """
+    Get Google Drive API credentials using a service account.
+    
+    This method uses the GOOGLE_APPLICATION_CREDENTIALS environment variable
+    to locate the service account JSON file.
+    
+    Returns:
+        Service account Credentials object or None if unavailable
+    """
+    if not GOOGLE_API_AVAILABLE:
+        logger.error("Google API libraries not available")
+        return None
+        
+    # Check if service account credentials file path is set in environment
+    credentials_path = os.environ.get(SERVICE_ACCOUNT_ENV_VAR)
+    if not credentials_path:
+        logger.info(f"No {SERVICE_ACCOUNT_ENV_VAR} environment variable set")
+        return None
+        
+    if not os.path.exists(credentials_path):
+        logger.error(f"Service account credentials file not found at {credentials_path}")
+        return None
+        
+    try:
+        # Create service account credentials
+        creds = service_account.Credentials.from_service_account_file(
+            credentials_path,
+            scopes=SCOPES
+        )
+        logger.info(f"Successfully loaded service account credentials from {credentials_path}")
+        
+        # Extract and log the service account email to help with folder sharing
+        service_account_info = json.load(open(credentials_path))
+        service_account_email = service_account_info.get('client_email')
+        if service_account_email:
+            logger.info(f"Service account email: {service_account_email}")
+            logger.info(f"IMPORTANT: Make sure to share your Google Drive folders with this email address")
+            
+        return creds
+    except Exception as e:
+        logger.error(f"Error loading service account credentials: {e}")
+        return None
+
 def get_credentials(headless: bool = False, token_path: str = None) -> Optional[Credentials]:
     """
     Get Google Drive API credentials with flexible token storage location.
@@ -173,6 +221,14 @@ def get_credentials(headless: bool = False, token_path: str = None) -> Optional[
     if not GOOGLE_API_AVAILABLE:
         logger.error("Google API libraries not available")
         return None
+    
+    # Try to use service account credentials first if available
+    service_account_creds = get_service_account_credentials()
+    if service_account_creds:
+        logger.info("Using service account authentication")
+        return service_account_creds
+        
+    logger.info("Service account credentials not available, falling back to user authentication")
         
     # Use custom token path if provided, otherwise use default
     token_path = token_path or TOKEN_PATH

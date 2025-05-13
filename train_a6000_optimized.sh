@@ -15,6 +15,18 @@ export DS_OFFLOAD_OPTIMIZER=cpu
 export ACCELERATE_USE_DEEPSPEED=true
 export ACCELERATE_DEEPSPEED_CONFIG_FILE=ds_config_a6000.json
 
+# Check for service account credentials
+if [ -f "service-account.json" ]; then
+  echo "Using service account authentication for Google Drive"
+  export GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/service-account.json
+  # Extract service account email for sharing info
+  SERVICE_EMAIL=$(grep -o '"client_email": "[^"]*' service-account.json | cut -d'"' -f4)
+  if [ ! -z "$SERVICE_EMAIL" ]; then
+    echo "Service account email: $SERVICE_EMAIL"
+    echo "Make sure your Google Drive folders are shared with this email"
+  fi
+fi
+
 # Fix Unsloth import order warning
 export PYTHONPATH=$PYTHONPATH:.
 # Create a wrapper for imports
@@ -43,9 +55,14 @@ rm -rf ~/.cache/huggingface/transformers/models--deepseek-ai--deepseek-coder-6.7
 
 # Set max training time based on system time (default to 10 hours if not specified)
 if [ -z "$MAX_HOURS" ]; then
-  # Calculate hours until midnight
-  CURRENT_HOUR=$(date +%H)
-  MAX_HOURS=$((24 - CURRENT_HOUR - 1))
+  # Calculate hours until midnight - force interpretation as base 10
+  CURRENT_HOUR=$(date +%H | sed 's/^0*//')
+  # If CURRENT_HOUR is empty after removing leading zeros, it was midnight (00), so set to 0
+  if [ -z "$CURRENT_HOUR" ]; then
+    CURRENT_HOUR=0
+  fi
+  
+  MAX_HOURS=$((24 - 10#$CURRENT_HOUR - 1))
   
   # Ensure we have at least 2 hours of training
   if [ $MAX_HOURS -lt 2 ]; then
