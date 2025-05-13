@@ -124,19 +124,53 @@ class DriveManager:
                         logger.error(f"Credentials file not found. Please provide a valid credentials.json file.")
                         return False
                     
-                    # Create flow for headless environment
-                    flow = InstalledAppFlow.from_client_secrets_file(self.credentials_path, SCOPES)
-                    
-                    # Use redirect_uri for OOB (Out-of-Band) flow
-                    redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
-                    
-                    # Generate authorization URL
-                    auth_url, _ = flow.authorization_url(
-                        access_type='offline',
-                        include_granted_scopes='true',
-                        prompt='consent',  # Force consent screen for refresh token
-                        redirect_uri=redirect_uri
-                    )
+                    # Use a different approach to create the flow for headless authentication
+                    try:
+                        import json
+                        
+                        # Read client secret file
+                        with open(self.credentials_path, 'r') as f:
+                            client_config = json.load(f)
+                        
+                        # Create flow explicitly defining the redirect URI
+                        from google_auth_oauthlib.flow import Flow
+                        
+                        # Determine if we're using installed app or web app client config
+                        if 'installed' in client_config:
+                            client_type = 'installed'
+                        elif 'web' in client_config:
+                            client_type = 'web'
+                        else:
+                            logger.error("Invalid client config format")
+                            return False
+                            
+                        # Make sure the redirect URI is set correctly for OOB flow
+                        redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+                        client_config[client_type]['redirect_uris'] = [redirect_uri]
+                        
+                        # Create the flow
+                        flow = Flow.from_client_config(
+                            client_config,
+                            scopes=SCOPES,
+                            redirect_uri=redirect_uri
+                        )
+                        
+                        # Generate authorization URL - don't specify redirect_uri here again
+                        auth_url, _ = flow.authorization_url(
+                            access_type='offline',
+                            include_granted_scopes='true',
+                            prompt='consent'  # Force consent screen for refresh token
+                        )
+                    except Exception as e:
+                        logger.warning(f"Error with custom flow approach: {e}, falling back to standard method")
+                        
+                        # Fallback to standard flow
+                        flow = InstalledAppFlow.from_client_secrets_file(self.credentials_path, SCOPES)
+                        auth_url, _ = flow.authorization_url(
+                            access_type='offline',
+                            include_granted_scopes='true',
+                            prompt='consent'  # Force consent screen for refresh token
+                        )
                     
                     print("\n" + "="*80)
                     print("Google Drive Authentication".center(80))
@@ -149,7 +183,7 @@ class DriveManager:
                     auth_code = input("\nEnter the authorization code: ")
                     
                     # Exchange auth code for credentials
-                    flow.fetch_token(code=auth_code, redirect_uri=redirect_uri)
+                    flow.fetch_token(code=auth_code)
                     creds = flow.credentials
                     
                     # Save the credentials for future use
