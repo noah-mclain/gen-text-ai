@@ -8,6 +8,17 @@ export OMP_NUM_THREADS=8
 export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
+# Read number of epochs from training config
+NUM_EPOCHS=$(grep -o '"num_train_epochs": [0-9]*' config/training_config.json | grep -o '[0-9]*')
+if [ -z "$NUM_EPOCHS" ]; then
+  NUM_EPOCHS=1  # Default to 1 if not found
+fi
+echo "Detected $NUM_EPOCHS epochs in training configuration"
+
+# Calculate default MAX_HOURS based on epochs (2 hours per epoch)
+export MAX_HOURS=$((2 * NUM_EPOCHS))
+echo "Setting default training time to $MAX_HOURS hours based on $NUM_EPOCHS epochs"
+
 # Create Triton autotune directory to prevent df error
 mkdir -p /root/.triton/autotune 2>/dev/null || true
 
@@ -66,33 +77,15 @@ echo "Cleaning cache directories..."
 rm -rf ~/.cache/huggingface/datasets/downloads/completed.lock
 rm -rf ~/.cache/huggingface/transformers/models--deepseek-ai--deepseek-coder-6.7b-base/snapshots/*/*.safetensors.tmp*
 
-# Set max training time based on system time (default to 4 hours if not specified)
-if [ -z "$MAX_HOURS" ]; then
-  # Check if MAX_HOURS is passed as an argument
-  if [ "$1" != "" ] && [[ "$1" =~ ^[0-9]+$ ]]; then
-    MAX_HOURS=$1
-    echo "Using command-line specified training time: $MAX_HOURS hours"
-  else
-    # Calculate hours until midnight - force interpretation as base 10
-    CURRENT_HOUR=$(date +%H | sed 's/^0*//')
-    # If CURRENT_HOUR is empty after removing leading zeros, it was midnight (00), so set to 0
-    if [ -z "$CURRENT_HOUR" ]; then
-      CURRENT_HOUR=0
-    fi
-    
-    MAX_HOURS=$((24 - 10#$CURRENT_HOUR - 1))
-    
-    # Ensure we have at least 2 hours of training but not more than 4 by default
-    if [ $MAX_HOURS -lt 2 ]; then
-      MAX_HOURS=2
-    elif [ $MAX_HOURS -gt 4 ]; then
-      MAX_HOURS=4
-    fi
-    
-    echo "Auto-calculated training time: $MAX_HOURS hours"
-  fi
+# Override MAX_HOURS if provided as a command-line argument
+if [ "$1" != "" ] && [[ "$1" =~ ^[0-9]+$ ]]; then
+  MAX_HOURS=$1
+  echo "Using command-line specified training time: $MAX_HOURS hours"
 else
-  echo "Using environment-specified training time: $MAX_HOURS hours"
+  # Count number of enabled datasets
+  NUM_DATASETS=$(grep -o '"dataset_weights": {' -A 20 config/training_config.json | grep -o ":" | wc -l)
+  echo "Training on approximately $NUM_DATASETS datasets for $NUM_EPOCHS epochs"
+  echo "Estimated training time: $MAX_HOURS hours"
 fi
 
 # Pre-download datasets with retry mechanism
