@@ -23,13 +23,13 @@
     "contiguous_gradients": true,
     "overlap_comm": true,
     "reduce_scatter": true,
-    "reduce_bucket_size": 5e8,
-    "allgather_bucket_size": 5e8,
+    "reduce_bucket_size": 1e9,
+    "allgather_bucket_size": 1e9,
     "stage3_prefetch_bucket_size": 5e8,
     "stage3_param_persistence_threshold": 1e6,
     "sub_group_size": 1e9,
-    "stage3_max_live_parameters": 1e9,
-    "stage3_max_reuse_distance": 1e9,
+    "stage3_max_live_parameters": 3e9,
+    "stage3_max_reuse_distance": 3e9,
     "stage3_gather_16bit_weights_on_model_save": true
   },
   "gradient_accumulation_steps": 8,
@@ -38,6 +38,13 @@
   "train_batch_size": 32,
   "train_micro_batch_size_per_gpu": 4,
   "wall_clock_breakdown": false,
+  "aio": {
+    "block_size": 1048576,
+    "queue_depth": 16,
+    "thread_count": 8,
+    "single_submit": false,
+    "overlap_events": true
+  },
   "scheduler": {
     "type": "WarmupDecayLR",
     "params": {
@@ -45,6 +52,25 @@
       "warmup_max_lr": 2e-4,
       "warmup_num_steps": 100,
       "total_num_steps": 10000
+    }
+  },
+  "activation_checkpointing": {
+    "partition_activations": false,
+    "cpu_checkpointing": false,
+    "contiguous_memory_optimization": true,
+    "number_checkpoints": null,
+    "synchronize_checkpoint_boundary": false,
+    "profile": false
+  },
+  "communication_data_type": "fp16",
+  "prescale_gradients": true,
+  "optimizer": {
+    "type": "AdamW",
+    "params": {
+      "lr": 2e-4,
+      "betas": [0.9, 0.999],
+      "eps": 1e-8,
+      "weight_decay": 0.01
     }
   }
 }

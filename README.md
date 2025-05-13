@@ -142,30 +142,25 @@ pip install -r requirements.txt
 
 ### Google Drive Integration
 
-For setting up and using Google Drive integration:
+This project includes a robust Google Drive integration system using OAuth2 authentication that works in headless environments like Paperspace notebooks:
 
 ```bash
-# Install required packages
-pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
-
 # Set up Google Drive authentication
-python scripts/google_drive_manager.py --action setup
+./setup_google_drive.py
 
 # For headless environments like Paperspace notebooks:
-python scripts/google_drive_manager.py --action setup --headless
+./setup_google_drive.py --headless
 
 # Test the integration
-python scripts/google_drive_manager.py --action test
-
-# Create directory structure in Google Drive
-python scripts/google_drive_manager.py --action create_folders --base_dir your_project_folder
-
-# Upload files or directories
-python scripts/google_drive_manager.py --action upload --local_path /path/to/file --remote_folder folder_id
-
-# List files in a Drive folder
-python scripts/google_drive_manager.py --action list --remote_folder folder_id
+python -m tests.test_google_drive --headless
 ```
+
+The integration supports:
+
+- **OAuth Authentication** with Out-of-Band (OOB) flow for headless environments
+- **Automatic Directory Structure** creation on Google Drive
+- **File and Folder Synchronization** between local storage and Drive
+- **Transparent Integration** with training scripts via simple command-line flags
 
 For detailed Google Drive setup instructions, see [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md).
 

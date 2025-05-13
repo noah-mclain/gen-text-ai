@@ -64,27 +64,34 @@ class DataPreprocessor:
             logger.info(f"CUDA available: {torch.cuda.get_device_name(0)}")
             logger.info(f"Total VRAM: {torch.cuda.get_device_properties(0).total_memory / (1024 * 1024 * 1024):.2f} GB")
         
-    def detect_language(self, text: str) -> str:
-        """Detect language of text. Returns language code."""
-        if not text or not isinstance(text, str) or len(text.strip()) < 10:
-            return "unknown"  # Too short to detect
-            
-        # Use langid if available
-        if LANGID_AVAILABLE:
-            try:
-                lang, _ = langid.classify(text)
-                return lang
-            except Exception as e:
-                logger.warning(f"Language detection failed: {e}")
-                
-        # Fallback to basic heuristics
-        arabic_chars_pattern = re.compile(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+')
-        if arabic_chars_pattern.search(text):
-            return "ar"
-            
-        # Default to English if we can't detect language or no special characters
-        return "en"
+    def detect_language(self, text):
+        """
+        Detect the language of a text.
         
+        Args:
+            text: Text to analyze
+        
+        Returns:
+            ISO 639-1 language code (e.g., 'en', 'ar')
+        """
+        try:
+            # Try using langid for detection
+            import langid
+            lang_code, _ = langid.classify(text)
+            return lang_code
+        except (ImportError, Exception) as e:
+            logger.debug(f"langid detection failed: {str(e)}")
+            
+            try:
+                # Fallback to langdetect
+                from langdetect import detect
+                return detect(text)
+            except (ImportError, Exception) as e:
+                logger.debug(f"langdetect detection failed: {str(e)}")
+                
+                # Default to English if detection fails
+                return "en"
+    
     def should_include_by_language(self, text, allowed_languages=None):
         """
         Check if text should be included based on natural language detection.
@@ -1160,183 +1167,17 @@ class DataPreprocessor:
                          natural_languages: List[str] = None, sampling_ratio: float = 1.0,
                          max_samples: int = None) -> Iterator[Dict]:
         """
-        Process The Stack dataset.
+        Process The Stack dataset (DISABLED - kept for compatibility).
+        This dataset has been disabled in the configuration.
         
-        Args:
-            dataset: The Stack dataset (or a similar dataset with code)
-            language: Filter by programming language
-            streaming: Whether to stream results
-            callback: Optional callback function to process examples
-            intermediate_save: Whether to save intermediate results
-            save_every: How often to save intermediate results
-            natural_languages: List of natural language codes to filter on (e.g., ['en', 'ar'])
-            sampling_ratio: Ratio of examples to sample (0.0-1.0)
-            max_samples: Maximum number of samples to process
-            
-        Returns:
-            Iterator of processed examples
+        Returns an empty iterator to maintain compatibility with existing code.
         """
-        # Ensure we're processing a streaming dataset for memory efficiency
-        if not streaming and not isinstance(dataset, Dataset):
-            logger.warning("Converting dataset to streaming mode for memory efficiency")
-            streaming = True
-            
-        # Set up resources monitoring
-        resources = self._check_resources(force=True)
+        logger.warning("The Stack dataset processing is disabled")
+        logger.warning("The dataset has been removed from active configuration")
+        logger.warning("To process The Stack, please fix the dataset configuration and enable it")
         
-        # Explicitly mention available VRAM if detected
-        if "gpu_max_mb" in resources:
-            logger.info(f"GPU VRAM available: {resources['gpu_max_mb']:.1f} MB")
-            logger.info(f"Current GPU usage: {resources.get('gpu_allocated_mb', 0):.1f} MB " + 
-                       f"({resources.get('gpu_percent', 0):.1f}%)")
-            
-        # Log sampling settings if applied
-        if sampling_ratio < 1.0:
-            logger.info(f"Sampling {sampling_ratio*100:.1f}% of examples")
-        if max_samples:
-            logger.info(f"Processing up to {max_samples} examples")
-        if natural_languages:
-            logger.info(f"Filtering for natural languages: {', '.join(natural_languages)}")
-        
-        # Define format to include code + docstring
-        def format_example(example):
-            try:
-                # Extract relevant fields
-                content = example.get('content', '')
-                language_name = example.get('lang', '').lower()
-                
-                # Apply programming language filtering
-                # If a specific language was requested, filter for that
-                if language and language_name != language.lower():
-                    return None
-                    
-                # Filter for natural language in comments
-                # Extract comments for language detection
-                comment_pattern = r'(?:\/\/.*?$|\/\*[\s\S]*?\*\/|#.*?$|\'\'\'[\s\S]*?\'\'\'|"""[\s\S]*?""")'
-                comments = re.findall(comment_pattern, content, re.MULTILINE)
-                
-                # Check natural language if we have comments and natural_languages is specified
-                if comments and natural_languages:
-                    comment_text = ' '.join(comments)
-                    if not self.should_include_by_language(comment_text, natural_languages):
-                        return None
-                
-                # Format the example
-                formatted_text = f"{content}"
-                
-                # Check if we need to truncate
-                if len(formatted_text) > self.max_length * 10:  # Rough estimate
-                    logger.warning(f"Very long example ({len(formatted_text)} chars), truncating")
-                    formatted_text = formatted_text[:self.max_length * 10]
-                
-                # Return the processed example
-                return {
-                    "processed_text": formatted_text,
-                    "language": language_name
-                }
-                
-            except Exception as e:
-                logger.error(f"Error processing example: {str(e)}")
-                return None
-                
-        # Process the dataset with efficient memory usage
-        batches_processed = 0
-        examples_processed = 0
-        stall_counter = 0
-        last_progress_time = time.time()
-        last_example_count = 0
-        
-        # Initialize random number generator for sampling
-        random.seed(42)  # For reproducibility
-        
-        # Batch processing logic
-        for i, example in enumerate(dataset):
-            try:
-                # Apply sampling - skip examples based on sampling ratio
-                if sampling_ratio < 1.0 and random.random() > sampling_ratio:
-                    continue
-                    
-                # Process the example
-                result = format_example(example)
-                
-                # Only yield valid results
-                if result:
-                    examples_processed += 1
-                    
-                    # Check if we reached max_samples
-                    if max_samples and examples_processed > max_samples:
-                        logger.info(f"Reached maximum sample count of {max_samples}. Stopping.")
-                        break
-                        
-                    yield result
-                    
-                    # Call callback if provided
-                    if callback:
-                        callback(result)
-                    
-                    # Check for stalled processing
-                    current_time = time.time()
-                    if current_time - last_progress_time > 60:  # Check every minute
-                        if examples_processed == last_example_count:
-                            stall_counter += 1
-                            logger.warning(f"Processing appears stalled: {stall_counter} minutes without progress")
-                            
-                            # If stalled for too long, clear memory
-                            if stall_counter > 5:
-                                logger.warning("Processing stalled for too long, cleaning up memory")
-                                self._cleanup_memory()
-                                stall_counter = 0
-                        else:
-                            # Reset stall counter if making progress
-                            stall_counter = 0
-                            
-                        # Update progress tracking
-                        last_progress_time = current_time
-                        last_example_count = examples_processed
-                        
-                        # Log progress more frequently
-                        logger.info(f"Processed {examples_processed} examples from The Stack")
-                        
-                        # Check resources periodically
-                        resources = self._check_resources()
-                
-                # Periodic intermediate saving if enabled
-                if intermediate_save and examples_processed > 0 and examples_processed % save_every == 0:
-                    logger.info(f"Processed {examples_processed} examples so far")
-                    
-                    # Clear CUDA cache after processing batch
-                    if TORCH_AVAILABLE and torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                        
-            except Exception as e:
-                logger.error(f"Error processing example {i}: {str(e)}")
-                logger.error(traceback.format_exc())
-                continue
-                
-            # Do periodic cleanup
-            if examples_processed % 5000 == 0:
-                self._cleanup_memory()
-                
-            # Show more frequent progress updates
-            if examples_processed % 1000 == 0:
-                current_time = time.time()
-                elapsed = current_time - last_progress_time
-                rate = 1000 / max(elapsed, 1) if elapsed > 0 else 0
-                logger.info(f"Processed {examples_processed} examples from The Stack (rate: {rate:.1f} examples/sec)")
-                last_progress_time = current_time
-                
-        # Final progress update
-        logger.info(f"Completed processing {examples_processed} examples from The Stack")
-        
-        # Final resource check
-        self._check_resources(force=True)
-        
-        # Try to release VRAM if using PyTorch
-        try:
-            if TORCH_AVAILABLE and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        # Return empty iterator to maintain compatibility
+        return iter([])
     
     def process_humaneval(self, dataset: Union[Dataset, DatasetDict],
                          streaming: bool = False) -> Union[Dataset, DatasetDict]:

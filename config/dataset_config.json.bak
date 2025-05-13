@@ -39,14 +39,7 @@
     "path": "code-search-net/code_search_net",
     "processor": "codesearchnet",
     "split": "train",
-    "languages": [
-      "python",
-      "java",
-      "javascript",
-      "php",
-      "ruby",
-      "go"
-    ],
+    "languages": ["python", "java", "javascript", "php", "ruby", "go"],
     "enabled": true
   },
   "code_alpaca": {
@@ -168,15 +161,8 @@
     "processor": "the_stack",
     "split": "train",
     "data_dir": "data",
-    "languages": [
-      "python",
-      "java",
-      "javascript"
-    ],
-    "natural_languages": [
-      "en",
-      "ar"
-    ],
+    "languages": ["python", "java", "javascript"],
+    "natural_languages": ["en", "ar"],
     "sampling_ratio": 0.1,
     "max_samples": 30000,
     "max_processing_time": 300,

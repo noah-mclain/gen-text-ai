@@ -98,10 +98,14 @@ def load_streaming_dataset(
                 padding="max_length",
                 truncation=True,
                 max_length=config.get("max_length", 2048),
-                return_tensors="pt"
+                return_tensors="np"  # Use numpy instead of torch tensors for compatibility
             )
             
-            return tokenized
+            # Convert PyTorch tensors to lists to avoid Arrow serialization issues
+            return {
+                "input_ids": tokenized["input_ids"].tolist(),
+                "attention_mask": tokenized["attention_mask"].tolist()
+            }
         
         # Map tokenization to the dataset
         tokenized_dataset = dataset.map(

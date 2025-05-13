@@ -113,9 +113,81 @@ if [ -f "process_stack_dataset.sh" ]; then
     rm process_stack_dataset.sh
 fi
 
+# Final check for any remaining references to The Stack in code
+echo -e "${BLUE}Performing final check for Stack references in code...${NC}"
+echo -e "${BLUE}------------------------------------------------${NC}"
+
+# Search for stack references in Python files but exclude those in config directory
+STACK_CODE_REFS=$(grep -r "the_stack\|stack_filtered" --include="*.py" --exclude-dir=".env" --exclude-dir="config" . | wc -l)
+
+if [ $STACK_CODE_REFS -gt 0 ]; then
+    echo -e "${YELLOW}Found $STACK_CODE_REFS references to The Stack in Python code:${NC}"
+    grep -r "the_stack\|stack_filtered" --include="*.py" --exclude-dir=".env" --exclude-dir="config" . | head -n 10
+    
+    if [ $STACK_CODE_REFS -gt 10 ]; then
+        echo -e "${YELLOW}...and $(($STACK_CODE_REFS - 10)) more references${NC}"
+    fi
+    
+    echo -e "${YELLOW}To ensure training runs without errors, please review these files manually.${NC}"
+    echo -e "${YELLOW}Most references can be safely kept if the datasets are properly disabled in config files.${NC}"
+else
+    echo -e "${GREEN}No active references to The Stack found in Python code.${NC}"
+fi
+
+# Check for any uncommented Stack references in config files that aren't disabled
+ACTIVE_CONFIG_REFS=$(grep -r '"the_stack\|"stack_filtered' --include="*.json" . | grep -v '"enabled": false' | wc -l)
+
+if [ $ACTIVE_CONFIG_REFS -gt 0 ]; then
+    echo -e "${RED}WARNING: Found $ACTIVE_CONFIG_REFS potentially active Stack references in config files:${NC}"
+    grep -r '"the_stack\|"stack_filtered' --include="*.json" . | grep -v '"enabled": false' | head -n 10
+    echo -e "${RED}Please ensure all Stack dataset entries have 'enabled': false in config files!${NC}"
+else
+    echo -e "${GREEN}All Stack references in config files are properly disabled.${NC}"
+fi
+
 echo -e "${BLUE}=================================================${NC}"
 echo -e "${GREEN}Cleanup Complete!${NC}"
 echo -e "${BLUE}=================================================${NC}"
 
 echo -e "${GREEN}The Stack datasets have been disabled in the configuration files and removed from the filesystem.${NC}"
-echo -e "${GREEN}The training will now use other datasets instead of The Stack.${NC}" 
+echo -e "${GREEN}The training will now use other datasets instead of The Stack.${NC}"
+echo -e "${GREEN}Optimized weights for remaining datasets have been applied to both code and text models.${NC}"
+
+echo "Starting cleanup of redundant Stack dataset files..."
+
+# List of redundant files to remove
+REDUNDANT_FILES=(
+  "scripts/cleanup_drive_utils.py"
+  "TRAIN_STACK_NOW.sh"
+  "scripts/process_stack_direct.sh"
+  "scripts/cleanup_drive_scripts.py"
+  "scripts/prepare_datasets.py"
+  "config/training_config_cpu.json"
+  "scripts/fix_dataset_paths.py"
+  "src/data/dataset_lookup.py"
+  "scripts/preload_datasets.py"
+  "test_imports.py"
+  "test_stack_processing.py"
+  "process_stack_dataset.sh"
+  "debug_stack_processing.py"
+  "fix_stack_loader.py"
+  "config/dataset_config_updated.json"
+)
+
+# Check and remove each file if it exists
+for file in "${REDUNDANT_FILES[@]}"; do
+  if [ -f "$file" ]; then
+    rm "$file"
+    echo "Removed: $file"
+  else
+    echo "Skipping (not found): $file"
+  fi
+done
+
+# Create an archived directory for any files we want to keep for reference
+mkdir -p archived
+echo "Created archived directory for future reference"
+
+echo "Cleanup complete!"
+echo "All redundant Stack dataset files have been removed."
+echo "Use the consolidated Google Drive Manager for all Drive interactions." 

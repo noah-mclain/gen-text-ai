@@ -159,6 +159,22 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-
+# Credentials
 Google Cloud Credentials.json
 credentials.json
+
+# Data
+data/
+
+# Logs
+logs/
+
+# Backups
+backups/
+.json.bak
+archive/
+scripts/archived/
+
+# Temporary files
+tmp/
+

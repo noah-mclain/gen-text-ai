@@ -32,8 +32,6 @@ fi
 # Run main command with optimized settings
 echo "Starting optimized training with all datasets..."
 python main_api.py \
-    --mode quick-stack \
-    --datasets the_stack_filtered codesearchnet_all code_alpaca humaneval mbpp codeparrot instruct_code \
     --streaming \
     --no_cache \
     --auto-time \

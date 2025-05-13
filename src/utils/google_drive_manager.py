@@ -82,10 +82,7 @@ class DriveManager:
     
     def _find_credentials_file(self) -> Optional[str]:
         """Find the credentials.json file."""
-        for path in CREDENTIALS_PATHS:
-            if os.path.exists(path):
-                return path
-        return None
+        return next((path for path in CREDENTIALS_PATHS if os.path.exists(path)), None)
     
     def authenticate(self) -> bool:
         """

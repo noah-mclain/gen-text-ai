@@ -63,16 +63,20 @@
     "shuffle_dataset": true,
     "max_steps": -1,
     "ddp_find_unused_parameters": false,
-    "torch_compile": true
+    "torch_compile": true,
+    "resume_from_checkpoint": true,
+    "load_best_model_at_end": true,
+    "metric_for_best_model": "eval_loss",
+    "greater_is_better": false
   },
   "dataset": {
     "max_length": 1024,
     "dataset_weights": {
-      "openassistant": 2.0,
-      "gpteacher_general": 1.5,
-      "pile": 1.0,
-      "synthetic_persona": 1.5,
-      "writingprompts": 2.0
+      "openassistant": 2.5,
+      "gpteacher_general": 2.0,
+      "pile": 1.5,
+      "synthetic_persona": 2.0,
+      "writingprompts": 2.5
     },
     "train_size": 0.9,
     "val_size": 0.05,
@@ -81,11 +85,11 @@
     "use_cache": false,
     "interleave_prob": 0.5,
     "max_samples": {
-      "openassistant": 30000,
-      "gpteacher_general": 30000,
-      "pile": 50000,
-      "synthetic_persona": 20000,
-      "writingprompts": 25000
+      "openassistant": 35000,
+      "gpteacher_general": 35000,
+      "pile": 60000,
+      "synthetic_persona": 25000,
+      "writingprompts": 30000
     }
   },
   "hardware": {

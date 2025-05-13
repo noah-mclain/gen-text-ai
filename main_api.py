@@ -43,7 +43,12 @@ except Exception as e:
     
 # Import Drive API utils after PyTorch to avoid import order issues
 try:
-    from src.utils.drive_api_utils import initialize_drive_api, setup_drive_directories, save_to_drive, load_from_drive
+    from src.utils.google_drive_manager import (
+        sync_to_drive, 
+        sync_from_drive, 
+        configure_sync_method,
+        setup_drive_directories
+    )
 except ImportError as e:
     logger.error(f"Failed to import Drive utils: {e}")
 

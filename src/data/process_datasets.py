@@ -66,6 +66,16 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         logger.error(f"Error loading dataset configuration: {str(e)}")
         return
 
+    # Filter out explicitly disabled datasets
+    filtered_config = {}
+    for dataset_name, config in dataset_config.items():
+        # Skip disabled datasets
+        if isinstance(config, dict) and config.get("enabled") is False:
+            logger.info(f"Skipping disabled dataset: {dataset_name}")
+            continue
+        filtered_config[dataset_name] = config
+    dataset_config = filtered_config
+
     # Filter datasets if specified
     if datasets:
         filtered_config = {}

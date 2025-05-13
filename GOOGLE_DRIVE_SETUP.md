@@ -1,238 +1,169 @@
 # Google Drive Integration Setup Guide
 
-This guide explains how to set up Google Drive integration for the gen-text-ai project, which allows saving and loading models, datasets, and other files directly to/from your Google Drive.
+This document provides detailed instructions for setting up Google Drive integration with this project. Since we're working in headless environments like Paperspace, we use the OAuth "Out-of-Band" (OOB) flow for authentication instead of service accounts.
 
 ## Prerequisites
 
-1. A Google account
-2. Python packages:
-   - google-api-python-client
-   - google-auth-httplib2
-   - google-auth-oauthlib
+1. A Google account with Google Drive access
+2. Python 3.6+ installed
+3. Required packages: `google-api-python-client google-auth-httplib2 google-auth-oauthlib`
 
-## Installation
+## Step 1: Create Google Cloud Project & OAuth Credentials
 
-Install the required packages:
-
-```bash
-pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
-```
-
-## Setup Process
-
-### Step 1: Create a Google Cloud Project
-
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project or select an existing one
-3. Navigate to "APIs & Services" > "Library"
-4. Search for "Google Drive API" and enable it
+3. Enable the Google Drive API:
+   - Go to "APIs & Services" > "Library"
+   - Search for "Google Drive API"
+   - Click on it and press "Enable"
+4. Create OAuth credentials:
+   - Go to "APIs & Services" > "Credentials"
+   - Click "Create Credentials" > "OAuth client ID"
+   - Select "Desktop application" as application type
+   - Give it a name (e.g., "GenTextAI Drive Integration")
+   - Click "Create"
+5. Download the credentials by clicking the download icon (JSON)
+6. Save the downloaded JSON file as `credentials.json` in your project root directory
 
-### Step 2: Create OAuth Credentials
+## Step 2: Run the Setup Script
 
-1. In the Google Cloud Console, navigate to "APIs & Services" > "Credentials"
-2. Click "Create Credentials" > "OAuth client ID"
-3. Set the application type to "Desktop application"
-4. Give it a name (e.g., "Gen-Text-AI Drive Client")
-5. Click "Create"
-6. Download the credentials JSON file
-
-### Step 3: Configure Credentials
-
-1. Save the downloaded JSON file as `credentials.json` in the project root directory
-2. **IMPORTANT**: Ensure the file contains both of these redirect URIs:
-   ```json
-   "redirect_uris": ["http://localhost:8080", "urn:ietf:wg:oauth:2.0:oob"]
-   ```
-   The first URI is needed for browser-based authentication, and the second is required for headless environments like Paperspace notebooks.
-
-### Step 4: Run the Setup Script
-
-We've provided a comprehensive Google Drive manager script:
+We've created a setup script that guides you through the OAuth authentication process:
 
 ```bash
-# For environments with a browser:
-python scripts/google_drive_manager.py --action setup
-
-# For headless environments (like Paperspace notebooks):
-python scripts/google_drive_manager.py --action setup --headless
+# Run the setup script
+python setup_google_drive.py
 ```
 
-The setup process will:
-
-1. Check if your credentials file is properly formatted
-2. Launch the authentication flow appropriate for your environment
-3. Save your authentication token for future use
-
-### Step 5: Verify the Integration
-
-Test that the integration is working correctly:
+For headless environments (like Paperspace):
 
 ```bash
-python scripts/google_drive_manager.py --action test
+python setup_google_drive.py --headless
 ```
 
-This will perform basic operations like authenticating, creating a directory, and uploading a test file to ensure the integration is working properly.
+The script will:
 
-## Using the Drive Manager
+1. Validate your credentials file
+2. Generate an authorization URL
+3. For headless mode: Display the URL and prompt you to visit it, authorize access, and paste the authorization code
+4. Test authentication and verify Drive access
+5. Create necessary directories in your Drive
 
-The Google Drive manager script provides several useful functions:
+## Step 3: Test the Integration
+
+After setup, you can verify that everything is working correctly:
 
 ```bash
-# Create a directory structure in Google Drive
-python scripts/google_drive_manager.py --action create_folders --base_dir your_project_name
-
-# Upload files or directories
-python scripts/google_drive_manager.py --action upload --local_path /path/to/file --remote_folder folder_id
-
-# Download files
-python scripts/google_drive_manager.py --action download --remote_file file_id --local_path /path/to/save
-
-# List files in a Drive folder (with optional search)
-python scripts/google_drive_manager.py --action list --remote_folder folder_id --search "filename"
-
-# Quick check if Drive is accessible
-python scripts/google_drive_manager.py --action check
+# Test the Google Drive integration
+python -m tests.test_google_drive --headless
 ```
 
-## Using the Drive Integration in Your Code
+This will run a series of tests that:
 
-To use Google Drive integration in your code:
+1. Authenticate with Google Drive
+2. Create test directories
+3. Upload a test file
+4. Download the test file
+5. Clean up test data
+
+## Step 4: Using Drive Integration in Training
+
+The Drive integration is built into all major scripts. Use these flags to enable it:
+
+```bash
+# Process datasets with Drive integration
+python main_api.py --mode process --use_drive --headless
+
+# Train with Drive integration
+python main_api.py --mode train --use_drive --headless
+
+# Full pipeline with Drive integration
+python main_api.py --mode all --use_drive --headless
+
+# Training with the text model
+python train_text_flan.py --use_drive --headless
+```
+
+## Advanced: Using Alternative Methods
+
+### Option 1: rclone (Alternative to API)
+
+If you prefer using rclone instead of the API:
+
+1. Install rclone:
+
+```bash
+curl https://rclone.org/install.sh | sudo bash
+```
+
+2. Configure rclone for Google Drive:
+
+```bash
+rclone config
+```
+
+3. Follow the interactive setup, selecting Google Drive
+4. Use the rclone integration in scripts:
+
+```bash
+python main_api.py --use_drive --drive_tool rclone
+```
+
+### Option 2: Google Drive API Direct Usage
+
+For direct API usage without our helper module:
 
 ```python
-from src.utils.drive_utils import is_drive_mounted, save_model_to_drive, get_drive_path
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
 
-# Check if Drive is accessible (for headless environment)
-if is_drive_mounted(headless=True):
-    # Save a model to Drive
-    save_model_to_drive(
-        model_path="/local/path/to/model",
-        drive_dir="your_folder_id_on_drive",
-        model_name="my_model",
-        headless=True  # For headless environments
-    )
+# Setup credentials
+SCOPES = ['https://www.googleapis.com/auth/drive']
+flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+creds = flow.run_local_server(port=0)
 
-    # Convert a local path to a Google Drive path
-    drive_path = get_drive_path(
-        local_path="/local/path/to/file",
-        drive_base_path="/drive/path"
-    )
+# Build Drive service
+drive_service = build('drive', 'v3', credentials=creds)
+
+# Use Drive API
+results = drive_service.files().list(pageSize=10, fields="nextPageToken, files(id, name)").execute()
+items = results.get('files', [])
 ```
-
-## For Training Scripts
-
-When using the `DeepseekFineTuner` class, you can enable Google Drive integration:
-
-```python
-from src.training.trainer import DeepseekFineTuner
-
-tuner = DeepseekFineTuner(
-    config_path="path/to/config.json",
-    use_drive=True,
-    drive_base_dir="my_project_folder"
-)
-```
-
-This will automatically save models and checkpoints to Google Drive.
-
-## Paperspace Integration
-
-For using Google Drive with Paperspace notebooks (which are headless):
-
-1. In your local environment:
-
-   - Set up the Google Cloud project and credentials as described above
-   - Ensure `"urn:ietf:wg:oauth:2.0:oob"` is included in the redirect URIs
-   - Upload the credentials.json file to your Paperspace notebook
-
-2. In Paperspace:
-
-   ```bash
-   # Install dependencies
-   pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
-
-   # Set up authentication in headless mode
-   python scripts/google_drive_manager.py --action setup --headless
-   ```
-
-3. When the authorization URL appears, open it in a browser on your local machine
-4. Log in with your Google account and authorize the application
-5. Copy the authorization code and paste it back in the Paperspace terminal
-6. Once authenticated, the token will be saved for future use
 
 ## Troubleshooting
 
-### "Missing required parameter: redirect_uri" Error
-
-If you see this error:
-
-1. Ensure your credentials.json file includes both required redirect URIs:
-   ```json
-   "redirect_uris": ["http://localhost:8080", "urn:ietf:wg:oauth:2.0:oob"]
-   ```
-2. Delete the token file (located at `~/.drive_token.json` by default)
-3. Run the setup script again with the appropriate mode:
-   ```bash
-   python scripts/google_drive_manager.py --action setup --headless
-   ```
-
 ### Authentication Issues
 
-If you're having authentication problems:
+- **Error: redirect_uri_mismatch**  
+  Solution: Use the `--headless` flag to enable the OOB flow which doesn't require redirect
 
-1. Make sure the Google Drive API is enabled for your project
-2. Check that your credentials.json file is properly formatted with both redirect URIs
-3. Verify that you're logged into the correct Google account during authentication
-4. Try deleting the token file and authenticating again
+- **Error: Invalid client**  
+  Solution: Re-download credentials and ensure you selected "Desktop application" type
 
-### File Not Found Errors
+- **Error: invalid_grant**  
+  Solution: Authentication codes expire quickly. Request a new code and use it immediately
 
-If files aren't being found on Google Drive:
+### File Operation Issues
 
-1. Ensure your authentication is working by running the test action:
-   ```bash
-   python scripts/google_drive_manager.py --action test
-   ```
-2. Check that the paths and folder IDs you're using are correct
-3. Verify that your Google account has the necessary permissions
+- **Error: File not found**  
+  Solution: Check folder IDs and ensure paths are correct
 
-## Advanced Usage
+- **Error: Insufficient permissions**  
+  Solution: Request 'drive' scope (not just 'drive.file') during authentication
 
-### Using a Different Token Path
+### Connectivity Issues
 
-You can specify a different location for your authentication token:
+- **Error: Connection reset by peer**  
+  Solution: Check internet connectivity and retry with exponential backoff
 
-```bash
-python scripts/google_drive_manager.py --action setup --token_path /path/to/token.json
-```
+- **Error: Quota exceeded**  
+  Solution: Google Drive API has usage limits. Implement rate limiting in your code
 
-Or in code:
+## Best Practices
 
-```python
-from src.utils.drive_utils import get_credentials
-
-creds = get_credentials(token_path="/path/to/token.json")
-```
-
-### Working with Folder IDs
-
-Google Drive uses folder IDs rather than paths. You can:
-
-1. Find a folder's ID in your browser URL when viewing the folder
-2. List folders with their IDs:
-   ```bash
-   python scripts/google_drive_manager.py --action list
-   ```
-3. Use the `find_or_create_folder` function to get or create folders:
-
-   ```python
-   from src.utils.drive_utils import find_or_create_folder
-
-   folder_id = find_or_create_folder("My Folder Name", headless=True)
-   ```
-
-## Need More Help?
-
-If you encounter any issues not covered in this guide, please:
-
-1. Check the [Google Drive API documentation](https://developers.google.com/drive/api/v3/about-sdk)
-2. Open an issue in the project repository with details about your problem
+1. Store only necessary data in Drive to avoid reaching storage limits
+2. Always clean up test files after testing
+3. Use structured folder hierarchies in Drive
+4. Implement proper error handling for Drive operations
+5. Use token caching to avoid repeated authentication
+6. For large file transfers, use resumable uploads

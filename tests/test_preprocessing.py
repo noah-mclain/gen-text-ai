@@ -50,9 +50,6 @@ def test_preprocessing(dataset_name, processor_name, max_samples=10, timeout=300
         elif dataset_name == "codesearchnet":
             dataset_path = "code_search_net"
             trust_remote_code = True  # CodeSearchNet needs remote code
-        elif dataset_name == "the_stack":
-            dataset_path = "bigcode/the-stack-smol"  # Use smaller test version
-            trust_remote_code = True  # The Stack needs remote code
         elif dataset_name == "instruct_code":
             dataset_path = "codeparrot/apps"  # Alternative dataset with similar structure
             trust_remote_code = True  # APPS dataset needs remote code
@@ -76,7 +73,7 @@ def test_preprocessing(dataset_name, processor_name, max_samples=10, timeout=300
         processor_func = getattr(preprocessor, f"process_{processor_name}")
         
         # Set up timeout for datasets that might hang
-        if 'stack' in dataset_name.lower() or timeout > 0:
+        if timeout > 0:
             # Use threading with timeout for problematic datasets
             import threading
             import queue

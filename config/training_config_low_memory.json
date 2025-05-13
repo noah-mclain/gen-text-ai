@@ -1,0 +1,90 @@
+{
+  "model": {
+    "name": "deepseek-ai/deepseek-coder-6.7b-base",
+    "tokenizer": "deepseek-ai/deepseek-coder-6.7b-base",
+    "use_fast_tokenizer": true
+  },
+  "training": {
+    "output_dir": "models/deepseek-coder-finetune",
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 1,
+    "per_device_eval_batch_size": 1,
+    "gradient_accumulation_steps": 16,
+    "learning_rate": 2e-4,
+    "weight_decay": 0.1,
+    "warmup_steps": 200,
+    "evaluation_strategy": "steps",
+    "eval_steps": 200,
+    "save_steps": 500,
+    "logging_steps": 50,
+    "save_total_limit": 3,
+    "load_best_model_at_end": true,
+    "report_to": "tensorboard",
+    "push_to_hub": false,
+    "fp16": true,
+    "auto_find_batch_size": true,
+    "max_train_time_hours": 10,
+    "deepspeed": "config/ds_config_zero3.json",
+    "optimizers": {
+      "optimizer": [
+        "AdamW",
+        {
+          "lr": 2e-4,
+          "betas": [0.9, 0.95],
+          "eps": 1e-8,
+          "weight_decay": 0.1
+        }
+      ],
+      "scheduler": "linear"
+    }
+  },
+  "lora": {
+    "use_lora": true,
+    "r": 16,
+    "lora_alpha": 16,
+    "lora_dropout": 0.05,
+    "bias": "none",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ],
+    "task_type": "CAUSAL_LM"
+  },
+  "unsloth": {
+    "use_unsloth": true,
+    "max_seq_length": 1024,
+    "load_in_4bit": true
+  },
+  "dataset": {
+    "max_length": 1024,
+    "streaming": true,
+    "shuffle_buffer": 1000,
+    "cache_dir": "data/cache",
+    "preprocess_with_tokenizer": true,
+    "format": "jinja",
+    "template": "{{ prompt }} {{ completion }}",
+    "max_samples": {
+      "codesearchnet_python": 5000,
+      "codesearchnet_java": 3000,
+      "codesearchnet_javascript": 3000,
+      "mbpp": 1000,
+      "humaneval": 500,
+      "code_alpaca": 5000,
+      "the_stack_filtered": 5000
+    },
+    "dataset_weights": {
+      "codesearchnet_python": 1.0,
+      "codesearchnet_java": 0.8,
+      "codesearchnet_javascript": 0.8,
+      "mbpp": 1.2,
+      "humaneval": 1.5,
+      "code_alpaca": 1.0,
+      "the_stack_filtered": 1.2
+    }
+  }
+}
