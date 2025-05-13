@@ -150,24 +150,14 @@
     "path": "bigcode/the-stack",
     "processor": "the_stack",
     "split": "train",
-    "languages": [
-      "python",
-      "java",
-      "javascript",
-      "c",
-      "cpp",
-      "csharp",
-      "typescript",
-      "html",
-      "sql",
-      "tex",
-      "dockerfile"
-    ],
+    "data_dir": "data",
+    "languages": ["python", "java", "javascript"],
     "natural_languages": ["en", "ar"],
-    "sampling_ratio": 0.05,
+    "sampling_ratio": 0.1,
     "max_samples": 30000,
-    "max_processing_time": 180,
-    "enabled": true
+    "max_processing_time": 300,
+    "enabled": true,
+    "debug": true
   },
   "humaneval": {
     "path": "openai/openai_humaneval",
