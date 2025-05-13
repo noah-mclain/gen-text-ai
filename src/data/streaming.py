@@ -90,28 +90,73 @@ def load_streaming_dataset(
         # Apply tokenization function
         def tokenize_function(examples):
             # Get the column names from the first example
-            text_column = next(iter(examples.keys())) if len(examples) > 0 else "text"
+            example_keys = list(examples.keys())
+            if not example_keys:
+                logger.warning(f"Empty examples for dataset {dataset_name}")
+                return {"input_ids": [], "attention_mask": []}
+                
+            # Determine the text column based on common field names
+            potential_text_columns = ["text", "content", "code", "source", "input", "prompt", "instruction"]
+            text_column = None
+            
+            for col in potential_text_columns:
+                if col in example_keys:
+                    text_column = col
+                    break
+            
+            if text_column is None:
+                # Use the first column as fallback
+                text_column = example_keys[0]
+                
+            # Extract the text, ensuring it's in the right format
+            texts = examples[text_column]
+            
+            # Handle different input formats
+            if not texts:
+                logger.warning(f"Empty texts for dataset {dataset_name}")
+                return {"input_ids": [], "attention_mask": []}
+                
+            # Convert to list of strings if needed
+            if isinstance(texts, dict) and "text" in texts:
+                # Some datasets nest text in a dict
+                texts = texts["text"]
+            
+            # Ensure we have a list of strings
+            if not isinstance(texts, list):
+                texts = [texts]
+                
+            # Ensure each item is a string
+            texts = [str(item) if item is not None else "" for item in texts]
             
             # Tokenize the texts
-            tokenized = tokenizer(
-                examples[text_column],
-                padding="max_length",
-                truncation=True,
-                max_length=config.get("max_length", 2048),
-                return_tensors="np"  # Use numpy instead of torch tensors for compatibility
-            )
-            
-            # Convert PyTorch tensors to lists to avoid Arrow serialization issues
-            return {
-                "input_ids": tokenized["input_ids"].tolist(),
-                "attention_mask": tokenized["attention_mask"].tolist()
-            }
+            try:
+                tokenized = tokenizer(
+                    texts,
+                    padding="max_length",
+                    truncation=True,
+                    max_length=config.get("max_length", 2048),
+                    return_tensors="np"  # Use numpy instead of torch tensors
+                )
+                
+                # Convert to lists for Arrow compatibility
+                return {
+                    "input_ids": tokenized["input_ids"].tolist(),
+                    "attention_mask": tokenized["attention_mask"].tolist()
+                }
+            except Exception as e:
+                logger.error(f"Tokenization error for dataset {dataset_name}: {e}")
+                # Return empty tensors as fallback
+                return {
+                    "input_ids": [[]],
+                    "attention_mask": [[]]
+                }
         
         # Map tokenization to the dataset
         tokenized_dataset = dataset.map(
             tokenize_function,
             batched=True,
-            batch_size=streaming_config["batch_size"]
+            batch_size=streaming_config["batch_size"],
+            remove_columns=dataset.column_names  # Remove original columns to avoid conflicts
         )
         
         return tokenized_dataset

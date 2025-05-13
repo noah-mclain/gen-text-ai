@@ -247,28 +247,40 @@ def process_datasets(config_path, output_dir, use_drive=False, drive_base_dir=No
         if config.get('enabled', True):
             logger.info(f"Processing dataset: {dataset_name}")
             
+            # Get processor name and dataset path
             processor_name = config.get('processor')
-            if not hasattr(processors_module, 'PROCESSOR_MAP') or processor_name not in processors_module.PROCESSOR_MAP:
-                logger.error(f"No processor found for {dataset_name} with processor {processor_name}")
-                success = False
+            dataset_path = config.get('path')
+            split = config.get('split', 'train')
+            
+            if not processor_name:
+                logger.warning(f"No processor specified for {dataset_name}, skipping")
                 continue
                 
+            if not dataset_path:
+                logger.warning(f"No dataset path specified for {dataset_name}, skipping")
+                continue
+            
+            # Get the processor function
+            processor_func_name = f"{processor_name}_processor"
+            processor_func = getattr(processors_module, processor_func_name, None)
+            
+            if not processor_func:
+                logger.error(f"Processor {processor_func_name} not found in text_processors module")
+                success = False
+                continue
+            
             try:
-                # Get the processor function
-                processor_fn = processors_module.PROCESSOR_MAP[processor_name]
-                
                 # Process the dataset
-                processor_fn(
-                    dataset_path=config.get('path'),
+                logger.info(f"Processing {dataset_name} with {processor_func_name}")
+                processor_func(
+                    dataset_path=dataset_path,
                     output_dir=output_dir,
-                    split=config.get('split', 'train'),
-                    streaming=True,  # Use streaming for memory efficiency
-                    use_cache=False   # Don't use cache to avoid disk space issues
+                    split=split,
+                    streaming=True  # Use streaming to save memory
                 )
-                
                 logger.info(f"Successfully processed {dataset_name}")
             except Exception as e:
-                logger.error(f"Error processing dataset {dataset_name}: {e}")
+                logger.error(f"Error processing {dataset_name}: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
                 success = False

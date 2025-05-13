@@ -13,7 +13,19 @@ from transformers import AutoTokenizer
 from itertools import islice
 from tqdm import tqdm
 import random
-
+# Import text processor functions
+try:
+    from src.data.processors.text_processors import (
+        gpteacher_processor,
+        pile_processor,
+        persona_chat_processor,
+        writingprompts_processor,
+        openassistant_processor
+    )
+    TEXT_PROCESSORS_AVAILABLE = True
+except ImportError:
+    TEXT_PROCESSORS_AVAILABLE = False
+    
 # For language detection
 try:
     import langid
@@ -1055,18 +1067,18 @@ class DataPreprocessor:
                           streaming: bool = False) -> Union[Dataset, DatasetDict]:
         """Process CodeParrot Clean dataset."""
         logger.info("Processing CodeParrot dataset...")
-        
+
         # For streaming mode, process individually to avoid issues
         if streaming:
             processed_examples = []
-            
+
             for i, example in enumerate(dataset):
                 if i >= 10000:  # Limit to prevent processing too many examples
                     break
-                
+
                 try:
                     code = None
-                    
+
                     if isinstance(example, dict):
                         # Try different possible field names
                         for field_name in ["code", "content", "source", "text"]:
@@ -1076,11 +1088,11 @@ class DataPreprocessor:
                     else:
                         # If the example is directly a string
                         code = str(example)
-                    
+
                     if not code:
                         logger.warning(f"Skipping example {i}, no code found")
                         continue
-                    
+
                     prompt = "# Write a Python function"
                     processed = self.common_preprocessing(
                         {"prompt": prompt, "completion": code},
@@ -1091,14 +1103,14 @@ class DataPreprocessor:
                 except Exception as e:
                     logger.warning(f"Error processing example {i}: {e}")
                     continue
-            
+
             return processed_examples
         else:
             # For batch processing
             try:
                 # Try to determine the structure from a sample
                 sample_example = next(iter(dataset))
-                
+
                 # Find the field with code
                 code_field = None
                 if isinstance(sample_example, dict):
@@ -1106,11 +1118,11 @@ class DataPreprocessor:
                         if field_name in sample_example:
                             code_field = field_name
                             break
-                
+
                 if not code_field:
                     logger.warning("Could not find a code field in the dataset")
                     code_field = "code"  # Default fallback
-                
+
                 def process_sample(examples):
                     try:
                         # Add a synthetic prompt for instruction-based format
@@ -1127,7 +1139,7 @@ class DataPreprocessor:
                     except Exception as e:
                         logger.error(f"Error in process_sample: {e}")
                         return {"processed_text": [], "length": []}
-                
+
                 return dataset.map(
                     process_sample,
                     batched=True,
@@ -1136,19 +1148,19 @@ class DataPreprocessor:
                 )
             except Exception as e:
                 logger.warning(f"Error in batch processing: {e}")
-                
+
                 # Fallback to simple item-by-item processing
                 processed_examples = []
                 count = 0
-                
+
                 for example in dataset:
                     if count >= 10000:
                         break
-                    
+
                     try:
                         code = str(example)
                         prompt = "# Write a Python function"
-                        
+
                         processed = self.common_preprocessing(
                             {"prompt": prompt, "completion": code},
                             "prompt", "completion",
@@ -1156,9 +1168,9 @@ class DataPreprocessor:
                         )
                         processed_examples.append(processed)
                         count += 1
-                    except:
+                    except Exception:
                         continue
-                
+
                 return processed_examples
     
     def process_the_stack(self, dataset: Union[Dataset, DatasetDict], language: str = None, 
@@ -1835,133 +1847,289 @@ class DataPreprocessor:
     
     def process_openassistant(self, dataset: Union[Dataset, DatasetDict],
                        streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """Process OpenAssistant dataset for text generation fine-tuning."""
-        logger.info("Processing OpenAssistant dataset...")
+        """
+        Process the OpenAssistant dataset for fine-tuning.
         
-        # For streaming mode, process examples one at a time
-        if streaming:
-            processed_examples = []
+        Args:
+            dataset: The dataset to process
+            streaming: Whether to use streaming mode
             
-            # Process each example individually using our safe iterator
-            for example in self._safe_dataset_iterator(dataset):
-                try:
-                    # Check if it's a prompt (role is "prompter") or response (role is "assistant")
-                    if example.get('role') == 'prompter':
-                        instruction = example.get('text', '')
-                        response = ""
-                    elif example.get('role') == 'assistant':
-                        instruction = ""
-                        response = example.get('text', '')
-                    else:
-                        # Skip examples with unknown roles
-                        continue
-                    
-                    # Skip if both instruction and response are empty
-                    if not instruction and not response:
-                        continue
-                    
-                    # Create a processed example
-                    processed = {
-                        "processed_text": f"Instruction: {instruction}\nResponse: {response}",
-                        "length": len(instruction) + len(response),
-                        "language": example.get('lang', 'en'),
-                        "source": "openassistant"
-                    }
-                    
-                    processed_examples.append(processed)
-                except Exception as e:
-                    logger.warning(f"Error processing OpenAssistant example: {e}")
-                    continue
+        Returns:
+            Processed dataset
+        """
+        logger.info("Processing OpenAssistant dataset")
+        
+        # Check if text processors are available
+        if not TEXT_PROCESSORS_AVAILABLE:
+            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
+        
+        # Calculate output directory path
+        output_dir = "data/processed"
+        
+        # Use the provided dataset instead of loading it again
+        def process_example(example):
+            """Process a single example from the OpenAssistant dataset"""
+            # Check if it's a prompt (role is "prompter") or response (role is "assistant")
+            if example.get('role') == 'prompter':
+                instruction = example.get('text', '')
+                response = ""
+            elif example.get('role') == 'assistant':
+                instruction = ""
+                response = example.get('text', '')
+            else:
+                instruction = ""
+                response = ""
+                
+            # Extract the language if available
+            lang = example.get('lang', 'en')
             
-            return processed_examples
-        else:
-            # For batch processing mode
-            def process_sample(examples):
-                # Ensure we have valid inputs
-                if not isinstance(examples, dict):
-                    logger.warning(f"Expected dictionary, got {type(examples)}")
-                    return {"processed_text": [], "length": [], "language": [], "source": []}
-                
-                # Get relevant fields
-                roles = examples.get("role", [])
-                texts = examples.get("text", [])
-                langs = examples.get("lang", [])
-                
-                # Ensure all are lists
-                if not isinstance(roles, list):
-                    roles = [roles]
-                if not isinstance(texts, list):
-                    texts = [texts]
-                if not isinstance(langs, list):
-                    langs = [langs] * len(roles)
-                
-                # Get batch size
-                batch_size = min(len(roles), len(texts))
-                if batch_size == 0:
-                    return {"processed_text": [], "length": [], "language": [], "source": []}
-                
-                # Process each example
-                processed_texts = []
-                lengths = []
-                languages = []
-                sources = []
-                
-                for i in range(batch_size):
-                    role = roles[i] if i < len(roles) else ""
-                    text = texts[i] if i < len(texts) else ""
-                    lang = langs[i] if i < len(langs) else "en"
-                    
-                    # Determine if it's an instruction or response
-                    if role == "prompter":
-                        instruction = text
-                        response = ""
-                    elif role == "assistant":
-                        instruction = ""
-                        response = text
-                    else:
-                        # Skip examples with unknown roles
-                        continue
-                    
-                    # Skip if both are empty
-                    if not instruction and not response:
-                        continue
-                    
-                    # Create processed text
-                    processed_text = f"Instruction: {instruction}\nResponse: {response}"
-                    processed_texts.append(processed_text)
-                    lengths.append(len(instruction) + len(response))
-                    languages.append(lang)
-                    sources.append("openassistant")
-                
-                return {
-                    "processed_text": processed_texts,
-                    "length": lengths,
-                    "language": languages,
-                    "source": sources
-                }
+            return {
+                "instruction": instruction,
+                "response": response,
+                "language": lang,
+                "text": f"Instruction: {instruction}\nResponse: {response}",
+                "source": "openassistant",
+                "processed_text": f"Instruction: {instruction}\nResponse: {response}"
+            }
             
-            try:
-                # Try batch processing with removable columns
-                if hasattr(dataset, "column_names"):
-                    processed = dataset.map(
-                        process_sample,
-                        batched=True,
-                        remove_columns=dataset.column_names if not streaming else None,
-                        batch_size=100
-                    )
-                else:
-                    # Fallback for streaming datasets
-                    processed = dataset.map(
-                        process_sample,
-                        batched=True,
-                        batch_size=100
-                    )
+        # Process the dataset
+        processed_dataset = dataset.map(process_example)
+        
+        # Filter out empty examples
+        processed_dataset = processed_dataset.filter(lambda x: 
+            x["instruction"] != "" or x["response"] != "")
+        
+        # Save the processed dataset
+        output_path = os.path.join(output_dir, "openassistant_processed")
+        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+            logger.info(f"Saving processed dataset to {output_path}")
+            processed_dataset.save_to_disk(output_path)
+        
+        return processed_dataset
+    
+    def process_gpteacher(self, dataset: Union[Dataset, DatasetDict],
+                    streaming: bool = False) -> Union[Dataset, DatasetDict]:
+        """
+        Process the GPTeacher dataset for fine-tuning.
+        
+        Args:
+            dataset: The dataset to process
+            streaming: Whether to use streaming mode
+            
+        Returns:
+            Processed dataset
+        """
+        logger.info("Processing GPTeacher dataset")
+        
+        # Check if text processors are available
+        if not TEXT_PROCESSORS_AVAILABLE:
+            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
+        
+        # Calculate output directory path
+        output_dir = "data/processed"
+        
+        # Use the provided dataset instead of loading it again
+        def process_example(example):
+            """Process a single example from the GPTeacher dataset"""
+            instruction = example.get('instruction', '')
+            response = example.get('response', '')
+            context = example.get('context', '')
+            
+            if context:
+                full_instruction = f"{context}\n\n{instruction}"
+            else:
+                full_instruction = instruction
                 
-                logger.info(f"Successfully processed {len(processed) if hasattr(processed, '__len__') else 'unknown'} OpenAssistant examples")
-                return processed
-                
-            except Exception as e:
-                logger.error(f"Error processing OpenAssistant dataset: {e}")
-                logger.error(traceback.format_exc())
-                # Return a simple placeholder
-                return dataset
+            return {
+                "instruction": full_instruction,
+                "response": response,
+                "text": f"Instruction: {full_instruction}\nResponse: {response}",
+                "language": "en",
+                "source": "gpteacher",
+                "processed_text": f"Instruction: {full_instruction}\nResponse: {response}"
+            }
+            
+        # Process the dataset
+        processed_dataset = dataset.map(process_example)
+        
+        # Filter out empty examples
+        processed_dataset = processed_dataset.filter(lambda x: 
+            x["instruction"] != "" and x["response"] != "")
+        
+        # Save the processed dataset
+        output_path = os.path.join(output_dir, "gpteacher_general_processed")
+        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+            logger.info(f"Saving processed dataset to {output_path}")
+            processed_dataset.save_to_disk(output_path)
+        
+        return processed_dataset
+    
+    def process_pile(self, dataset: Union[Dataset, DatasetDict],
+                streaming: bool = False) -> Union[Dataset, DatasetDict]:
+        """
+        Process the Pile dataset for fine-tuning.
+        
+        Args:
+            dataset: The dataset to process
+            streaming: Whether to use streaming mode
+            
+        Returns:
+            Processed dataset
+        """
+        logger.info("Processing Pile dataset")
+        
+        # Check if text processors are available
+        if not TEXT_PROCESSORS_AVAILABLE:
+            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
+        
+        # Calculate output directory path
+        output_dir = "data/processed"
+        
+        # Use the provided dataset instead of loading it again
+        def process_example(example):
+            """Process a single example from the Pile dataset"""
+            text = example.get('text', '')
+            
+            # For Pile, we'll just use the text directly
+            # Since it's not instruction-based, we'll leave instruction/response empty
+            return {
+                "instruction": "",
+                "response": "",
+                "text": text,
+                "language": "en",  # Assuming English, but Pile has mixed languages
+                "source": "pile",
+                "processed_text": text
+            }
+            
+        # Process the dataset
+        processed_dataset = dataset.map(process_example)
+        
+        # Filter out empty examples
+        processed_dataset = processed_dataset.filter(lambda x: x["text"] != "")
+        
+        # Save the processed dataset
+        output_path = os.path.join(output_dir, "pile_processed")
+        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+            logger.info(f"Saving processed dataset to {output_path}")
+            processed_dataset.save_to_disk(output_path)
+        
+        return processed_dataset
+    
+    def process_persona_chat(self, dataset: Union[Dataset, DatasetDict],
+                       streaming: bool = False) -> Union[Dataset, DatasetDict]:
+        """
+        Process the Persona Chat dataset for fine-tuning.
+        
+        Args:
+            dataset: The dataset to process
+            streaming: Whether to use streaming mode
+            
+        Returns:
+            Processed dataset
+        """
+        logger.info("Processing Persona Chat dataset")
+        
+        # Check if text processors are available
+        if not TEXT_PROCESSORS_AVAILABLE:
+            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
+        
+        # Calculate output directory path
+        output_dir = "data/processed"
+        
+        # Use the provided dataset instead of loading it again
+        def process_example(example):
+            """Process a single example from the Persona Chat dataset"""
+            persona = example.get('persona', '')
+            dialog = example.get('dialog', [])
+            
+            if isinstance(persona, list):
+                persona = "\n".join(persona)
+            
+            # Combine persona with dialog as context
+            instruction = f"Persona: {persona}\n\nConversation:"
+            response = ""
+            
+            # Extract dialog turns
+            if isinstance(dialog, list):
+                for i, turn in enumerate(dialog):
+                    if i % 2 == 0:  # User turn
+                        instruction += f"\nUser: {turn}"
+                    else:  # Assistant turn
+                        instruction += f"\nAssistant: {turn}"
+                        response = turn  # Last assistant response
+            
+            return {
+                "instruction": instruction,
+                "response": response,
+                "text": f"{instruction}\n{response}",
+                "language": "en",
+                "source": "persona_chat",
+                "processed_text": f"{instruction}\n{response}"
+            }
+            
+        # Process the dataset
+        processed_dataset = dataset.map(process_example)
+        
+        # Filter out empty examples
+        processed_dataset = processed_dataset.filter(lambda x: 
+            x["instruction"] != "" and x["response"] != "")
+        
+        # Save the processed dataset
+        output_path = os.path.join(output_dir, "persona_chat_processed")
+        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+            logger.info(f"Saving processed dataset to {output_path}")
+            processed_dataset.save_to_disk(output_path)
+        
+        return processed_dataset
+    
+    def process_writingprompts(self, dataset: Union[Dataset, DatasetDict],
+                         streaming: bool = False) -> Union[Dataset, DatasetDict]:
+        """
+        Process the WritingPrompts dataset for fine-tuning.
+        
+        Args:
+            dataset: The dataset to process
+            streaming: Whether to use streaming mode
+            
+        Returns:
+            Processed dataset
+        """
+        logger.info("Processing WritingPrompts dataset")
+        
+        # Check if text processors are available
+        if not TEXT_PROCESSORS_AVAILABLE:
+            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
+        
+        # Calculate output directory path
+        output_dir = "data/processed"
+        
+        # Use the provided dataset instead of loading it again
+        def process_example(example):
+            """Process a single example from the WritingPrompts dataset"""
+            prompt = example.get('prompt', '')
+            story = example.get('story', '')
+            
+            # Format as instruction-response pair
+            return {
+                "instruction": f"Writing Prompt: {prompt}",
+                "response": story,
+                "text": f"Writing Prompt: {prompt}\n\n{story}",
+                "language": "en",
+                "source": "writingprompts",
+                "processed_text": f"Writing Prompt: {prompt}\n\n{story}"
+            }
+            
+        # Process the dataset
+        processed_dataset = dataset.map(process_example)
+        
+        # Filter out empty examples
+        processed_dataset = processed_dataset.filter(lambda x: 
+            x["instruction"] != "" and x["response"] != "")
+        
+        # Save the processed dataset
+        output_path = os.path.join(output_dir, "writingprompts_processed")
+        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+            logger.info(f"Saving processed dataset to {output_path}")
+            processed_dataset.save_to_disk(output_path)
+        
+        return processed_dataset
