@@ -3,15 +3,52 @@ import os
 import argparse
 import json
 import logging
-from evaluator import ModelEvaluator
+
+# Fix the evaluator import to use a relative path
+try:
+    from .evaluator import ModelEvaluator
+except ImportError:
+    try:
+        # Try alternate import path
+        from src.evaluation.evaluator import ModelEvaluator
+    except ImportError:
+        # Last resort: add the directory to sys.path
+        import sys
+        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+        from evaluator import ModelEvaluator
 
 # Import drive utils
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.drive_utils import mount_google_drive, setup_drive_directories, get_drive_path
+try:
+    from utils.google_drive_manager import mount_google_drive, setup_drive_directories, get_drive_path
+except ImportError:
+    try:
+        from src.utils.google_drive_manager import mount_google_drive, setup_drive_directories, get_drive_path
+    except ImportError:
+        # Fallback - define stub functions
+        def mount_google_drive(*args, **kwargs):
+            logger.warning("Google Drive mounting not available")
+            return False
+            
+        def setup_drive_directories(*args, **kwargs):
+            logger.warning("Google Drive setup not available")
+            return {}
+            
+        def get_drive_path(local_path, drive_path=None, fallback_path=None):
+            return fallback_path or local_path
 
 # Import DS-1000 benchmark
-from ds1000_benchmark import evaluate_model_on_ds1000
+try:
+    from .ds1000_benchmark import evaluate_model_on_ds1000
+except ImportError:
+    try:
+        from src.evaluation.ds1000_benchmark import evaluate_model_on_ds1000
+    except ImportError:
+        # Last resort: add the directory to sys.path if not already added
+        if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+        from ds1000_benchmark import evaluate_model_on_ds1000
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

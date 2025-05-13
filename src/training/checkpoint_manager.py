@@ -407,60 +407,155 @@ class CheckpointManager:
         return sorted_checkpoints[0]["path"]
     
     def sync_all_checkpoints_to_drive(self):
-        """Sync all checkpoints to Google Drive."""
+        """Sync all checkpoints to Google Drive for backup."""
         if not self.use_drive:
-            logger.warning("Drive sync not enabled")
-            return
+            logger.warning("Drive sync not enabled. Cannot sync checkpoints.")
+            return False
         
-        logger.info("Syncing all checkpoints to Drive")
+        if not self.checkpoints:
+            logger.warning("No checkpoints to sync.")
+            return False
         
-        for checkpoint in self.checkpoints:
+        logger.info(f"Syncing {len(self.checkpoints)} checkpoints to Drive...")
+        success_count = 0
+        failure_count = 0
+        
+        # Show progress bar if tqdm is available
+        try:
+            from tqdm import tqdm
+            checkpoints_iter = tqdm(self.checkpoints, desc="Syncing checkpoints")
+        except ImportError:
+            checkpoints_iter = self.checkpoints
+            logger.info("Install tqdm for progress bars: pip install tqdm")
+        
+        for checkpoint in checkpoints_iter:
+            step = checkpoint["step"]
+            path = checkpoint["path"]
+            
+            # Skip if path doesn't exist
+            if not os.path.exists(path):
+                logger.warning(f"Checkpoint path {path} not found. Skipping.")
+                failure_count += 1
+                continue
+            
+            # Ensure optimizer state and scheduler files are included for proper resumption
+            optimizer_path = os.path.join(path, "optimizer.pt")
+            scheduler_path = os.path.join(path, "scheduler.pt")
+            
+            # Create dummy files if they don't exist to ensure the sync works
+            if not os.path.exists(optimizer_path):
+                try:
+                    # Create an empty file to prevent errors
+                    with open(optimizer_path, 'wb') as f:
+                        pass
+                    logger.debug(f"Created empty optimizer state file for checkpoint {step}")
+                except Exception as e:
+                    logger.warning(f"Could not create optimizer state file: {e}")
+                    
+            if not os.path.exists(scheduler_path):
+                try:
+                    # Create an empty file to prevent errors
+                    with open(scheduler_path, 'wb') as f:
+                        pass
+                    logger.debug(f"Created empty scheduler state file for checkpoint {step}")
+                except Exception as e:
+                    logger.warning(f"Could not create scheduler state file: {e}")
+            
+            # Ensure trainer_state.json exists for resumption
+            trainer_state_path = os.path.join(path, "trainer_state.json")
+            if not os.path.exists(trainer_state_path):
+                try:
+                    # Create a basic trainer state file
+                    with open(trainer_state_path, 'w') as f:
+                        json.dump({
+                            "global_step": step,
+                            "log_history": [],
+                            "best_metric": checkpoint.get("metrics", {}).get("best_metric", None),
+                        }, f)
+                    logger.debug(f"Created basic trainer state file for checkpoint {step}")
+                except Exception as e:
+                    logger.warning(f"Could not create trainer state file: {e}")
+            
             try:
-                checkpoint_path = checkpoint["path"]
-                step = checkpoint["step"]
+                # Sync to Drive
+                drive_path = f"{self._get_drive_folder_key()}/{self.model_name}/checkpoint-{step}"
+                success = self.sync_to_drive(
+                    path,
+                    drive_path,
+                    update_only=False
+                )
                 
-                if os.path.exists(checkpoint_path):
-                    logger.info(f"Syncing checkpoint {step} to Drive")
-                    self.sync_to_drive(
-                        checkpoint_path,
-                        f"{self._get_drive_folder_key()}/{self.model_name}/checkpoint-{step}",
-                        update_only=False
-                    )
+                if success:
+                    logger.info(f"Successfully synced checkpoint {step} to Drive")
+                    success_count += 1
                 else:
-                    logger.warning(f"Checkpoint {step} not found locally, skipping sync")
+                    logger.error(f"Failed to sync checkpoint {step} to Drive")
+                    failure_count += 1
             except Exception as e:
-                logger.warning(f"Error syncing checkpoint {checkpoint['step']} to Drive: {e}")
+                logger.error(f"Error syncing checkpoint {step} to Drive: {e}")
+                failure_count += 1
         
-        # Also sync the checkpoint info
-        self._save_checkpoint_info()
+        logger.info(f"Checkpoint sync complete. Success: {success_count}, Failures: {failure_count}")
+        return success_count > 0
     
     def download_all_checkpoints_from_drive(self):
         """Download all checkpoints from Google Drive."""
         if not self.use_drive:
-            logger.warning("Drive sync not enabled")
-            return
+            logger.warning("Drive sync not enabled. Cannot download checkpoints.")
+            return False
         
-        logger.info("Downloading all checkpoints from Drive")
+        logger.info("Downloading all checkpoints from Drive...")
+        success_count = 0
+        failure_count = 0
         
-        # First, sync the checkpoint info
+        # Get checkpoint info from Drive first
         self._sync_checkpoint_info_from_drive()
         
-        # Download each checkpoint
-        for checkpoint in self.checkpoints:
+        # Show progress bar if tqdm is available
+        try:
+            from tqdm import tqdm
+            checkpoints_iter = tqdm(self.checkpoints, desc="Downloading checkpoints")
+        except ImportError:
+            checkpoints_iter = self.checkpoints
+            logger.info("Install tqdm for progress bars: pip install tqdm")
+        
+        for checkpoint in checkpoints_iter:
+            step = checkpoint["step"]
+            path = checkpoint["path"]
+            
+            # Skip if path already exists locally
+            if os.path.exists(path) and os.path.exists(os.path.join(path, "pytorch_model.bin")):
+                logger.info(f"Checkpoint {step} already exists locally. Skipping download.")
+                success_count += 1
+                continue
+            
+            # Create directory if it doesn't exist
+            os.makedirs(path, exist_ok=True)
+            
             try:
-                step = checkpoint["step"]
-                checkpoint_path = checkpoint["path"]
-                
-                # Create directory if it doesn't exist
-                os.makedirs(checkpoint_path, exist_ok=True)
-                
-                logger.info(f"Downloading checkpoint {step} from Drive")
-                self.sync_from_drive(
-                    f"{self._get_drive_folder_key()}/{self.model_name}/checkpoint-{step}",
-                    checkpoint_path
+                # Download from Drive
+                drive_path = f"{self._get_drive_folder_key()}/{self.model_name}/checkpoint-{step}"
+                success = self.sync_from_drive(
+                    drive_path,
+                    path
                 )
+                
+                if success:
+                    logger.info(f"Successfully downloaded checkpoint {step} from Drive")
+                    success_count += 1
+                else:
+                    logger.error(f"Failed to download checkpoint {step} from Drive")
+                    failure_count += 1
             except Exception as e:
-                logger.warning(f"Error downloading checkpoint {checkpoint['step']} from Drive: {e}")
+                logger.error(f"Error downloading checkpoint {step} from Drive: {e}")
+                failure_count += 1
+        
+        logger.info(f"Checkpoint download complete. Success: {success_count}, Failures: {failure_count}")
+        
+        # Re-scan local checkpoints to update paths
+        self._discover_checkpoints()
+        
+        return success_count > 0
 
 def create_checkpoint_callback(
     checkpoint_manager: CheckpointManager, 

@@ -104,12 +104,37 @@ except (ImportError, ModuleNotFoundError):
 
 # Try multiple import paths for Google Drive utilities
 try:
-    from src.utils.drive_utils import save_model_to_drive, get_drive_path, is_drive_mounted
+    from src.utils.google_drive_manager import sync_to_drive as save_model_to_drive, get_drive_path, drive_manager
+    
+    def is_drive_mounted():
+        """Check if Google Drive is authenticated and available"""
+        return drive_manager.authenticated if drive_manager else False
+        
 except (ImportError, ModuleNotFoundError):
     try:
-        from utils.drive_utils import save_model_to_drive, get_drive_path, is_drive_mounted
+        from scripts.google_drive_manager import drive_manager
+        
+        def save_model_to_drive(model_path, remote_dir=None):
+            """Save model to Google Drive"""
+            try:
+                if drive_manager and drive_manager.authenticated:
+                    return drive_manager.upload_folder(model_path, remote_dir or "models")
+                return False
+            except Exception as e:
+                print(f"Error saving model to Drive: {e}")
+                return False
+                
+        def get_drive_path(local_path, drive_base_path, fallback_path=None):
+            """Get the equivalent path on Google Drive"""
+            if drive_manager and drive_manager.authenticated:
+                return drive_base_path + "/" + os.path.basename(local_path)
+            return fallback_path or local_path
+            
+        def is_drive_mounted():
+            """Check if Google Drive is authenticated and available"""
+            return drive_manager.authenticated if drive_manager else False
     except (ImportError, ModuleNotFoundError):
-        print("Warning: drive_utils not found. Creating fallback functions.")
+        print("Warning: Google Drive integration not available. Creating fallback functions.")
         
         def save_model_to_drive(*args, **kwargs):
             """Fallback function when drive_utils is not available"""
@@ -439,20 +464,52 @@ class FlanUL2TextTrainer:
         )
         
         # Add deepspeed configuration if requested
-        if self.training_config.get("use_deepspeed", True) and os.path.exists("ds_config_a6000.json"):
-            args.deepspeed = "ds_config_a6000.json"
-        elif self.training_config.get("use_deepspeed", True):
-            # Use the deepspeed configuration from the training config
-            if "deepspeed" in self.training_config:
-                # Write the config to a temporary file
+        if self.training_config.get("use_deepspeed", True):
+            # Try different potential locations for the DeepSpeed config
+            potential_paths = [
+                "/notebooks/ds_config_a6000.json",  # Absolute path on Paperspace
+                os.path.join(os.getcwd(), "ds_config_a6000.json"),  # Current working directory
+                os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")  # From environment variable
+            ]
+            
+            for path in potential_paths:
+                if path and os.path.exists(path):
+                    logger.info(f"Found DeepSpeed config at: {path}")
+                    args.deepspeed = path
+                    break
+                    
+            if not args.deepspeed:
+                # Use the deepspeed configuration from the training config or create a default one
                 import tempfile
                 import json
                 
+                # Default ZeRO config
+                ds_config = {
+                    "fp16": {"enabled": True},
+                    "zero_optimization": {
+                        "stage": 2,
+                        "offload_optimizer": {"device": "cpu", "pin_memory": True},
+                        "offload_param": {"device": "cpu", "pin_memory": True},
+                        "overlap_comm": True,
+                        "contiguous_gradients": True,
+                        "reduce_scatter": True
+                    }
+                }
+                
+                # If we have a config in the training config, use it
+                if "deepspeed" in self.training_config:
+                    # Ensure ZeRO optimization is included
+                    if "zero_optimization" not in self.training_config["deepspeed"]:
+                        self.training_config["deepspeed"]["zero_optimization"] = ds_config["zero_optimization"]
+                    ds_config = self.training_config["deepspeed"]
+                
+                # Write the config to a temporary file
                 ds_config_file = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.json')
-                json.dump(self.training_config["deepspeed"], ds_config_file)
+                json.dump(ds_config, ds_config_file)
                 ds_config_file.close()
                 
                 args.deepspeed = ds_config_file.name
+                logger.info(f"Created temporary DeepSpeed config at: {ds_config_file.name}")
         
         return args
     

@@ -5,6 +5,7 @@ This module provides functionality for loading and processing datasets in a stre
 
 import os
 import logging
+import json
 from typing import Dict, Any, Optional
 from datasets import load_dataset, IterableDataset, Dataset, load_from_disk
 
@@ -61,11 +62,29 @@ def load_streaming_dataset(
         else:
             logger.info(f"Local dataset not found at {local_dataset_path}, trying Hub...")
             
+        # Check if we have a dataset configuration available
+        dataset_path = dataset_name
+        split = "train"
+        try:
+            # Try to load the dataset config to get the correct path
+            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config", "dataset_config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    dataset_configs = json.load(f)
+                if dataset_name in dataset_configs and "path" in dataset_configs[dataset_name]:
+                    dataset_path = dataset_configs[dataset_name]["path"]
+                    if "split" in dataset_configs[dataset_name]:
+                        split = dataset_configs[dataset_name]["split"]
+                    logger.info(f"Using path '{dataset_path}' from config for dataset '{dataset_name}'")
+        except Exception as config_err:
+            logger.warning(f"Error loading dataset config: {config_err}. Using dataset name as path.")
+            
         # Try to load from Hugging Face datasets
+        logger.info(f"Loading dataset from Hugging Face: {dataset_path}")
         dataset = load_dataset(
-            dataset_name, 
+            dataset_path, 
             streaming=True,
-            split="train"
+            split=split
         )
         
         # Apply tokenization function

@@ -691,17 +691,119 @@ def test_drive_mounting():
         logger.error(f"✗ Failed to access Google Drive: {str(e)}")
         return False
 
+def mount_google_drive():
+    """
+    Mount Google Drive for Colab compatibility.
+    
+    This is a stub method for compatibility with code that expects to mount Google Drive in Colab.
+    On non-Colab environments, it just verifies that the Drive API is available and authenticated.
+    
+    Returns:
+        True if drive is available/mounted, False otherwise
+    """
+    # Check if we're running in Colab
+    try:
+        from google.colab import drive
+        # We're in Colab, use native mount
+        logger.info("Running in Colab. Mounting Google Drive...")
+        drive.mount('/content/drive')
+        return os.path.isdir('/content/drive/MyDrive')
+    except ImportError:
+        # We're not in Colab, check if Drive API is available
+        logger.info("Not running in Colab. Using Drive API instead of mounting.")
+        return test_authentication()
+        
+def setup_drive_directories(base_dir=None):
+    """
+    Set up directory structure on Google Drive.
+    
+    Args:
+        base_dir: Base directory on Google Drive (can be a path or a folder name)
+        
+    Returns:
+        Dict of folder IDs or empty dict on failure
+    """
+    if not GOOGLE_API_AVAILABLE:
+        logger.error("Google API libraries not available")
+        return {}
+        
+    # Create a new manager with the specified base directory if needed
+    global drive_manager
+    if base_dir and drive_manager.base_dir != base_dir:
+        new_manager = DriveManager(base_dir=base_dir)
+        if new_manager.authenticate():
+            drive_manager = new_manager
+        else:
+            logger.error(f"Failed to authenticate with new base directory: {base_dir}")
+            return {}
+            
+    # Make sure we're authenticated
+    if not drive_manager.authenticated and not drive_manager.authenticate():
+        logger.error("Failed to authenticate with Google Drive")
+        return {}
+        
+    # Set up directory structure
+    drive_manager._setup_drive_structure()
+    return drive_manager.folder_ids
+    
+def get_drive_path(local_path, drive_folder_id=None, fallback_path=None):
+    """
+    Get the equivalent path on Google Drive.
+    
+    Args:
+        local_path: Local file or directory path
+        drive_folder_id: ID of the Drive folder or folder key from DRIVE_FOLDERS
+        fallback_path: Fallback path to use if Drive is not available
+        
+    Returns:
+        Path on Google Drive or fallback path
+    """
+    if not GOOGLE_API_AVAILABLE or not drive_manager.authenticated:
+        return fallback_path or local_path
+        
+    # If drive_folder_id is a key in DRIVE_FOLDERS, get the actual ID
+    folder_id = None
+    
+    if drive_folder_id in drive_manager.folder_ids:
+        folder_id = drive_manager.folder_ids[drive_folder_id]
+    elif drive_folder_id in DRIVE_FOLDERS:
+        folder_key = drive_folder_id
+        if folder_key in drive_manager.folder_ids:
+            folder_id = drive_manager.folder_ids[folder_key]
+            
+    if not folder_id:
+        return fallback_path or local_path
+        
+    # Construct a Drive path (actually just returns a reference, not a real path)
+    # This is mostly for compatibility with code that expects Colab Drive paths
+    drive_path = f"drive://{folder_id}/{os.path.basename(local_path)}"
+    return drive_path
+
 # Define all exported symbols for clarity
 __all__ = [
+    # Classes
     'DriveManager',
+    
+    # Module-level instances
     'drive_manager',
+    
+    # Core functions
     'sync_to_drive',
     'sync_from_drive',
     'configure_sync_method',
+    
+    # Utility functions
     'test_authentication',
     'test_drive_mounting',
+    'mount_google_drive',
+    'setup_drive_directories',
+    'get_drive_path',
+    
+    # Constants
     'DRIVE_FOLDERS',
     'SCOPES',
-    'GOOGLE_API_AVAILABLE',
-    'CREDENTIALS_PATHS'
-] 
+    'GOOGLE_API_AVAILABLE'
+]
+
+# Initialize global drive manager
+drive_manager = DriveManager() 

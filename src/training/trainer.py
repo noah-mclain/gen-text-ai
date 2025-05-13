@@ -288,6 +288,15 @@ class DeepseekFineTuner:
             "logging_strategy": ["log_strategy"]
         }
         
+        # List of custom parameters that should be excluded
+        custom_params = [
+            "use_deepspeed",
+            "shuffle_dataset",
+            "max_train_time_hours",
+            "resume_from_checkpoint",
+            "save_safetensors"
+        ]
+        
         # Handle base_model_prefix differently based on version
         import inspect
         
@@ -298,6 +307,11 @@ class DeepseekFineTuner:
             
             # Filter parameters
             for key, value in param_dict.items():
+                # Skip known custom parameters
+                if key in custom_params:
+                    logger.debug(f"Skipping custom parameter '{key}'")
+                    continue
+                    
                 # Check if the parameter is valid
                 if key in valid_params:
                     compatible_params[key] = value
@@ -315,7 +329,8 @@ class DeepseekFineTuner:
                         logger.debug(f"Parameter '{key}' is not compatible with {args_obj.__class__.__name__}")
         else:
             # If we can't inspect, just pass through all parameters
-            compatible_params = param_dict
+            # excluding known custom ones
+            compatible_params = {k: v for k, v in param_dict.items() if k not in custom_params}
         
         return compatible_params
     
@@ -730,11 +745,70 @@ class DeepseekFineTuner:
             {k: v for k, v in self.training_config.items() if k != "output_dir"}
         )
         
+        # Handle DeepSpeed configuration explicitly
+        use_deepspeed = self.training_config.get("use_deepspeed", True)
+        deepspeed_config_path = None
+        
+        if use_deepspeed:
+            # Try different potential locations for the DeepSpeed config
+            potential_paths = [
+                "/notebooks/ds_config_a6000.json",  # Absolute path on Paperspace
+                os.path.join(os.getcwd(), "ds_config_a6000.json"),  # Current working directory
+                os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")  # From environment variable
+            ]
+            
+            for path in potential_paths:
+                if path and os.path.exists(path):
+                    logger.info(f"Found DeepSpeed config at: {path}")
+                    deepspeed_config_path = path
+                    break
+            
+            if not deepspeed_config_path:
+                # As a last resort, create a temporary DeepSpeed config file
+                logger.info("No DeepSpeed config file found, creating one with proper ZeRO settings")
+                import tempfile
+                import json
+                
+                # Default ZeRO config
+                ds_config = {
+                    "fp16": {"enabled": True},
+                    "zero_optimization": {
+                        "stage": 2,
+                        "offload_optimizer": {"device": "cpu", "pin_memory": True},
+                        "offload_param": {"device": "cpu", "pin_memory": True},
+                        "overlap_comm": True,
+                        "contiguous_gradients": True,
+                        "reduce_scatter": True
+                    }
+                }
+                
+                # Add other settings from training config if available
+                if "deepspeed" in self.training_config:
+                    if isinstance(self.training_config["deepspeed"], dict):
+                        # Ensure ZeRO optimization is included
+                        if "zero_optimization" not in self.training_config["deepspeed"]:
+                            self.training_config["deepspeed"]["zero_optimization"] = ds_config["zero_optimization"]
+                        ds_config = self.training_config["deepspeed"]
+                
+                # Create a temporary file with the config
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+                json.dump(ds_config, temp_file)
+                temp_file.close()
+                deepspeed_config_path = temp_file.name
+                logger.info(f"Created temporary DeepSpeed config at: {deepspeed_config_path}")
+        
         # Create training arguments
-        training_args = TrainingArguments(
-            output_dir=self.training_config.get("output_dir", "models/deepseek-coder-finetune"),
+        training_args_dict = {
+            "output_dir": self.training_config.get("output_dir", "models/deepseek-coder-finetune"),
             **filtered_training_config
-        )
+        }
+        
+        # Add DeepSpeed config if available
+        if use_deepspeed and deepspeed_config_path:
+            training_args_dict["deepspeed"] = deepspeed_config_path
+        
+        # Create training arguments
+        training_args = TrainingArguments(**training_args_dict)
         
         logger.info("Creating data collator")
         data_collator = DataCollatorForLanguageModeling(
