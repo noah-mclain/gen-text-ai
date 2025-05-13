@@ -35,5 +35,5 @@ bert-score>=0.3.13
 nltk>=3.8
 spacy>=3.5.0
 textblob>=0.17.1
-xformers>=0.0.20
+# xformers>=0.0.20
 sacrebleu>=2.3.1 

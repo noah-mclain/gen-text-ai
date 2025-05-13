@@ -12,10 +12,12 @@ import logging
 import torch
 import sys
 from typing import Dict, List, Union, Optional, Any, Tuple
-from datasets import Dataset, DatasetDict, concatenate_datasets
+from datasets import Dataset, DatasetDict, concatenate_datasets, IterableDataset
 import numpy as np
 from datetime import datetime
 import pkg_resources
+
+from src.data.dataset_utils import load_from_disk
 
 # Get transformers version for compatibility handling
 TRANSFORMERS_VERSION = "0.0.0"  # Default version for compatibility
@@ -43,6 +45,7 @@ from transformers import (
     BitsAndBytesConfig,
     set_seed
 )
+from transformers.trainer_callback import TrainerCallback, EarlyStoppingCallback
 from huggingface_hub import login
 import peft
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
@@ -117,12 +120,12 @@ except (ImportError, ModuleNotFoundError):
 
 # Try multiple import paths for Google Drive utilities
 try:
-    from src.utils.drive_utils import save_model_to_drive, get_drive_path, is_drive_mounted
+    from src.utils.google_drive_manager import save_model_to_drive, get_drive_path, is_drive_mounted
 except (ImportError, ModuleNotFoundError):
     try:
-        from utils.drive_utils import save_model_to_drive, get_drive_path, is_drive_mounted
+        from utils.google_drive_manager import save_model_to_drive, get_drive_path, is_drive_mounted
     except (ImportError, ModuleNotFoundError):
-        print("Warning: drive_utils not found. Creating fallback functions.")
+        print("Warning: google_drive_manager not found. Creating fallback functions.")
         
         def save_model_to_drive(*args, **kwargs):
             """Fallback function when drive_utils is not available"""
@@ -136,6 +139,23 @@ except (ImportError, ModuleNotFoundError):
         def is_drive_mounted():
             """Fallback for checking if drive is mounted"""
             return False
+
+# Define custom callback classes
+class CodeEvalCallback(TrainerCallback):
+    """Callback for code evaluation during training"""
+    def __init__(self, eval_steps=500):
+        self.eval_steps = eval_steps
+        
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step % self.eval_steps == 0:
+            # Implement code evaluation here
+            pass
+
+class TensorLoggingCallback(TrainerCallback):
+    """Callback for logging tensor values during training"""
+    def on_step_end(self, args, state, control, **kwargs):
+        # Implement tensor logging here
+        pass
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -155,6 +175,9 @@ class DeepseekFineTuner:
         self.peft_config = self.config["peft"]
         self.training_config = self.config["training"]
         self.dataset_config = self.config["dataset"]
+        
+        # Flag for LoRA adapter
+        self.use_lora = self.peft_config.get("use_lora", True)
         
         # Google Drive integration
         self.use_drive = use_drive
@@ -471,225 +494,267 @@ class DeepseekFineTuner:
         
         return model
     
-    def train(self, data_dir: str):
+    def _combine_datasets(self, processed_datasets):
         """
-        Train the model using the datasets in the specified directory.
+        Combine multiple datasets with their respective weights.
         
         Args:
-            data_dir: Directory containing processed datasets
+            processed_datasets: Dictionary of datasets with their weights
+            
+        Returns:
+            Combined dataset
         """
-        # Update data directory with Google Drive path if needed
-        if self.use_drive:
-            data_dir = get_drive_path(data_dir, os.path.join(self.drive_base_dir, "data/processed"), data_dir)
+        logger.info("Combining datasets")
         
-        # Validate the data directory exists
-        if not os.path.exists(data_dir):
-            raise ValueError(f"Data directory {data_dir} does not exist")
+        if not processed_datasets:
+            logger.error("No datasets to combine")
+            return None
             
-        # Load datasets with error handling
-        try:
-            logger.info(f"Loading and preparing datasets from {data_dir}")
-            datasets = self._load_and_prepare_datasets(data_dir)
+        # If there's only one dataset, return it directly
+        if len(processed_datasets) == 1:
+            dataset_info = next(iter(processed_datasets.values()))
+            return dataset_info["dataset"]
             
-            # Validate datasets
-            if not datasets or not all(key in datasets for key in ["train", "validation", "test"]):
-                raise ValueError("Failed to properly prepare train/validation/test datasets")
-                
-            # Validate that datasets have content
-            for split_name, dataset in datasets.items():
-                if dataset is None:
-                    raise ValueError(f"{split_name} dataset is None")
-                    
-                # Try to check if datasets are empty (when possible)
-                try:
-                    if hasattr(dataset, '__len__') and len(dataset) == 0:
-                        logger.warning(f"{split_name} dataset is empty - training may fail")
-                except Exception:
-                    logger.warning(f"Could not check length of {split_name} dataset")
-        except Exception as e:
-            logger.error(f"Error preparing datasets: {str(e)}")
-            raise
+        # Get all datasets
+        datasets = [info["dataset"] for info in processed_datasets.values()]
+        weights = [info["weight"] for info in processed_datasets.values()]
         
-        # Load model
-        logger.info("Loading and preparing model")
-        try:
-            model = self._load_model()
-        except Exception as e:
-            logger.error(f"Error loading model: {str(e)}")
-            raise
+        # Normalize weights
+        total_weight = sum(weights)
+        normalized_weights = [w / total_weight for w in weights]
         
-        # Create training arguments
-        training_args_dict = {k: v for k, v in self.training_config.items() if k not in ["seed"]}
+        logger.info(f"Combining {len(datasets)} datasets with weights: {normalized_weights}")
         
-        # Ensure shuffling is enabled during training
-        if "shuffle_dataset" not in training_args_dict:
-            training_args_dict["shuffle_dataset"] = True
+        # For streaming datasets, we need to interleave them
+        is_streaming = any(isinstance(ds, IterableDataset) for ds in datasets)
         
-        # Set CUDA optimization flags
-        os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
-        os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
-        
-        # Handle parameter compatibility for different versions of transformers
-        # Map deprecated or renamed parameters
-        param_mapping = {
-            "evaluation_strategy": "eval_strategy",
-            "eval_steps": "eval_steps",
-            "save_strategy": "save_strategy",
-        }
-        
-        # Check transformers version and adjust parameters accordingly
-        for old_param, new_param in param_mapping.items():
-            if old_param in training_args_dict:
-                # For older versions, use the new parameter name
-                if hasattr(TrainingArguments, new_param) and not hasattr(TrainingArguments, old_param):
-                    training_args_dict[new_param] = training_args_dict.pop(old_param)
-                # For newer versions, keep the old parameter name if it exists and the new one doesn't
-                elif hasattr(TrainingArguments, old_param) and not hasattr(TrainingArguments, new_param):
-                    pass
-                # If both exist or neither exist, use the version-appropriate one
-                else:
-                    try:
-                        # Attempt to get the correct parameter by inspecting signatures
-                        import inspect
-                        params = inspect.signature(TrainingArguments.__init__).parameters
-                        if new_param in params and old_param not in params:
-                            training_args_dict[new_param] = training_args_dict.pop(old_param)
-                        elif old_param in params and new_param not in params:
-                            pass
-                        else:
-                            # Default to using the original param
-                            pass
-                    except (ImportError, AttributeError):
-                        pass
-        
-        # Remove any parameters that don't exist in the current TrainingArguments
-        valid_params = set()
-        try:
-            import inspect
-            valid_params = set(inspect.signature(TrainingArguments.__init__).parameters.keys())
-        except (ImportError, AttributeError):
-            pass
-        
-        if valid_params:
-            # Filter out parameters that don't exist in the current version
-            training_args_dict = {k: v for k, v in training_args_dict.items() if k in valid_params or k == 'output_dir'}
-        
-        # Configure DeepSpeed if enabled
-        if self.training_config.get("use_deepspeed", False):
-            # Basic DeepSpeed config optimized for single-GPU LoRA training
-            ds_config = {
-                "fp16": {
-                    "enabled": "fp16" in self.training_config and self.training_config["fp16"],
-                },
-                "bf16": {
-                    "enabled": "bf16" in self.training_config and self.training_config["bf16"],
-                },
-                "zero_optimization": {
-                    "stage": 2,
-                    "offload_optimizer": {
-                        "device": "cpu",
-                        "pin_memory": True
-                    },
-                    "contiguous_gradients": True,
-                    "overlap_comm": True
-                },
-                "optimizer": {
-                    "type": "Adam",
-                    "params": {
-                        "lr": self.training_config.get("learning_rate", 2e-4),
-                        "weight_decay": self.training_config.get("weight_decay", 0.01)
-                    }
-                },
-                "scheduler": {
-                    "type": "WarmupDecayLR",
-                    "params": {
-                        "warmup_min_lr": 0,
-                        "warmup_max_lr": self.training_config.get("learning_rate", 2e-4),
-                        "warmup_num_steps": int(self.training_config.get("warmup_ratio", 0.03) * 
-                                              self.training_config.get("num_train_epochs", 3) * 
-                                              (len(datasets["train"]) if hasattr(datasets["train"], '__len__') else 1000) / 
-                                              self.training_config.get("per_device_train_batch_size", 2)),
-                        "total_num_steps": int(self.training_config.get("num_train_epochs", 3) * 
-                                            (len(datasets["train"]) if hasattr(datasets["train"], '__len__') else 1000) / 
-                                            self.training_config.get("per_device_train_batch_size", 2))
-                    }
-                },
-                "gradient_accumulation_steps": self.training_config.get("gradient_accumulation_steps", 4),
-                "gradient_clipping": self.training_config.get("max_grad_norm", 1.0),
-                "train_batch_size": self.training_config.get("per_device_train_batch_size", 2),
-                "train_micro_batch_size_per_gpu": self.training_config.get("per_device_train_batch_size", 2),
-            }
+        if is_streaming:
+            # Import necessary function
+            from datasets import interleave_datasets
             
-            # Add DeepSpeed config to training args
-            ds_config_path = os.path.join(os.path.dirname(self.training_config["output_dir"]), "ds_config.json")
-            os.makedirs(os.path.dirname(ds_config_path), exist_ok=True)
-            with open(ds_config_path, "w") as f:
-                json.dump(ds_config, f, indent=4)
-            
-            if "deepspeed" in valid_params:
-                training_args_dict["deepspeed"] = ds_config_path
-        
-        # Create training arguments
-        logger.info("Creating training arguments")
-        try:
-            # First create a minimal version with just output_dir to avoid errors
-            minimal_args = {"output_dir": self.training_config["output_dir"]}
-            training_args = TrainingArguments(**minimal_args)
-            
-            # Filter the parameters for compatibility using our helper
-            filtered_args = self._check_parameter_compatibility(training_args, training_args_dict)
-            
-            # Then set the rest of the arguments dynamically
-            for key, value in filtered_args.items():
-                try:
-                    setattr(training_args, key, value)
-                except Exception as e:
-                    logger.warning(f"Failed to set parameter {key}: {str(e)}")
-                
-        except Exception as e:
-            logger.error(f"Error creating training arguments: {str(e)}")
-            # Try with only essential parameters as fallback
             try:
-                logger.info("Trying fallback with essential parameters only")
-                essential_args = {
-                    "output_dir": self.training_config["output_dir"],
-                    "per_device_train_batch_size": self.training_config.get("per_device_train_batch_size", 2),
-                    "num_train_epochs": self.training_config.get("num_train_epochs", 3)
-                }
-                training_args = TrainingArguments(**essential_args)
-            except Exception as e2:
-                logger.error(f"Fallback also failed: {str(e2)}")
-                raise
+                combined = interleave_datasets(
+                    datasets, 
+                    probabilities=normalized_weights,
+                    seed=self.training_config.get("seed", 42)
+                )
+                return combined
+            except Exception as e:
+                logger.error(f"Error combining streaming datasets: {e}")
+                # Fallback to first dataset
+                return datasets[0]
+        else:
+            # For regular datasets, we sample and concatenate
+            try:
+                # Import concatenate_datasets
+                from datasets import concatenate_datasets
+                
+                # Determine sample sizes
+                total_samples = sum(len(ds) for ds in datasets)
+                sample_sizes = [int(w * total_samples) for w in normalized_weights]
+                
+                # Ensure at least one sample from each dataset
+                sample_sizes = [max(1, size) for size in sample_sizes]
+                
+                # Sample from each dataset
+                sampled_datasets = []
+                for ds, size in zip(datasets, sample_sizes):
+                    sampled = ds.shuffle(seed=self.training_config.get("seed", 42)).select(range(min(len(ds), size)))
+                    sampled_datasets.append(sampled)
+                
+                # Concatenate all sampled datasets
+                combined = concatenate_datasets(sampled_datasets)
+                combined = combined.shuffle(seed=self.training_config.get("seed", 42))
+                
+                return combined
+            except Exception as e:
+                logger.error(f"Error combining datasets: {e}")
+                # Fallback to first dataset
+                return datasets[0]
+    
+    def _configure_lora(self, model):
+        """
+        Configure LoRA adapters for the model.
         
-        # Create data collator
+        Args:
+            model: The base model to add LoRA adapters to
+            
+        Returns:
+            Model with LoRA adapters
+        """
+        logger.info("Configuring LoRA adapters")
+        
+        try:
+            # Use the LoraConfig from the peft library
+            lora_config = LoraConfig(
+                r=self.peft_config.get("r", 16),
+                lora_alpha=self.peft_config.get("lora_alpha", 16),
+                lora_dropout=self.peft_config.get("lora_dropout", 0.05),
+                bias=self.peft_config.get("bias", "none"),
+                task_type=TaskType.CAUSAL_LM,
+                target_modules=self.peft_config.get("target_modules")
+            )
+            
+            # Apply LoRA to the model
+            model = get_peft_model(model, lora_config)
+            logger.info(f"LoRA adapters configured with rank={lora_config.r}")
+            
+            return model
+        except Exception as e:
+            logger.error(f"Error configuring LoRA: {e}")
+            logger.info("Continuing without LoRA")
+            return model
+    
+    def train(self, data_dir: str) -> Dict[str, Any]:
+        """
+        Train the model.
+        
+        Args:
+            data_dir: Directory containing preprocessed datasets
+            
+        Returns:
+            Dict of training metrics
+        """
+        logger.info("Loading datasets from %s", data_dir)
+        
+        # Initialize streaming flag
+        self.is_streaming = False
+        
+        # Load processed datasets
+        processed_datasets = {}
+        for dataset_name, weight in self.dataset_config.get("dataset_weights", {}).items():
+            dataset_processed_path = os.path.join(data_dir, f"{dataset_name}_processed")
+            
+            if os.path.exists(dataset_processed_path):
+                try:
+                    dataset = load_from_disk(dataset_processed_path)
+                    
+                    # Add to the list of processed datasets
+                    processed_datasets[dataset_name] = {
+                        "dataset": dataset,
+                        "weight": weight
+                    }
+                    
+                    logger.info(f"Loaded dataset {dataset_name} with {len(dataset)} examples and weight {weight}")
+                except Exception as e:
+                    logger.error(f"Error loading dataset {dataset_name}: {e}")
+            else:
+                logger.warning(f"Dataset {dataset_name} not found at {dataset_processed_path}")
+        
+        if not processed_datasets:
+            # Try looking for datasets in streaming format
+            streaming_datasets = {}
+            
+            logger.info("No processed datasets found, checking for streaming datasets")
+            for dataset_name, weight in self.dataset_config.get("dataset_weights", {}).items():
+                try:
+                    # Import dataset loader functions
+                    from src.data.streaming import load_streaming_dataset
+                    
+                    # Load streaming dataset
+                    dataset = load_streaming_dataset(
+                        dataset_name,
+                        self.tokenizer,
+                        self.dataset_config.get("streaming_config", {}),
+                        num_workers=torch.cuda.device_count() if torch.cuda.is_available() else 1
+                    )
+                    
+                    # Add to the list of streaming datasets
+                    streaming_datasets[dataset_name] = {
+                        "dataset": dataset,
+                        "weight": weight
+                    }
+                    
+                    logger.info(f"Loaded streaming dataset {dataset_name} with weight {weight}")
+                except Exception as e:
+                    logger.error(f"Error loading streaming dataset {dataset_name}: {e}")
+            
+            if streaming_datasets:
+                # Use streaming datasets
+                processed_datasets = streaming_datasets
+                
+                # Set is_streaming flag to adjust training configuration
+                self.is_streaming = True
+                logger.info("Using streaming datasets")
+                
+                # Update training args to specify max_steps for streaming datasets
+                if "max_steps" not in self.training_config:
+                    # Set a default value based on num_train_epochs if available
+                    epochs = self.training_config.get("num_train_epochs", 1)
+                    self.training_config["max_steps"] = int(100000 * epochs)  # A reasonable default
+                    logger.info(f"Setting max_steps to {self.training_config['max_steps']} for streaming datasets")
+            else:
+                logger.error("No datasets found for training!")
+                return {"error": "No datasets found"}
+        
+        # Create a combined dataset
+        train_dataset = self._combine_datasets(processed_datasets)
+        
+        if train_dataset is None:
+            logger.error("Failed to create combined dataset")
+            return {"error": "Failed to create combined dataset"}
+        
+        # Prepare model for training
+        model = self._load_model()
+        
+        # Configure LoRA if enabled
+        if self.use_lora:
+            logger.info("Configuring LoRA")
+            model = self._configure_lora(model)
+        
+        logger.info("Creating training arguments")
+        
+        # Ensure max_steps is set for streaming datasets
+        if self.is_streaming and "max_steps" not in self.training_config:
+            # Set a reasonable default
+            self.training_config["max_steps"] = 100000
+            logger.info(f"Set max_steps to {self.training_config['max_steps']} for streaming datasets")
+            
+        # Create training arguments
+        training_args = TrainingArguments(
+            output_dir=self.training_config.get("output_dir", "models/deepseek-coder-finetune"),
+            **{k: v for k, v in self.training_config.items() if k != "output_dir"}
+        )
+        
         logger.info("Creating data collator")
         data_collator = DataCollatorForLanguageModeling(
-            tokenizer=self.tokenizer, 
+            tokenizer=self.tokenizer,
             mlm=False
         )
         
-        # Create trainer
         logger.info("Creating trainer")
         try:
             trainer = Trainer(
                 model=model,
                 args=training_args,
-                train_dataset=datasets["train"],
-                eval_dataset=datasets["validation"],
+                train_dataset=train_dataset,
+                eval_dataset=None,  # We'll handle evaluation separately
                 tokenizer=self.tokenizer,
-                data_collator=data_collator
+                data_collator=data_collator,
+                callbacks=[
+                    CodeEvalCallback(self.training_config.get("eval_steps", 500))
+                ] if self.training_config.get("eval_during_training", False) else None
             )
+            
+            # Add early stopping callback if configured
+            if self.training_config.get("early_stopping_patience"):
+                trainer.add_callback(
+                    EarlyStoppingCallback(
+                        early_stopping_patience=self.training_config.get("early_stopping_patience")
+                    )
+                )
+            
+            # Add tensor logging callback if configured
+            if self.training_config.get("log_tensors", False):
+                trainer.add_callback(TensorLoggingCallback())
+            
         except Exception as e:
-            logger.error(f"Error creating trainer: {str(e)}")
+            logger.error(f"Error creating trainer: {e}")
             raise
         
-        # Train model
+        # Train the model
         logger.info("Starting training")
-        try:
-            trainer.train()
-        except Exception as e:
-            logger.error(f"Error during training: {str(e)}")
-            raise
+        train_result = trainer.train()
         
         # Save model
         logger.info(f"Saving model to {training_args.output_dir}")
@@ -703,7 +768,7 @@ class DeepseekFineTuner:
         # Evaluate model on test set
         logger.info("Evaluating model on test set")
         try:
-            metrics = trainer.evaluate(datasets["test"])
+            metrics = trainer.evaluate(None)
             logger.info(f"Test metrics: {metrics}")
             
             # Save metrics

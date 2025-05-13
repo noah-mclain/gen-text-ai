@@ -66,9 +66,11 @@ Alternatively, you can manually:
 
 1. Place your service account JSON file in a secure location
 2. Set the environment variable:
+
    ```bash
    export GOOGLE_APPLICATION_CREDENTIALS=/path/to/your-service-account.json
    ```
+
 3. Add this to your .bashrc or .zshrc for persistence
 
 ## Verifying the Setup
@@ -81,7 +83,7 @@ python scripts/google_drive_manager.py --action check
 
 If successful, you should see:
 
-```
+```bash
 ✅ Google Drive is properly authenticated and accessible.
 ```
 

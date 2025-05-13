@@ -9,8 +9,10 @@ from typing import List, Dict, Optional
 
 # Import drive utils
 import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.drive_sync import sync_to_drive, configure_sync_method
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(os.path.dirname(current_dir))
+sys.path.append(project_root)
+from src.utils.google_drive_manager import sync_to_drive, configure_sync_method
 
 # Try to set HF token from credentials
 try:
@@ -40,7 +42,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         try:
             with open(credentials_path, 'r') as f:
                 credentials = json.load(f)
-                
+
                 # Look for Hugging Face token in credentials
                 if "huggingface" in credentials:
                     os.environ["HF_TOKEN"] = credentials["huggingface"].get("token", "")
@@ -48,14 +50,14 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                 elif "hf_token" in credentials:
                     os.environ["HF_TOKEN"] = credentials["hf_token"]
                     logger.info("Set HF_TOKEN environment variable from credentials")
-                
+
                 # Also look in other possible locations in the JSON structure
                 if "api_keys" in credentials and "huggingface" in credentials["api_keys"]:
                     os.environ["HF_TOKEN"] = credentials["api_keys"]["huggingface"]
                     logger.info("Set HF_TOKEN environment variable from api_keys in credentials")
         except Exception as e:
             logger.error(f"Error loading credentials: {str(e)}")
-    
+
     # Load dataset configuration
     try:
         with open(config_path, 'r') as f:
@@ -63,7 +65,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
     except Exception as e:
         logger.error(f"Error loading dataset configuration: {str(e)}")
         return
-    
+
     # Filter datasets if specified
     if datasets:
         filtered_config = {}
@@ -73,18 +75,18 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
             else:
                 logger.warning(f"Dataset {dataset_name} not found in configuration")
         dataset_config = filtered_config
-    
+
     # Set streaming option for each dataset
     for dataset_name in dataset_config:
         dataset_config[dataset_name]["streaming"] = streaming
         dataset_config[dataset_name]["use_cache"] = not no_cache
-    
+
     # Initialize preprocessor
     preprocessor = DataPreprocessor()
-    
+
     # Process datasets
     output_dir = "data/processed"
-    
+
     # Configure Google Drive syncing
     if use_drive_api:
         # Configure whether to use rclone or the Google Drive API
@@ -100,19 +102,19 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                 check=False
             )
             use_rclone = result.returncode == 0
-        except:
+        except Exception:
             use_rclone = False
-        
+
         # Ensure drive_base_dir is a string and not a boolean or None
         if drive_base_dir is None or drive_base_dir is True:
             # Set a default value if None or True
             drive_base_dir = "DeepseekCoder"
             logger.warning(f"Invalid drive_base_dir provided, using default: {drive_base_dir}")
-        
+
         # Configure the drive sync method
         configure_sync_method(use_rclone=use_rclone, base_dir=drive_base_dir)
         logger.info(f"Configured Drive sync using {'rclone' if use_rclone else 'Google Drive API'}")
-    
+
     # If skipping local storage, create a temporary directory for processing
     if skip_local_storage and use_drive_api:
         import tempfile
@@ -120,10 +122,10 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         logger.info(f"Using temporary directory for processing: {temp_dir}")
         output_dir = os.path.join(temp_dir, "processed")
         os.makedirs(output_dir, exist_ok=True)
-    
+
     # Process the datasets
     processed_datasets = preprocessor.load_and_process_all_datasets(dataset_config, output_dir)
-    
+
     # Upload processed datasets if using Drive API
     if use_drive_api:
         logger.info("Syncing processed datasets to Google Drive")
@@ -140,12 +142,12 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                         delete_source=skip_local_storage,
                         update_only=False  # We want to ensure all files are synced
                     )
-                    
+
                     if success:
                         logger.info(f"Successfully synced dataset {dataset_name} to Drive")
                     else:
                         logger.error(f"Failed to sync dataset {dataset_name} to Drive")
-            
+
             # If using a temporary directory, clean it up
             if skip_local_storage and 'temp_dir' in locals():
                 import shutil
@@ -156,7 +158,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                     logger.warning(f"Failed to clean up temporary directory: {e}")
         except Exception as e:
             logger.error(f"Error syncing datasets to Google Drive: {str(e)}")
-    
+
     logger.info(f"Processed {len(processed_datasets)} datasets")
 
 def main():

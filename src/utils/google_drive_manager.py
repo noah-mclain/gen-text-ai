@@ -126,8 +126,6 @@ class DriveManager:
                     
                     # Use a different approach to create the flow for headless authentication
                     try:
-                        import json
-                        
                         # Read client secret file
                         with open(self.credentials_path, 'r') as f:
                             client_config = json.load(f)
