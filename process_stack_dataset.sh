@@ -18,26 +18,29 @@ echo -e "${BLUE}=================================================${NC}"
 echo -e "${BLUE}Installing language detection dependencies...${NC}"
 pip install langid
 
-# Step 2: Set HF_TOKEN if provided
-if [ -n "$1" ]; then
-  echo -e "${GREEN}Using provided Hugging Face token${NC}"
+# Step 2: Check/Set HF_TOKEN
+if [ -n "$HF_TOKEN" ]; then
+  echo -e "${GREEN}Using HF_TOKEN from environment${NC}"
+elif [ -n "$1" ]; then
+  echo -e "${GREEN}Setting HF_TOKEN from command line argument${NC}"
   export HF_TOKEN="$1"
 else
-  echo -e "${YELLOW}No Hugging Face token provided. If access fails, run this script with your token as argument:${NC}"
-  echo -e "${YELLOW}  ./process_stack_dataset.sh YOUR_HF_TOKEN${NC}"
+  echo -e "${YELLOW}No Hugging Face token provided. If access fails, either:${NC}"
+  echo -e "${YELLOW}  1. Run: export HF_TOKEN=your_token${NC}"
+  echo -e "${YELLOW}  2. Or run this script with your token: ./process_stack_dataset.sh YOUR_HF_TOKEN${NC}"
 fi
 
 # Step 3: Process the dataset
 echo -e "${BLUE}Processing The Stack filtered dataset...${NC}"
 echo -e "${GREEN}This may take some time depending on your network and compute resources${NC}"
 
-# Set other options from command line args if needed
+# Set config option from command line arg if provided
 CONFIG=${2:-"config/dataset_config.json"}
-DATA_DIR=${3:-"data/processed"}
 
-# Run the processing command
-CMD="python main_api.py --mode process --datasets the_stack_filtered --streaming --no_cache --dataset_config $CONFIG --data_dir $DATA_DIR"
+# Run the processing command - note: the processed data will be saved to data/processed by default
+CMD="python main_api.py --mode process --datasets the_stack_filtered --streaming --no_cache --dataset_config $CONFIG"
 echo -e "${BLUE}Running command:${NC} $CMD"
+echo -e "${GREEN}Note: Processed data will be saved to data/processed by default${NC}"
 
 # Execute the command
 eval $CMD
@@ -45,7 +48,7 @@ eval $CMD
 # Check result
 if [ $? -eq 0 ]; then
   echo -e "${GREEN}Successfully processed The Stack dataset!${NC}"
-  echo -e "${GREEN}Processed data should be available in $DATA_DIR${NC}"
+  echo -e "${GREEN}Processed data should be available in data/processed${NC}"
 else
   echo -e "${RED}Error processing The Stack dataset.${NC}"
   echo -e "${YELLOW}Check logs above for error details.${NC}"
