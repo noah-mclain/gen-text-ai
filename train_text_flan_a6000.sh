@@ -5,18 +5,6 @@
 # Set bash to exit on error
 set -e
 
-# Explicitly unset all DeepSpeed-related variables to ensure clean environment
-unset ACCELERATE_USE_DEEPSPEED
-unset ACCELERATE_DEEPSPEED_CONFIG_FILE
-unset ACCELERATE_DEEPSPEED_PLUGIN_TYPE
-unset HF_DS_CONFIG
-unset DEEPSPEED_CONFIG_FILE
-unset DS_ACCELERATOR
-unset DS_OFFLOAD_PARAM
-unset DS_OFFLOAD_OPTIMIZER
-unset TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT
-unset DEEPSPEED_OVERRIDE_DISABLE
-
 # Parse arguments
 DRIVE_BASE_DIR="FlanUL2Text"
 USE_DRIVE=true
@@ -199,6 +187,69 @@ mkdir -p logs
 mkdir -p data/processed
 mkdir -p text_models/flan-ul2-fine-tuned
 
+# Set up Google Drive authentication first (moved earlier in the script)
+echo "===== SETTING UP GOOGLE DRIVE INTEGRATION ====="
+# Set text model-specific drive base directory
+export DRIVE_BASE_DIR="${DRIVE_BASE_DIR:-FlanUL2Text}"
+echo "Using Google Drive base directory: $DRIVE_BASE_DIR for cloud storage"
+
+# Force Google Drive integration to be enabled unless specifically disabled
+if [ "${USE_DRIVE}" = "false" ]; then
+  echo "Google Drive integration was explicitly disabled with --no-drive flag."
+else
+  # Default to enabled
+  USE_DRIVE="true"
+  echo "Google Drive integration is ENABLED by default."
+fi
+
+# Authenticate with Google Drive if enabled
+if [ "${USE_DRIVE}" = "true" ]; then
+  python scripts/setup_google_drive.py --base_dir "$DRIVE_BASE_DIR"
+  if [ $? -ne 0 ]; then
+    echo "⚠️ Google Drive authentication failed. Will try again with default settings."
+    python scripts/setup_google_drive.py  # Try without arguments
+    if [ $? -ne 0 ]; then
+      echo "❌ Google Drive authentication failed again. Proceeding without Drive integration."
+      USE_DRIVE="false"
+      DRIVE_OPTS=""
+    else
+      echo "✅ Google Drive authentication successful with default settings."
+      DRIVE_OPTS="--use_drive --drive_base_dir $DRIVE_BASE_DIR"
+      if [ "$SKIP_LOCAL" = "true" ]; then
+        DRIVE_OPTS="$DRIVE_OPTS --skip_local_storage"
+      fi
+    fi
+  else
+    echo "✅ Google Drive authentication successful."
+    DRIVE_OPTS="--use_drive --drive_base_dir $DRIVE_BASE_DIR"
+    if [ "$SKIP_LOCAL" = "true" ]; then
+      DRIVE_OPTS="$DRIVE_OPTS --skip_local_storage"
+    fi
+    
+    # Validate authentication by testing if we can access the drive
+    python -c "
+import sys
+from src.utils.google_drive_manager import test_drive_mounting
+if not test_drive_mounting():
+    print('Failed to access Google Drive after authentication')
+    sys.exit(1)
+else:
+    print('Successfully validated Google Drive access')
+" 
+    
+    # If validation failed, disable Drive
+    if [ $? -ne 0 ]; then
+      echo "❌ Google Drive access validation failed. Proceeding without Drive integration."
+      USE_DRIVE="false"
+      DRIVE_OPTS=""
+    fi
+  fi
+else
+  USE_DRIVE="false"
+  DRIVE_OPTS=""
+  echo "Google Drive integration disabled by user request"
+fi
+
 # Check if models are compatible with Unsloth
 echo "===== CHECKING MODEL ARCHITECTURE FOR OPTIMIZATIONS ====="
 # Extract model name from config
@@ -236,18 +287,13 @@ try:
     if 'training' not in config:
         config['training'] = {}
     
-    # Thoroughly remove all DeepSpeed references
-    deepspeed_keys = ['use_deepspeed', 'deepspeed_config', 'deepspeed']
-    for key in deepspeed_keys:
-        if key in config['training']:
-            del config['training'][key]
-            print(f'Removed {key} from config')
-    
     # Set model architecture type - this is used by train_text_flan.py
-    config['training']['is_seq2seq'] = $IS_SEQ2SEQ
+    # Use proper Python booleans (True/False, not true/false)
+    is_seq2seq = '$IS_SEQ2SEQ' == 'true'
+    config['training']['is_seq2seq'] = is_seq2seq
     
     # Add optimization settings appropriate for the model type
-    if $IS_SEQ2SEQ:
+    if is_seq2seq:
         print('Configuring for seq2seq model (T5/UL2/FLAN)')
         # Best settings for T5/UL2 models
         config['training']['bf16'] = True           # Use bfloat16 precision
@@ -277,6 +323,13 @@ try:
     config['training']['save_steps'] = $SAVE_STEPS
     config['training']['warmup_steps'] = $WARMUP_STEPS
     
+    # Add Google Drive settings
+    use_drive = '$USE_DRIVE' == 'true'
+    config['training']['use_drive'] = use_drive
+    if use_drive:
+        config['training']['drive_base_dir'] = '$DRIVE_BASE_DIR'
+        print(f'Configured Drive integration with base dir: {config.get(\"training\", {}).get(\"drive_base_dir\")}')
+    
     # Update training configuration settings
     with open('config/training_config_text.json', 'w') as f:
         json.dump(config, f, indent=2)
@@ -285,50 +338,6 @@ try:
 except Exception as e:
     print(f'Error updating config: {e}', file=sys.stderr)
 "
-
-# Set up Google Drive authentication
-if [ "${USE_DRIVE:-True}" = "True" ]; then
-  echo "Setting up Google Drive authentication..."
-  
-  # Set text model-specific drive base directory
-  export DRIVE_BASE_DIR="${DRIVE_BASE_DIR:-FlanUL2Text}"
-  echo "Using text-specific Drive base directory: $DRIVE_BASE_DIR"
-  
-  python scripts/setup_google_drive.py --base_dir "$DRIVE_BASE_DIR"
-  if [ $? -ne 0 ]; then
-    echo "Google Drive authentication failed. Proceeding without Drive integration."
-    USE_DRIVE="False"
-    DRIVE_OPTS=""
-  else
-    echo "Google Drive authentication successful. Will use Drive for storage."
-    DRIVE_OPTS="--use_drive --drive_base_dir $DRIVE_BASE_DIR"
-    if [ "$SKIP_LOCAL" = true ]; then
-      DRIVE_OPTS="$DRIVE_OPTS --skip_local_storage"
-    fi
-    
-    # Validate authentication by testing if we can access the drive
-    python -c "
-import sys
-from src.utils.google_drive_manager import test_drive_mounting
-if not test_drive_mounting():
-    print('Failed to access Google Drive after authentication')
-    sys.exit(1)
-else:
-    print('Successfully validated Google Drive access')
-" 
-    
-    # If validation failed, disable Drive
-    if [ $? -ne 0 ]; then
-      echo "Google Drive access validation failed. Proceeding without Drive integration."
-      USE_DRIVE="False"
-      DRIVE_OPTS=""
-    fi
-  fi
-else
-  USE_DRIVE="False"
-  DRIVE_OPTS=""
-  echo "Google Drive integration disabled"
-fi
 
 # Step 1: Get dataset names from the config file
 echo "===== IDENTIFYING TEXT DATASETS FROM CONFIG ====="
@@ -354,7 +363,7 @@ echo "Datasets in configuration: $TEXT_DATASETS"
 
 # Step 2: Check which datasets are already processed and available on Drive
 echo "===== CHECKING FOR PRE-PROCESSED DATASETS ====="
-if [ "${USE_DRIVE}" = "True" ]; then
+if [ "${USE_DRIVE}" = "true" ]; then
     echo "Google Drive integration is ENABLED. Looking for pre-processed datasets in Drive folder: $DRIVE_BASE_DIR"
 else
     echo "Google Drive integration is DISABLED. Using local datasets only."
@@ -369,8 +378,8 @@ import sys
 import os
 
 config_path = 'config/dataset_config_text.json'
-skip_drive = ${USE_DRIVE} != 'True'
-drive_folder = '${DRIVE_BASE_DIR}/preprocessed' if not skip_drive else None
+skip_drive = '$USE_DRIVE' != 'true'
+drive_folder = '$DRIVE_BASE_DIR/preprocessed' if not skip_drive else None
 
 try:
     # This gets datasets available locally or on Drive, and those still needed
@@ -387,12 +396,18 @@ try:
 except Exception as e:
     print(f'Error checking datasets: {e}', file=sys.stderr)
     # Fallback to processing all datasets
-    with open(config_path, 'r') as f:
-        config = json.load(f)
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
         all_datasets = [name for name, info in config.items() if info.get('enabled', True)]
-    print('AVAILABLE=', file=sys.stdout)
-    print('NEEDED=' + ','.join(all_datasets), file=sys.stdout)
-    print('DOWNLOAD_TIME=0', file=sys.stdout)
+        print('AVAILABLE=', file=sys.stdout)
+        print('NEEDED=' + ','.join(all_datasets), file=sys.stdout)
+        print('DOWNLOAD_TIME=0', file=sys.stdout)
+    except Exception as e2:
+        print(f'Error reading config: {e2}', file=sys.stderr)
+        print('AVAILABLE=', file=sys.stdout)
+        print('NEEDED=openassistant gpteacher_general pile', file=sys.stdout)
+        print('DOWNLOAD_TIME=0', file=sys.stdout)
 ")
 
 # Parse results
@@ -437,20 +452,12 @@ fi
 
 TRAINING_START_TIME=$(date +%s)
 
-# Set up optimization flags based on model type
-OPT_FLAGS="--no_deepspeed"
-if [ "$IS_SEQ2SEQ" = "false" ]; then
-    OPT_FLAGS="$OPT_FLAGS --use_unsloth"
-fi
-
 # Start training
 python train_text_flan.py \
   --config config/training_config_text.json \
   --data_dir data/processed \
   --push_to_hub \
-  $OPT_FLAGS \
   $DRIVE_OPTS \
-  --preload_processed_datasets \
   --debug \
   2>&1 | tee logs/train_flan_ul2_a6000_$(date +%Y%m%d_%H%M%S).log
 
@@ -498,12 +505,12 @@ if [ -f "$LOG_FILE" ]; then
 fi
 
 # Step 5: Sync any remaining results to Drive if enabled
-if [ "$USE_DRIVE" = true ]; then
+if [ "$USE_DRIVE" = "true" ]; then
   echo "==== Syncing all results to Google Drive ===="
   python scripts/sync_to_drive.py --sync-all \
     --base-dir "$DRIVE_BASE_DIR" \
     --is-text-model \
-    $([ "$SKIP_LOCAL" = true ] && echo "--delete-local")
+    $([ "$SKIP_LOCAL" = "true" ] && echo "--delete-local")
 fi
 
 echo "==== Training completed! ===="
