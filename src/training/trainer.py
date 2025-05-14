@@ -725,11 +725,14 @@ class DeepseekFineTuner:
         
         # Prepare model for training
         model = self._load_model()
-        
-        # Configure LoRA if enabled
-        if self.use_lora:
-            logger.info("Configuring LoRA")
+
+        # Check if LoRA is already initialized by Unsloth
+        has_peft_config = hasattr(model, 'peft_config')
+        if self.use_lora and not has_peft_config:
+            logger.info("Configuring LoRA (not already initialized by Unsloth)")
             model = self._configure_lora(model)
+        elif has_peft_config:
+            logger.info("Skipping LoRA configuration as it was already initialized during model loading")
         
         logger.info("Creating training arguments")
         
@@ -744,6 +747,11 @@ class DeepseekFineTuner:
             TrainingArguments, 
             {k: v for k, v in self.training_config.items() if k != "output_dir"}
         )
+        
+        # Disable wandb if it's causing issues
+        if 'report_to' not in filtered_training_config:
+            filtered_training_config['report_to'] = 'none'  # Disable all integrations including wandb
+            logger.info("Disabled wandb and other integrations due to potential issues")
         
         # Handle DeepSpeed configuration explicitly
         use_deepspeed = self.training_config.get("use_deepspeed", True)

@@ -402,7 +402,7 @@ EOF
 echo "Created accelerate config with bf16 precision"
 
 # Make sure all datasets are enabled in the config
-echo "===== ENABLING ALL DATASETS IN CONFIG ====="
+echo "===== ENABLING DATASETS IN CONFIG (EXCLUDING THE_STACK) ====="
 python -c "
 import json
 import sys
@@ -410,17 +410,21 @@ try:
     with open('config/dataset_config_text.json', 'r') as f:
         config = json.load(f)
     
-    # Enable all datasets
+    # Enable all datasets EXCEPT for 'the_stack' datasets
     for dataset_name in config:
-        config[dataset_name]['enabled'] = True
-        print(f'Enabled dataset: {dataset_name}')
+        if 'the_stack' in dataset_name.lower():
+            config[dataset_name]['enabled'] = False
+            print(f'Disabled dataset: {dataset_name}')
+        else:
+            config[dataset_name]['enabled'] = True
+            print(f'Enabled dataset: {dataset_name}')
     
     with open('config/dataset_config_text.json', 'w') as f:
         json.dump(config, f, indent=2)
     
-    print('All datasets enabled in config')
+    print('Dataset configuration updated - all non-stack datasets enabled')
 except Exception as e:
-    print(f'Error enabling datasets: {e}', file=sys.stderr)
+    print(f'Error configuring datasets: {e}', file=sys.stderr)
 "
 
 # Update config to use optimized training settings

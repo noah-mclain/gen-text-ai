@@ -191,10 +191,10 @@ def main():
                         help="Enable DeepSpeed (disabled by default)")
     parser.add_argument("--no_deepspeed", action="store_true", 
                         help="Explicitly disable DeepSpeed even if configured in the config file")
-    parser.add_argument("--deepspeed_config", type=str, 
-                        help="Path to DeepSpeed config file (optional)")
     parser.add_argument("--estimate_time", action="store_true", default=True,
                         help="Estimate and report training time (enabled by default)")
+    parser.add_argument("--disable_wandb", action="store_true", default=True,
+                        help="Disable Weights & Biases logging (enabled by default)")
     
     args = parser.parse_args()
     
@@ -203,6 +203,11 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
         logging.getLogger("transformers").setLevel(logging.DEBUG)
         logging.getLogger("datasets").setLevel(logging.DEBUG)
+    
+    # Disable wandb if requested (default is to disable)
+    if args.disable_wandb:
+        logger.info("Disabling Weights & Biases (wandb) logging")
+        os.environ["WANDB_DISABLED"] = "true"
     
     # Ensure absolute paths for config and data_dir
     if not os.path.isabs(args.config):
@@ -237,6 +242,22 @@ def main():
     
     logger.info(f"Using config path: {args.config}")
     logger.info(f"Using data directory: {args.data_dir}")
+    
+    # Update config file to disable wandb if requested
+    if args.disable_wandb and os.path.exists(args.config):
+        try:
+            with open(args.config, 'r') as f:
+                config = json.load(f)
+            
+            if "training" in config:
+                config["training"]["report_to"] = "none"
+            
+            with open(args.config, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            logger.info("Updated config to disable wandb reporting")
+        except Exception as e:
+            logger.warning(f"Error updating config to disable wandb: {e}")
     
     # First check if we're explicitly disabling DeepSpeed
     if args.no_deepspeed:
