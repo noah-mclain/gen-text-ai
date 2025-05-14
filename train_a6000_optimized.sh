@@ -176,7 +176,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Add project root to path for imports
-project_root = Path(__file__).parent
+project_root = Path(__name__).parent
 sys.path.append(str(project_root))
 
 # Import Google Drive manager
