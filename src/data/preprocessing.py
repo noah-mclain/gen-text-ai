@@ -340,7 +340,8 @@ class DataPreprocessor:
                 return {"processed_text": deduplicated_texts, "length": [0] * len(deduplicated_texts), "duplicates_removed": duplicates_removed}
     
     def process_codesearchnet(self, dataset: Union[Dataset, DatasetDict], 
-                             streaming: bool = False, language: str = None) -> Union[Dataset, DatasetDict]:
+                             streaming: bool = False, language: str = None, 
+                             max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
         """
         Process CodeSearchNet dataset.
         
@@ -348,6 +349,7 @@ class DataPreprocessor:
             dataset: The CodeSearchNet dataset
             streaming: Whether to use streaming mode for memory efficiency
             language: Specific language to filter by, or None to process all languages
+            max_samples: Maximum number of samples to process
             
         Returns:
             Processed dataset or list of processed examples
@@ -375,7 +377,7 @@ class DataPreprocessor:
             success_counts = {lang: 0 for lang in self.POPULAR_PROGRAMMING_LANGUAGES}
             
             # Process each example individually using our safe iterator
-            for example in self._safe_dataset_iterator(dataset):
+            for example in self._safe_dataset_iterator(dataset, max_samples=max_samples):
                 try:
                     # Extract docstring and code
                     doc = example.get("func_documentation_string", "")
@@ -717,32 +719,344 @@ class DataPreprocessor:
                     batch_size=100 if streaming else None
                 )
     
-    def _extract_fields(self, example: Dict, field_names_map: Dict[str, List[str]]) -> Dict[str, Any]:
-        """Extract fields from example using multiple possible field names."""
-        result = {}
+    def process_mbpp(self, dataset: Union[Dataset, DatasetDict],
+                     streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
+        """Process MBPP dataset."""
+        logger.info("Processing MBPP dataset...")
         
-        # Handle non-dictionary examples (like strings or lists)
-        if not isinstance(example, dict):
-            # For string examples, return a default formatting
-            if isinstance(example, str):
-                return {
-                    "prompt": "Write a Python function",
-                    "completion": example
-                }
-            # For other non-dict types, return empty result
-            return result
-        
-        # Normal processing for dictionary examples
-        for target_field, possible_names in field_names_map.items():
-            for name in possible_names:
-                if name in example and example[name]:
-                    result[target_field] = example[name]
-                    break
+        # For streaming mode, process one example at a time to avoid issues
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually using our safe iterator
+            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
+                try:
+                    # Extract fields
+                    prompt = example.get("text", "")
+                    completion = example.get("code", "")
                     
-        return result
+                    # Skip if missing required fields
+                    if not prompt or not completion:
+                        continue
+                        
+                    processed = self.common_preprocessing(
+                        {"prompt": prompt, "completion": completion},
+                        "prompt", "completion",
+                        streaming=streaming
+                    )
+                    
+                    # Validate processed results
+                    if "processed_text" in processed and processed["processed_text"]:
+                        processed_examples.append(processed)
+                        
+                        # Log progress at regular intervals
+                        if (i + 1) % 1000 == 0:
+                            logger.info(f"Processed {i + 1} MBPP examples")
+                    
+                    # Check for suspiciously few examples processed
+                    if i > 10000 and len(processed_examples) < 100:
+                        logger.warning(f"Suspiciously few examples processed ({len(processed_examples)} out of {i + 1}). "
+                                     "Check if the dataset is loading correctly.")
+                        break
+                except Exception as e:
+                    logger.warning(f"Error processing example {i}: {e}")
+                    continue
+                
+            # Log final stats
+            logger.info(f"Completed processing {len(processed_examples)} MBPP examples")
+            return processed_examples
+        else:
+            # For non-streaming mode
+            try:
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples["text"], "completion": examples["code"]},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    remove_columns=dataset.column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error in batch processing mode: {e}")
+                # Fallback to simple processing with expected field names
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples.get("text", ""), "completion": examples.get("code", "")},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    batch_size=100 if streaming else None
+                )
+    
+    def process_ds1000(self, dataset: Union[Dataset, DatasetDict],
+                       streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
+        """Process DS-1000 dataset."""
+        logger.info("Processing DS-1000 dataset...")
+        
+        # For streaming mode, process one example at a time to avoid issues
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually using our safe iterator
+            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
+                try:
+                    # Extract fields
+                    prompt = example.get("rewritten_file", "")
+                    completion = example.get("rewritten_file", "")
+                    
+                    # Skip if missing required fields
+                    if not prompt or not completion:
+                        continue
+                        
+                    processed = self.common_preprocessing(
+                        {"prompt": prompt, "completion": completion},
+                        "prompt", "completion",
+                        streaming=streaming
+                    )
+                    
+                    # Validate processed results
+                    if "processed_text" in processed and processed["processed_text"]:
+                        processed_examples.append(processed)
+                        
+                        # Log progress at regular intervals
+                        if (i + 1) % 1000 == 0:
+                            logger.info(f"Processed {i + 1} DS-1000 examples")
+                except Exception as e:
+                    logger.warning(f"Error processing example {i}: {e}")
+                    continue
+                
+            # Log final stats
+            logger.info(f"Completed processing {len(processed_examples)} DS-1000 examples")
+            return processed_examples
+        else:
+            # For non-streaming mode
+            try:
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples["rewritten_file"], "completion": examples["rewritten_file"]},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    remove_columns=dataset.column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error in batch processing mode: {e}")
+                # Fallback to simple processing with expected field names
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples.get("rewritten_file", ""), "completion": examples.get("rewritten_file", "")},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    batch_size=100 if streaming else None
+                )
+    
+    def process_humaneval(self, dataset: Union[Dataset, DatasetDict],
+                         streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
+        """Process HumanEval dataset."""
+        logger.info("Processing HumanEval dataset...")
+        
+        # For streaming mode, process one example at a time to avoid issues
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually using our safe iterator
+            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
+                try:
+                    # Extract fields
+                    prompt = example.get("prompt", "")
+                    completion = example.get("canonical_solution", "")
+                    
+                    # Skip if missing required fields
+                    if not prompt or not completion:
+                        continue
+                        
+                    processed = self.common_preprocessing(
+                        {"prompt": prompt, "completion": completion},
+                        "prompt", "completion",
+                        streaming=streaming
+                    )
+                    
+                    # Validate processed results
+                    if "processed_text" in processed and processed["processed_text"]:
+                        processed_examples.append(processed)
+                        
+                        # Log progress at regular intervals
+                        if (i + 1) % 1000 == 0:
+                            logger.info(f"Processed {i + 1} HumanEval examples")
+                except Exception as e:
+                    logger.warning(f"Error processing example {i}: {e}")
+                    continue
+                
+            # Log final stats
+            logger.info(f"Completed processing {len(processed_examples)} HumanEval examples")
+            return processed_examples
+        else:
+            # For non-streaming mode
+            try:
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    remove_columns=dataset.column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error in batch processing mode: {e}")
+                # Fallback to simple processing with expected field names
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples.get("prompt", ""), "completion": examples.get("canonical_solution", "")},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    batch_size=100 if streaming else None
+                )
+    
+    def process_the_stack(self, dataset: Union[Dataset, DatasetDict],
+                         streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
+        """Process The Stack dataset."""
+        logger.info("Processing The Stack dataset...")
+        
+        # For streaming mode, process one example at a time to avoid issues
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually using our safe iterator
+            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
+                try:
+                    # Extract fields
+                    prompt = example.get("rewritten_file", "")
+                    completion = example.get("rewritten_file", "")
+                    
+                    # Skip if missing required fields
+                    if not prompt or not completion:
+                        continue
+                        
+                    processed = self.common_preprocessing(
+                        {"prompt": prompt, "completion": completion},
+                        "prompt", "completion",
+                        streaming=streaming
+                    )
+                    
+                    # Validate processed results
+                    if "processed_text" in processed and processed["processed_text"]:
+                        processed_examples.append(processed)
+                        
+                        # Log progress at regular intervals
+                        if (i + 1) % 1000 == 0:
+                            logger.info(f"Processed {i + 1} The Stack examples")
+                except Exception as e:
+                    logger.warning(f"Error processing example {i}: {e}")
+                    continue
+                
+            # Log final stats
+            logger.info(f"Completed processing {len(processed_examples)} The Stack examples")
+            return processed_examples
+        else:
+            # For non-streaming mode
+            try:
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples["rewritten_file"], "completion": examples["rewritten_file"]},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    remove_columns=dataset.column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error in batch processing mode: {e}")
+                # Fallback to simple processing with expected field names
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples.get("rewritten_file", ""), "completion": examples.get("rewritten_file", "")},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    batch_size=100 if streaming else None
+                )
+    
+    def process_codeparrot(self, dataset: Union[Dataset, DatasetDict],
+                          streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
+        """Process CodeParrot dataset."""
+        logger.info("Processing CodeParrot dataset...")
+        
+        # For streaming mode, process one example at a time to avoid issues
+        if streaming:
+            processed_examples = []
+            
+            # Process each example individually using our safe iterator
+            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
+                try:
+                    # Extract fields
+                    prompt = example.get("rewritten_file", "")
+                    completion = example.get("rewritten_file", "")
+                    
+                    # Skip if missing required fields
+                    if not prompt or not completion:
+                        continue
+                        
+                    processed = self.common_preprocessing(
+                        {"prompt": prompt, "completion": completion},
+                        "prompt", "completion",
+                        streaming=streaming
+                    )
+                    
+                    # Validate processed results
+                    if "processed_text" in processed and processed["processed_text"]:
+                        processed_examples.append(processed)
+                        
+                        # Log progress at regular intervals
+                        if (i + 1) % 1000 == 0:
+                            logger.info(f"Processed {i + 1} CodeParrot examples")
+                except Exception as e:
+                    logger.warning(f"Error processing example {i}: {e}")
+                    continue
+                
+            # Log final stats
+            logger.info(f"Completed processing {len(processed_examples)} CodeParrot examples")
+            return processed_examples
+        else:
+            # For non-streaming mode
+            try:
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples["rewritten_file"], "completion": examples["rewritten_file"]},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    remove_columns=dataset.column_names if not streaming else None,
+                    batch_size=100 if streaming else None
+                )
+            except Exception as e:
+                logger.warning(f"Error in batch processing mode: {e}")
+                # Fallback to simple processing with expected field names
+                return dataset.map(
+                    lambda examples: self.common_preprocessing(
+                        {"prompt": examples.get("rewritten_file", ""), "completion": examples.get("rewritten_file", "")},
+                        "prompt", "completion",
+                        streaming=streaming
+                    ),
+                    batched=True,
+                    batch_size=100 if streaming else None
+                )
         
     def process_instruct_code(self, dataset: Union[Dataset, DatasetDict],
-                             streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
+                              streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
         """
         Process InstructCode dataset.
         
@@ -903,517 +1217,6 @@ class DataPreprocessor:
                 # Return an empty processed dataset to prevent pipeline failure
                 return {"processed_text": [], "length": [], "duplicates_removed": 0}
     
-    def process_mbpp(self, dataset: Union[Dataset, DatasetDict],
-                     streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
-        """Process MBPP dataset."""
-        logger.info("Processing MBPP dataset...")
-        
-        # Get dataset size for logging
-        try:
-            if hasattr(dataset, "__len__"):
-                dataset_size = len(dataset)
-                logger.info(f"MBPP dataset contains {dataset_size} examples")
-                
-                # Apply max_samples limit if specified
-                if max_samples and max_samples < dataset_size:
-                    logger.info(f"Will process at most {max_samples} examples due to max_samples setting")
-            else:
-                dataset_size = None
-                logger.info("MBPP dataset size unknown (streaming mode)")
-        except Exception as e:
-            logger.warning(f"Could not determine dataset size: {e}")
-            dataset_size = None
-            
-        # Define field mappings for different dataset structures
-        field_mappings = {
-            "prompt": ["text", "prompt", "problem", "description", "task_id"],
-            "completion": ["code", "solution", "canonical_solution", "answer"]
-        }
-        
-        # For streaming mode, process one example at a time to avoid issues
-        if streaming:
-            processed_examples = []
-            progress_interval = 100  # Log progress every 100 examples
-            
-            # Process each example individually using our safe iterator
-            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=None)):  # No limit on samples
-                try:
-                    # Extract fields using our utility method
-                    fields = self._extract_fields(example, field_mappings)
-                    
-                    # Handle task_id special case
-                    if "prompt" not in fields and "task_id" in example:
-                        fields["prompt"] = f"Solve task {example['task_id']}"
-                    
-                    # Skip if missing required fields
-                    if "prompt" not in fields or "completion" not in fields:
-                        logger.debug(f"Skipping example {i}, missing fields")
-                        continue
-                        
-                    processed = self.common_preprocessing(
-                        {"prompt": fields["prompt"], "completion": fields["completion"]},
-                        "prompt", "completion",
-                        streaming=True
-                    )
-                    processed_examples.append(processed)
-                    
-                    # Log progress periodically
-                    if i > 0 and i % progress_interval == 0:
-                        logger.info(f"Processed {i} MBPP examples")
-                except Exception as e:
-                    logger.warning(f"Error processing example {i}: {e}")
-                    continue
-            
-            logger.info(f"Completed processing {len(processed_examples)} MBPP examples")    
-            if not processed_examples:
-                logger.warning("No valid examples processed from MBPP dataset")
-                
-            return processed_examples
-        else:
-            # For non-streaming mode
-            def process_sample(examples):
-                # Ensure we have valid inputs
-                if not isinstance(examples, dict):
-                    logger.warning(f"Expected dictionary, got {type(examples)}")
-                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                
-                # Get batch size
-                batch_size = len(next(iter(examples.values()))) if examples else 0
-                if batch_size == 0:
-                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                
-                prompts = []
-                completions = []
-                
-                # Process each example in the batch
-                for i in range(batch_size):
-                    # Extract a single example from the batch
-                    example = {k: v[i] if isinstance(v, list) and i < len(v) else v for k, v in examples.items()}
-                    
-                    # Extract fields using our utility method
-                    fields = self._extract_fields(example, field_mappings)
-                    
-                    # Handle task_id special case
-                    if "prompt" not in fields and "task_id" in example:
-                        fields["prompt"] = f"Solve task {example['task_id']}"
-                    
-                    # Add to batch if we have valid fields
-                    if "prompt" in fields and "completion" in fields:
-                        prompts.append(fields["prompt"])
-                        completions.append(fields["completion"])
-                
-                # Skip if we couldn't extract any valid examples
-                if not prompts or not completions:
-                    return {"processed_text": [], "length": [], "duplicates_removed": 0}
-                
-                return self.common_preprocessing(
-                    {"prompt": prompts, "completion": completions},
-                    "prompt", "completion",
-                    streaming=streaming
-                )
-            
-            try:
-                logger.info("Processing MBPP dataset in batch mode")
-                # Try to get column names from dataset if available
-                column_names = dataset.column_names if hasattr(dataset, "column_names") else None
-                
-                processed_dataset = dataset.map(
-                    process_sample,
-                    batched=True,
-                    remove_columns=column_names if not streaming else None,
-                    batch_size=100 if streaming else None,
-                    desc="Processing MBPP examples"
-                )
-                
-                # Verify results
-                if hasattr(processed_dataset, "__len__"):
-                    result_size = len(processed_dataset)
-                    logger.info(f"Processed MBPP dataset contains {result_size} examples")
-                    if dataset_size and result_size < dataset_size * 0.5:
-                        logger.warning(f"Warning: Only processed {result_size}/{dataset_size} examples!")
-                
-                return processed_dataset
-            except Exception as e:
-                logger.warning(f"Error in batch processing mode: {e}")
-                logger.error(traceback.format_exc())
-                
-                try:
-                    logger.info("Trying with smaller batch size...")
-                    # Try with smaller batch size
-                    processed_dataset = dataset.map(
-                        process_sample,
-                        batched=True,
-                        batch_size=20,  # Smaller batch size
-                        desc="Processing MBPP examples (smaller batches)"
-                    )
-                    
-                    # Verify results
-                    if hasattr(processed_dataset, "__len__"):
-                        result_size = len(processed_dataset)
-                        logger.info(f"Processed MBPP dataset contains {result_size} examples (with smaller batches)")
-                    
-                    return processed_dataset
-                except Exception as backup_error:
-                    logger.error(f"Backup processing also failed: {backup_error}")
-                    logger.error(traceback.format_exc())
-                    
-                    # Return a simple fallback processing
-                    logger.info("Falling back to item-by-item processing...")
-                    return self.process_mbpp(dataset, streaming=True)  # Force streaming mode as fallback
-    
-    def process_ds1000(self, dataset: Union[Dataset, DatasetDict, str] = None,
-                      streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """
-        Process DS-1000 benchmark dataset.
-        
-        Args:
-            dataset: Optional dataset object or path to the dataset
-            streaming: Whether to use streaming mode for memory efficiency
-            
-        Returns:
-            Processed dataset or list of processed examples
-        """
-        logger.info("Attempting to process DS-1000 benchmark...")
-        
-        try:
-            # DS-1000 is a benchmark for code generation, not a standard dataset on HF Hub
-            # Check if the dataset was provided as a local path or object
-            if dataset is None or isinstance(dataset, str):
-                # Try to locate DS-1000 manually if not provided
-                possible_paths = [
-                    "data/raw/DS-1000",
-                    "DS-1000",
-                    "../DS-1000",
-                    "data/DS-1000"
-                ]
-                
-                # Check if any path exists
-                ds_path = None
-                for path in possible_paths:
-                    if os.path.exists(path):
-                        ds_path = path
-                        logger.info(f"Found DS-1000 at {path}")
-                        break
-                
-                if ds_path is None:
-                    logger.warning("DS-1000 benchmark not found. Please clone it from GitHub: "
-                                 "https://github.com/salesforce/DS-1000")
-                    logger.warning("You can clone it with: git clone https://github.com/salesforce/DS-1000.git")
-                    return {"processed_text": [], "length": [], "message": "DS-1000 benchmark not found"}
-                
-                # Create a simpler dataset format from the benchmark
-                processed_examples = []
-                
-                # Process each problem domain directory
-                domains = [d for d in os.listdir(ds_path) if os.path.isdir(os.path.join(ds_path, d)) 
-                          and not d.startswith('.')]
-                
-                logger.info(f"Found {len(domains)} domains in DS-1000: {domains}")
-                
-                for domain in domains:
-                    domain_path = os.path.join(ds_path, domain)
-                    problems = [d for d in os.listdir(domain_path) if os.path.isdir(os.path.join(domain_path, d))]
-                    
-                    for problem_id in problems:
-                        problem_path = os.path.join(domain_path, problem_id)
-                        
-                        # Look for prompt and canonical solution files
-                        prompt_file = os.path.join(problem_path, "prompt.txt")
-                        solution_file = os.path.join(problem_path, "solutions/reference.py")
-                        
-                        if not os.path.exists(prompt_file) or not os.path.exists(solution_file):
-                            continue
-                        
-                        try:
-                            # Read prompt and solution
-                            with open(prompt_file, 'r', encoding='utf-8') as f:
-                                prompt = f.read().strip()
-                            
-                            with open(solution_file, 'r', encoding='utf-8') as f:
-                                solution = f.read().strip()
-                            
-                            # Skip if either is empty
-                            if not prompt or not solution:
-                                continue
-                            
-                            # Add domain information to prompt
-                            formatted_prompt = f"Given a problem from {domain}:\n\n{prompt}"
-                            
-                            # Process using common preprocessing
-                            processed = self.common_preprocessing(
-                                {"prompt": formatted_prompt, "completion": solution},
-                                "prompt", "completion",
-                                streaming=True  # Use streaming processing for individual examples
-                            )
-                            
-                            # Add metadata
-                            if "processed_text" in processed and processed["processed_text"]:
-                                processed["domain"] = domain
-                                processed["problem_id"] = problem_id
-                                processed_examples.append(processed)
-                            
-                        except Exception as e:
-                            logger.warning(f"Error processing DS-1000 problem {domain}/{problem_id}: {e}")
-                
-                # Create proper dataset object if not in streaming mode
-                if not streaming and processed_examples:
-                    from datasets import Dataset as HFDataset
-                    
-                    # Extract features
-                    features = {
-                        "processed_text": [ex["processed_text"][0] if isinstance(ex["processed_text"], list) else ex["processed_text"] 
-                                         for ex in processed_examples if "processed_text" in ex and ex["processed_text"]],
-                        "length": [ex["length"][0] if isinstance(ex["length"], list) else ex["length"] 
-                                 for ex in processed_examples if "length" in ex and ex["length"]],
-                        "domain": [ex.get("domain", "") for ex in processed_examples if "processed_text" in ex and ex["processed_text"]],
-                        "problem_id": [ex.get("problem_id", "") for ex in processed_examples if "processed_text" in ex and ex["processed_text"]]
-                    }
-                    
-                    logger.info(f"Created dataset with {len(features['processed_text'])} examples from DS-1000 benchmark")
-                    return HFDataset.from_dict(features)
-                else:
-                    logger.info(f"Processed {len(processed_examples)} examples from DS-1000 benchmark")
-                    return processed_examples
-            else:
-                # If a dataset object was provided directly, process it normally
-                logger.info("Processing provided DS-1000 dataset object")
-                try:
-                    return dataset.map(
-                        lambda examples: self.common_preprocessing(
-                            {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
-                            "prompt", "completion",
-                            streaming=streaming
-                        ),
-                        batched=True,
-                        remove_columns=dataset.column_names if not streaming else None,
-                        batch_size=100 if streaming else None
-                    )
-                except Exception as e:
-                    logger.warning(f"Error processing provided DS-1000 dataset: {e}")
-                    return dataset.map(
-                        lambda examples: self.common_preprocessing(
-                            {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
-                            "prompt", "completion",
-                            streaming=streaming
-                        ),
-                        batched=True,
-                        batch_size=100 if streaming else None
-                    )
-        except Exception as e:
-            logger.error(f"Error processing DS-1000 benchmark: {e}")
-            logger.error(traceback.format_exc())
-            return {"processed_text": [], "length": [], "error": str(e)}
-    
-    def process_codeparrot(self, dataset: Union[Dataset, DatasetDict],
-                          streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
-        """Process CodeParrot Clean dataset."""
-        logger.info("Processing CodeParrot dataset...")
-
-        # For streaming mode, process individually to avoid issues
-        if streaming:
-            processed_examples = []
-
-            # Process using safe iterator with max_samples
-            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
-                try:
-                    code = None
-
-                    if isinstance(example, dict):
-                        # Try different possible field names
-                        for field_name in ["code", "content", "source", "text"]:
-                            if field_name in example and example[field_name]:
-                                code = example[field_name]
-                                break
-                    else:
-                        # If the example is directly a string
-                        code = str(example)
-
-                    if not code:
-                        logger.warning(f"Skipping example {i}, no code found")
-                        continue
-
-                    prompt = "# Write a Python function"
-                    processed = self.common_preprocessing(
-                        {"prompt": prompt, "completion": code},
-                        "prompt", "completion",
-                        streaming=streaming
-                    )
-                    processed_examples.append(processed)
-                except Exception as e:
-                    logger.warning(f"Error processing example {i}: {e}")
-                    continue
-
-            return processed_examples
-        else:
-            # For batch processing
-            try:
-                # Try to determine the structure from a sample
-                sample_example = next(iter(dataset))
-
-                # Find the field with code
-                code_field = None
-                if isinstance(sample_example, dict):
-                    for field_name in ["code", "content", "source", "text"]:
-                        if field_name in sample_example:
-                            code_field = field_name
-                            break
-
-                if not code_field:
-                    logger.warning("Could not find a code field in the dataset")
-                    code_field = "code"  # Default fallback
-
-                def process_sample(examples):
-                    try:
-                        # Add a synthetic prompt for instruction-based format
-                        if code_field in examples and len(examples[code_field]) > 0:
-                            prompts = ["# Write a Python function" for _ in examples[code_field]]
-                            return self.common_preprocessing(
-                                {"prompt": prompts, "completion": examples[code_field]},
-                                "prompt", "completion",
-                                streaming=streaming
-                            )
-                        else:
-                            logger.warning(f"Missing code field: {code_field}")
-                            return {"processed_text": [], "length": []}
-                    except Exception as e:
-                        logger.error(f"Error in process_sample: {e}")
-                        return {"processed_text": [], "length": []}
-
-                return dataset.map(
-                    process_sample,
-                    batched=True,
-                    remove_columns=dataset.column_names if not streaming else None,
-                    batch_size=100 if streaming else None
-                )
-            except Exception as e:
-                logger.warning(f"Error in batch processing: {e}")
-
-                # Fallback to simple item-by-item processing
-                processed_examples = []
-                count = 0
-
-                for example in dataset:
-                    if count >= 10000:
-                        break
-
-                    try:
-                        code = str(example)
-                        prompt = "# Write a Python function"
-
-                        processed = self.common_preprocessing(
-                            {"prompt": prompt, "completion": code},
-                            "prompt", "completion",
-                            streaming=True  # Force streaming mode for this fallback
-                        )
-                        processed_examples.append(processed)
-                        count += 1
-                    except Exception:
-                        continue
-
-                return processed_examples
-    
-    def process_the_stack(self, dataset: Union[Dataset, DatasetDict], language: str = None, 
-                         streaming: bool = True, callback: Optional[Callable] = None, 
-                         intermediate_save: bool = True, save_every: int = 10000,
-                         natural_languages: List[str] = None, sampling_ratio: float = 1.0,
-                         max_samples: int = None) -> Iterator[Dict]:
-        """
-        Process The Stack dataset (DISABLED - kept for compatibility).
-        This dataset has been disabled in the configuration.
-        
-        Returns an empty iterator to maintain compatibility with existing code.
-        """
-        logger.warning("The Stack dataset processing is disabled")
-        logger.warning("The dataset has been removed from active configuration")
-        logger.warning("To process The Stack, please fix the dataset configuration and enable it")
-        
-        # Return empty iterator to maintain compatibility
-        return iter([])
-    
-    def process_humaneval(self, dataset: Union[Dataset, DatasetDict],
-                         streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """Process HumanEval dataset by loading it directly from HuggingFace."""
-        logger.info("Processing HumanEval dataset via direct loading...")
-        
-        # Always use direct loading from Hugging Face for HumanEval
-        try:
-            from datasets import load_dataset, Dataset as HFDataset
-            
-            # Load the dataset directly from Hugging Face
-            hf_token = os.environ.get("HF_TOKEN")
-            logger.info("Loading HumanEval directly from Hugging Face")
-            
-            try:
-                # Try with token authentication first
-                raw_dataset = load_dataset("openai/openai_humaneval", token=hf_token)
-                logger.info(f"Successfully loaded HumanEval dataset with authentication")
-            except Exception as e:
-                # Fallback to loading without token
-                logger.warning(f"Failed to load with token, trying without: {e}")
-                raw_dataset = load_dataset("openai/openai_humaneval")
-                logger.info(f"Successfully loaded HumanEval dataset without authentication")
-            
-            # Verify the dataset structure and size
-            if "test" in raw_dataset and hasattr(raw_dataset["test"], "__len__"):
-                logger.info(f"HumanEval dataset has {len(raw_dataset['test'])} examples")
-            else:
-                logger.warning(f"Unexpected dataset structure: {list(raw_dataset.keys())}")
-            
-            # Process the examples
-            processed_examples = []
-            
-            for example in raw_dataset["test"]:
-                try:
-                    # Extract the key fields
-                    prompt = example.get("prompt", "")
-                    solution = example.get("canonical_solution", "")
-                    task_id = example.get("task_id", "")
-                    
-                    # Skip empty examples
-                    if not prompt or not solution:
-                        continue
-                    
-                    # Create a properly formatted example
-                    processed_text = f"User: {prompt.strip()}\nAssistant: {solution.strip()}"
-                    
-                    # Add to processed examples
-                    processed_examples.append({
-                        "processed_text": processed_text,
-                        "length": len(processed_text),
-                        "task_id": task_id
-                    })
-                except Exception as e:
-                    logger.warning(f"Error processing HumanEval example: {e}")
-            
-            logger.info(f"Successfully processed {len(processed_examples)} examples from HumanEval")
-            
-            # Return results based on whether streaming is requested
-            if not streaming:
-                # Create a new Dataset with the processed examples
-                features = {
-                    "processed_text": [ex["processed_text"] for ex in processed_examples],
-                    "length": [ex["length"] for ex in processed_examples],
-                    "task_id": [ex["task_id"] for ex in processed_examples]
-                }
-                return HFDataset.from_dict(features)
-            else:
-                return processed_examples
-            
-        except Exception as e:
-            logger.error(f"Failed to process HumanEval dataset: {e}")
-            logger.error(traceback.format_exc())
-            
-            # Return empty results as fallback
-            if not streaming:
-                from datasets import Dataset as HFDataset
-                return HFDataset.from_dict({
-                    "processed_text": [],
-                    "length": [],
-                    "task_id": []
-                })
-            else:
-                return []
-    
     def load_and_process_all_datasets(self, dataset_config: Dict, save_path: str) -> Dict[str, Dataset]:
         """Load and process all datasets according to configuration."""
         processed_datasets = {}
@@ -1450,8 +1253,18 @@ class DataPreprocessor:
                 processor_name = config.get("processor", dataset_name)
                 dataset_path = config.get("path", dataset_name)
                 split = config.get("split", "train")
-                streaming = config.get("streaming", False)
-                max_samples = config.get("max_samples", None)  # Get max_samples from config
+                
+                # Force streaming mode for memory efficiency, unless explicitly disabled
+                streaming = config.get("streaming", True)  # Default to True
+                
+                # Get max_samples from config, use default if not specified
+                max_samples = config.get("max_samples", None)
+                if max_samples is None:
+                    # For streaming datasets, use a reasonable default unless specified
+                    if streaming:
+                        max_samples = 50000  # Default to 50K for streaming datasets
+                        logger.info(f"Using default max_samples={max_samples} for streaming dataset {dataset_name}")
+                        logger.info(f"To change this limit, specify max_samples in your dataset config")
                 
                 # Check if we should skip processing if it already exists
                 output_path = os.path.join(save_path, f"{dataset_name}_processed")
@@ -1550,16 +1363,25 @@ class DataPreprocessor:
                                 
                                 # Save the processed dataset
                                 if processed_dataset:
-                                    logger.info(f"Saving processed DS-1000 to {output_path}")
-                                    if not streaming and hasattr(processed_dataset, 'save_to_disk'):
-                                        processed_dataset.save_to_disk(output_path)
-                                    processed_datasets[dataset_name] = processed_dataset
-                                    successful_count += 1
-                                    logger.info(f"Successfully processed {dataset_name}")
+                                    if streaming and config.get("defer_save", False):
+                                        # For streaming datasets, we can defer saving to save memory
+                                        logger.info(f"Deferring save of processed dataset {dataset_name} (streaming mode)")
+                                        processed_datasets[dataset_name] = processed_dataset
+                                        successful_count += 1
+                                        logger.info(f"Successfully processed {dataset_name} (save deferred)")
+                                    else:
+                                        # Standard save behavior
+                                        logger.info(f"Saving processed dataset to {output_path}")
+                                        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+                                            processed_dataset.save_to_disk(output_path)
+                                        
+                                        # Important: Store the processed dataset and increment success count
+                                        processed_datasets[dataset_name] = processed_dataset
+                                        successful_count += 1
+                                        logger.info(f"Successfully processed {dataset_name}")
                                 else:
                                     logger.error(f"No data returned when processing {dataset_name}")
                                     failed_count += 1
-                                continue
                             except Exception as e:
                                 logger.error(f"Error processing DS-1000 benchmark: {e}")
                                 logger.error(traceback.format_exc())
@@ -1617,14 +1439,22 @@ class DataPreprocessor:
                                 
                                 # Save the processed dataset if we got anything back
                                 if processed_dataset:
-                                    logger.info(f"Saving processed dataset to {output_path}")
-                                    if not streaming and hasattr(processed_dataset, 'save_to_disk'):
-                                        processed_dataset.save_to_disk(output_path)
-                                    
-                                    # Important: Store the processed dataset and increment success count
-                                    processed_datasets[dataset_name] = processed_dataset
-                                    successful_count += 1
-                                    logger.info(f"Successfully processed {dataset_name}")
+                                    if streaming and config.get("defer_save", False):
+                                        # For streaming datasets, we can defer saving to save memory
+                                        logger.info(f"Deferring save of processed dataset {dataset_name} (streaming mode)")
+                                        processed_datasets[dataset_name] = processed_dataset
+                                        successful_count += 1
+                                        logger.info(f"Successfully processed {dataset_name} (save deferred)")
+                                    else:
+                                        # Standard save behavior
+                                        logger.info(f"Saving processed dataset to {output_path}")
+                                        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+                                            processed_dataset.save_to_disk(output_path)
+                                        
+                                        # Important: Store the processed dataset and increment success count
+                                        processed_datasets[dataset_name] = processed_dataset
+                                        successful_count += 1
+                                        logger.info(f"Successfully processed {dataset_name}")
                                 else:
                                     logger.error(f"No data returned when processing {dataset_name}")
                                     failed_count += 1
@@ -1650,5 +1480,12 @@ class DataPreprocessor:
         
         if successful_count == 0:
             logger.warning("No datasets were processed successfully")
+        
+        # Save to Google Drive
+        for dataset_name, processed_dataset in processed_datasets.items():
+            if hasattr(processed_dataset, 'save_to_disk'):
+                gdrive_path = f"/content/drive/MyDrive/datasets/{dataset_name}_processed"
+                processed_dataset.save_to_disk(gdrive_path)
+                print(f"Saved {dataset_name} to Google Drive")
         
         return processed_datasets
