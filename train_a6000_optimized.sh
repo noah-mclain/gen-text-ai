@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fully optimized training script for A6000 GPU with 48GB VRAM using Unsloth
+# Fully optimized training script for A6000 GPU with 48GB VRAM using advanced optimizations
 # This script is configured for maximum performance with multi-language support
 
 # Set environment variables for better performance
@@ -79,8 +79,18 @@ if [ -z "$NUM_EPOCHS" ]; then
 fi
 echo "Detected $NUM_EPOCHS epochs in training configuration"
 
-# Count number of enabled datasets
-NUM_DATASETS=$(grep -o '"dataset_weights": {' -A 20 config/training_config.json | grep -o ":" | wc -l)
+# Count number of enabled datasets - force it to include all datasets
+NUM_DATASETS=$(python -c "
+import json, os
+try:
+    with open('config/dataset_config.json', 'r') as f:
+        config = json.load(f)
+    # Count all datasets in the config, regardless of enabled status
+    print(len(config.keys()))
+except:
+    # In case of error, assume a reasonable number
+    print(10)
+")
 echo "Training on approximately $NUM_DATASETS datasets for $NUM_EPOCHS epochs"
 
 # Calculate estimated training time
@@ -154,6 +164,28 @@ if [ "${SKIP_DRIVE:-False}" = "False" ]; then
 else
     echo "Google Drive integration is DISABLED (SKIP_DRIVE=$SKIP_DRIVE). Using local datasets only."
 fi
+
+# Make sure all datasets are enabled in the config
+echo "===== ENABLING ALL DATASETS IN CONFIG ====="
+python -c "
+import json
+import sys
+try:
+    with open('config/dataset_config.json', 'r') as f:
+        config = json.load(f)
+    
+    # Enable all datasets
+    for dataset_name in config:
+        config[dataset_name]['enabled'] = True
+        print(f'Enabled dataset: {dataset_name}')
+    
+    with open('config/dataset_config.json', 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    print('All datasets enabled in config')
+except Exception as e:
+    print(f'Error enabling datasets: {e}', file=sys.stderr)
+"
 
 # Get list of datasets that need processing vs ones available on Drive
 echo "Running dataset availability check..."
@@ -265,8 +297,8 @@ else
     echo "✅ All datasets already available. Skipping dataset processing step."
 fi
 
-# Update config to ensure no DeepSpeed and proper Unsloth configuration
-echo "===== UPDATING CONFIG FOR UNSLOTH TRAINING ====="
+# Update config to ensure no DeepSpeed and use proper optimizations
+echo "===== UPDATING CONFIG FOR OPTIMIZED TRAINING ====="
 python -c "
 import json
 import sys
@@ -278,25 +310,46 @@ try:
         config['training'] = {}
     
     # Thoroughly remove all DeepSpeed references
-    if 'use_deepspeed' in config['training']:
-        del config['training']['use_deepspeed']
-        print('Removed use_deepspeed from config')
+    deepspeed_keys = ['use_deepspeed', 'deepspeed_config', 'deepspeed']
+    for key in deepspeed_keys:
+        if key in config['training']:
+            del config['training'][key]
+            print(f'Removed {key} from config')
     
-    if 'deepspeed_config' in config['training']:
-        del config['training']['deepspeed_config']
-        print('Removed deepspeed_config from config')
-        
-    if 'deepspeed' in config['training']:
-        del config['training']['deepspeed']
-        print('Removed deepspeed from config')
-    
-    # Make sure Unsloth parameters are set
-    config['training']['use_unsloth'] = True
-    print('Set use_unsloth = True')
-    
-    # Ensure other optimization parameters are compatible with Unsloth
+    # Enable optimized training
     config['training']['bf16'] = True  # Use bfloat16 for better performance
     config['training']['fp16'] = False  # Don't use fp16 with bf16
+    config['training']['gradient_checkpointing'] = True  # Enable memory optimization
+    
+    # Make sure Unsloth is configured in the config rather than command line
+    # This avoids command line argument errors
+    model_name = config.get('training', {}).get('model_name_or_path', '').lower()
+    is_causal_lm = not any(name in model_name for name in ['t5', 'ul2', 'flan'])
+    
+    if is_causal_lm:
+        config['training']['use_unsloth'] = True
+        print('Configured for causal LM with Unsloth optimizations')
+    else:
+        # For sequence-to-sequence models
+        config['training']['use_unsloth'] = False
+        print('Configured for sequence-to-sequence model (Unsloth not compatible)')
+    
+    # Update datasets weights to use all available datasets
+    if 'dataset_weights' not in config:
+        config['dataset_weights'] = {}
+    
+    # Get all available datasets from the dataset config
+    try:
+        with open('config/dataset_config.json', 'r') as f:
+            dataset_config = json.load(f)
+        
+        # Add all datasets with equal weights
+        for dataset_name in dataset_config:
+            if dataset_name not in config['dataset_weights']:
+                config['dataset_weights'][dataset_name] = 1.0
+                print(f'Added dataset {dataset_name} to training with weight 1.0')
+    except Exception as e:
+        print(f'Error loading dataset_config.json: {e}', file=sys.stderr)
     
     # Add dataset paths configuration
     if 'dataset_paths' not in config:
@@ -311,8 +364,8 @@ try:
     
     # Add mapping for each dataset type we want to support
     dataset_mapping = {
-        'code_alpaca': 'code_alpaca',
-        'codeparrot': 'codeparrot',
+        'code_alpaca': ['code_alpaca'],
+        'codeparrot': ['codeparrot'],
         'codesearchnet_go': ['codesearchnet_all_go', 'codesearchnet_go'],
         'codesearchnet_java': ['codesearchnet_all_java', 'codesearchnet_java'],
         'codesearchnet_javascript': ['codesearchnet_all_javascript', 'codesearchnet_javascript'],
@@ -326,7 +379,9 @@ try:
     }
     
     # Find all processed dataset directories
-    all_processed_dirs = os.listdir(processed_dir)
+    all_processed_dirs = []
+    if os.path.exists(processed_dir):
+        all_processed_dirs = os.listdir(processed_dir)
     processed_dirs = [d for d in all_processed_dirs if os.path.isdir(os.path.join(processed_dir, d)) and ('_processed' in d or '_interim_' in d)]
     
     # For each config dataset name, find matching processed directory
@@ -350,24 +405,23 @@ try:
     with open('config/training_config.json', 'w') as f:
         json.dump(config, f, indent=2)
     
-    print('Config file updated successfully for Unsloth with dataset paths')
+    print('Config file updated successfully for optimized training with all datasets')
 except Exception as e:
     print(f'Error updating config: {e}', file=sys.stderr)
 "
 
-echo "===== STARTING TRAINING WITH UNSLOTH ====="
+echo "===== STARTING OPTIMIZED TRAINING ====="
 TRAINING_START_TIME=$(date +%s)
 
-# Train with direct module call ensuring Unsloth and no DeepSpeed
-echo "Starting training with Unsloth optimization..."
+# Train with direct module call without the problematic arguments
+echo "Starting training with optimizations..."
 python -m src.training.train \
     --config config/training_config.json \
     --data_dir data/processed \
     $USE_DRIVE_FLAG \
     --push_to_hub \
     --no_deepspeed \
-    --use_unsloth \
-    --preload_processed_datasets \
+    --estimate_time \
     2>&1 | tee logs/train_a6000_optimized_$(date +%Y%m%d_%H%M%S).log
 
 # Check exit status
