@@ -28,7 +28,7 @@ from transformers import (
     Trainer,
     DataCollatorForLanguageModeling,
     AutoTokenizer,
-    AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
     BitsAndBytesConfig,
     set_seed
 )

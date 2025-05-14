@@ -48,54 +48,34 @@ echo "Setting default training time to $MAX_HOURS hours based on $NUM_EPOCHS epo
 # Create Triton autotune directory to prevent df error
 mkdir -p /root/.triton/autotune 2>/dev/null || true
 
-# Set DeepSpeed environment variables
+# Fix DeepSpeed configuration before training
+echo "===== SETTING UP DEEPSPEED CONFIGURATION ====="
+
+# Check if DeepSpeed is installed
+if ! python -c "import deepspeed" 2>/dev/null; then
+  echo "DeepSpeed not found. Installing..."
+  pip install deepspeed --no-cache-dir
+fi
+
+# Run the DeepSpeed fix script
+python scripts/fix_deepspeed.py
+
+# Create symbolic link for Config detection (helps with newer Transformers versions)
+if [ -f "ds_config_a6000.json" ]; then
+  # Create a symlink in the root directory
+  ln -sf "$(realpath ds_config_a6000.json)" ./deepspeed_config.json
+  # Update environment variables
+  export DEEPSPEED_CONFIG_FILE="$(realpath deepspeed_config.json)"
+fi
+
+# Set DeepSpeed environment variables with robust error handling
 export DS_ACCELERATOR=cuda
 export DS_OFFLOAD_PARAM=cpu
 export DS_OFFLOAD_OPTIMIZER=cpu
 export ACCELERATE_USE_DEEPSPEED=true
 
-# Fix DeepSpeed configuration - ensure the config is valid and accessible
-echo "===== SETTING UP DEEPSPEED CONFIGURATION ====="
-# Run the DeepSpeed fix script
-python scripts/fix_deepspeed.py
-
-# Get the absolute path to DeepSpeed config 
+# Get the absolute path to DeepSpeed config
 DS_CONFIG_PATH=$(realpath ds_config_a6000.json)
-if [ ! -f "$DS_CONFIG_PATH" ]; then
-  echo "⚠️ DeepSpeed config not found at $DS_CONFIG_PATH. Creating default config."
-  cat > "$DS_CONFIG_PATH" << EOL
-{
-  "fp16": {
-    "enabled": true,
-    "loss_scale": 0,
-    "loss_scale_window": 1000,
-    "initial_scale_power": 16,
-    "hysteresis": 2,
-    "min_loss_scale": 1
-  },
-  "zero_optimization": {
-    "stage": 2,
-    "offload_optimizer": {
-      "device": "cpu",
-      "pin_memory": true
-    },
-    "offload_param": {
-      "device": "cpu",
-      "pin_memory": true
-    },
-    "contiguous_gradients": true,
-    "overlap_comm": true,
-    "reduce_scatter": true
-  },
-  "gradient_accumulation_steps": 8,
-  "gradient_clipping": 1.0,
-  "steps_per_print": 50,
-  "train_batch_size": 32,
-  "train_micro_batch_size_per_gpu": 4,
-  "wall_clock_breakdown": false
-}
-EOL
-fi
 
 # Set all necessary environment variables for DeepSpeed
 export ACCELERATE_DEEPSPEED_CONFIG_FILE="$DS_CONFIG_PATH"
