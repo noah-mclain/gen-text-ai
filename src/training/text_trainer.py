@@ -201,7 +201,7 @@ class FlanUL2TextTrainer:
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_config["base_model"],
             trust_remote_code=True,
-            use_auth_token=os.environ.get("HF_TOKEN")
+            token=os.environ.get("HF_TOKEN")
         )
         
         # Set PAD token if not already defined

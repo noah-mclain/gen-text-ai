@@ -64,7 +64,7 @@ def test_preprocessing(dataset_name, processor_name, max_samples=10, timeout=300
             split=split,
             trust_remote_code=trust_remote_code,
             # Minimize caching to avoid RAM/VRAM usage
-            use_auth_token=os.environ.get("HF_TOKEN")
+            token=os.environ.get("HF_TOKEN")
         )
             
         logger.info(f"Successfully loaded dataset")

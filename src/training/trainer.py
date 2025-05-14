@@ -246,7 +246,7 @@ class DeepseekFineTuner:
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_config["base_model"],
             trust_remote_code=True,
-            use_auth_token=os.environ.get("HF_TOKEN")
+            token=os.environ.get("HF_TOKEN")
         )
         self.tokenizer.pad_token = self.tokenizer.eos_token
         

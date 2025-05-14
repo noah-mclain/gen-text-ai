@@ -60,7 +60,7 @@ def test_stack_processing():
             split="train",
             streaming=True,
             trust_remote_code=True,
-            use_auth_token=os.environ.get("HF_TOKEN")
+            token=os.environ.get("HF_TOKEN")
         )
         
         # Process a small sample

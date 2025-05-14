@@ -1397,7 +1397,7 @@ class DataPreprocessor:
                                     dataset_path,
                                     split=split,
                                     streaming=streaming,
-                                    use_auth_token=use_auth_token if use_auth_token else None,
+                                    token=os.environ.get("HF_TOKEN") if use_auth_token else None,
                                     **extra_params
                                 )
                                 
