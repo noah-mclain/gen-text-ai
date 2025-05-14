@@ -13,6 +13,7 @@ from transformers import AutoTokenizer
 from itertools import islice
 from tqdm import tqdm
 import random
+import contextlib
 # Import text processor functions
 try:
     from src.data.processors.text_processors import (
@@ -42,6 +43,17 @@ except ImportError:
     
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Define a timer context manager
+@contextlib.contextmanager
+def timer(description: str):
+    """Context manager for timing code execution."""
+    start_time = time.time()
+    try:
+        yield
+    finally:
+        elapsed = time.time() - start_time
+        logging.info(f"{description} completed in {elapsed:.2f} seconds")
 
 class DataPreprocessor:
     # Define popular programming languages - include those in CodeSearchNet plus popular ones
