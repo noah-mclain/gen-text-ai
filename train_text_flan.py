@@ -240,7 +240,9 @@ def process_datasets(config_path, output_dir, use_drive=False, drive_base_dir=No
     
     # Load the dataset configuration
     try:
-        with open(config_path.replace('training_config_text.json', 'dataset_config_text.json'), 'r') as f:
+        dataset_config_path = config_path.replace('training_config_text.json', 'dataset_config_text.json')
+        print(f"Loading dataset config from: {dataset_config_path}")
+        with open(dataset_config_path, 'r') as f:
             dataset_config = json.load(f)
     except Exception as e:
         logger.error(f"Error loading dataset config: {e}")
@@ -288,7 +290,8 @@ def process_datasets(config_path, output_dir, use_drive=False, drive_base_dir=No
                     dataset_path=dataset_path,
                     output_dir=output_dir,
                     split=split,
-                    streaming=True  # Use streaming to save memory
+                    streaming=True,  # Use streaming to save memory
+                    force_reprocess=True  # Force reprocessing to ensure correct format
                 )
                 logger.info(f"Successfully processed {dataset_name}")
             except Exception as e:

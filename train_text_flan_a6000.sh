@@ -592,6 +592,14 @@ else
     echo "Google Drive integration is DISABLED. Using local datasets only."
 fi
 
+# Print all available datasets for debugging
+echo "===== AVAILABLE LOCAL DATASETS ====="
+ls -la data/processed/
+if [ -d "/notebooks/data/processed/" ]; then
+    echo "===== AVAILABLE PAPERSPACE DATASETS ====="
+    ls -la /notebooks/data/processed/
+fi
+
 # Run the dataset checker to identify available vs needed datasets
 echo "Running dataset availability check..."
 DATASET_STATUS=$(python -c "

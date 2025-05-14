@@ -54,7 +54,6 @@
   "dataset": {
     "max_length": 1024,
     "dataset_weights": {
-      "openassistant": 2.5,
       "gpteacher_general": 2.0,
       "pile": 1.5,
       "synthetic_persona": 2.0,
@@ -67,7 +66,6 @@
     "use_cache": false,
     "interleave_prob": 0.5,
     "max_samples": {
-      "openassistant": 35000,
       "gpteacher_general": 35000,
       "pile": 60000,
       "synthetic_persona": 25000,

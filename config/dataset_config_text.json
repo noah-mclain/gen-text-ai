@@ -1,32 +1,26 @@
 {
-  "openassistant": {
-    "path": "agie-ai/OpenAssistant-oasst1",
-    "processor": "openassistant",
-    "split": "train",
-    "enabled": true
-  },
   "gpteacher_general": {
-    "path": "teknium/GPTeacher-General-Instruct",
+    "enabled": true,
     "processor": "gpteacher",
-    "split": "train",
-    "enabled": true
+    "path": "teknium/GPTeacher-General-Instruct",
+    "split": "train"
   },
   "pile": {
-    "path": "EleutherAI/pile",
+    "enabled": true,
     "processor": "pile",
-    "split": "train",
-    "enabled": true
+    "path": "EleutherAI/pile",
+    "split": "train"
   },
   "synthetic_persona": {
-    "path": "google/Synthetic-Persona-Chat",
+    "enabled": true,
     "processor": "persona_chat",
-    "split": "train",
-    "enabled": true
+    "path": "google/Synthetic-Persona-Chat",
+    "split": "train"
   },
   "writingprompts": {
-    "path": "euclaise/writingprompts",
+    "enabled": true,
     "processor": "writingprompts",
-    "split": "train",
-    "enabled": true
+    "path": "euclaise/writingprompts",
+    "split": "train"
   }
 }
