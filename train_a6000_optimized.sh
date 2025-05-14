@@ -530,8 +530,8 @@ try:
                 print(f'⚠️ Dataset {dataset_dir} has no columns - skipping')
                 continue
                 
-            # Check for required columns (text, input_ids, etc.)
-            required_columns = ['input_ids', 'attention_mask'] 
+            # Check for text column which is required (not input_ids yet - those are added during tokenization)
+            required_columns = ['text'] 
             missing_columns = [col for col in required_columns if col not in dataset.column_names]
             
             if missing_columns:
@@ -547,8 +547,8 @@ try:
             for i in range(sample_size):
                 try:
                     sample = dataset[i]
-                    # Check if any required field is None
-                    if any(sample[col] is None for col in required_columns):
+                    # Check if text field is None
+                    if sample['text'] is None:
                         needs_filtering = True
                         indices_to_filter.append(i)
                 except Exception as e:
@@ -603,7 +603,8 @@ try:
             print('❌ Failed to set Wandb API key')
 except ImportError:
     print('❌ Wandb not installed. Installing wandb...')
-    !pip install wandb --quiet
+    import subprocess
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'wandb', '--quiet'])
     print('Now trying to import wandb and login...')
     try:
         import wandb
@@ -645,6 +646,7 @@ export TOKENIZERS_PARALLELISM=false
 export HF_DATASETS_NUM_PROC=1
 export DATALOADER_NUM_WORKERS=1
 
+# Run training with the argument (it's added to train.py by our script above)
 python -m src.training.train \
     --config config/training_config.json \
     --data_dir data/processed \
@@ -822,4 +824,58 @@ if 'torch' in sys.modules:
             f.write(new_content)
         print(f'Added dataloader worker limiting code to {filepath}')
 
-print('Completed patching source files for dataloader worker limits') 
+print('Completed patching source files for dataloader worker limits')
+"
+# Check if train.py needs to be modified to support dataloader workers argument
+echo "===== CHECKING IF TRAIN.PY NEEDS DATALOADER ARGUMENT SUPPORT ====="
+python -c "
+import os
+import sys
+import re
+
+# Main training file
+train_file = 'src/training/train.py'
+
+if os.path.exists(train_file):
+    print(f'Checking {train_file} for argparse arguments...')
+    
+    with open(train_file, 'r') as f:
+        content = f.read()
+    
+    # Check if the parser already has dataloader workers argument
+    if 'dataloader_workers' not in content:
+        print('Adding dataloader_workers argument to train.py')
+        
+        # Find the argument parser section
+        parser_pattern = r'(parser\.add_argument.*?--disable_wandb.*?\))'
+        
+        # Prepare the new argument
+        dataloader_arg = '''
+    parser.add_argument('--dataloader_workers', type=int, default=1,
+                        help='Number of workers for DataLoader')'''
+        
+        # Add the argument after the disable_wandb argument
+        modified_content = re.sub(parser_pattern, r'\\1' + dataloader_arg, content, flags=re.DOTALL)
+        
+        # Now find where args are processed
+        args_process_pattern = r'(args = parser\.parse_args\(\))'
+        
+        # Prepare code to process the argument
+        process_arg = '''
+    # Set dataloader workers environment variable from argument
+    os.environ['DATALOADER_NUM_WORKERS'] = str(args.dataloader_workers)
+    logger.info(f'Setting dataloader workers to {args.dataloader_workers}')'''
+        
+        # Add the code after the args are parsed
+        modified_content = re.sub(args_process_pattern, r'\\1' + process_arg, modified_content)
+        
+        # Write the modified file
+        with open(train_file, 'w') as f:
+            f.write(modified_content)
+        
+        print(f'Updated {train_file} to support --dataloader_workers argument')
+    else:
+        print(f'{train_file} already supports dataloader_workers argument')
+else:
+    print(f'Warning: {train_file} not found, cannot add dataloader_workers argument')
+" 
