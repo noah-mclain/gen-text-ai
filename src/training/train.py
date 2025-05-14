@@ -3,6 +3,7 @@ import os
 import sys
 import argparse
 import logging
+import time  # Added for time tracking
 
 # Add the project root to the Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -192,6 +193,8 @@ def main():
                         help="Explicitly disable DeepSpeed even if configured in the config file")
     parser.add_argument("--deepspeed_config", type=str, 
                         help="Path to DeepSpeed config file (optional)")
+    parser.add_argument("--estimate_time", action="store_true", default=True,
+                        help="Estimate and report training time (enabled by default)")
     
     args = parser.parse_args()
     
@@ -416,12 +419,83 @@ def main():
             drive_base_dir=args.drive_base_dir
         )
         
+        # Load config to estimate training time
+        if args.estimate_time:
+            try:
+                with open(args.config, 'r') as f:
+                    config = json.load(f)
+                
+                # Get training parameters
+                train_config = config.get("training", {})
+                epochs = train_config.get("num_train_epochs", 3)
+                batch_size = train_config.get("per_device_train_batch_size", 1)
+                grad_accum = train_config.get("gradient_accumulation_steps", 16)
+                effective_batch = batch_size * grad_accum
+                
+                # Get model name/info
+                model_name = train_config.get("model_name_or_path", "unknown")
+                
+                # Estimate steps and time
+                estimated_steps = train_config.get("max_steps", 0)
+                if estimated_steps <= 0:  # If max_steps not set, use epochs
+                    # Rough estimate - assume 5000 samples per dataset
+                    num_datasets = len(config.get("dataset_weights", {}).keys())
+                    if num_datasets == 0:
+                        num_datasets = 1
+                    estimated_samples = 5000 * num_datasets
+                    estimated_steps = (estimated_samples * epochs) // effective_batch
+                
+                # Base estimate - seconds per step depends on model size
+                seconds_per_step = 0.5  # Default for small models
+                if "deepseek-coder-6.7b" in model_name:
+                    seconds_per_step = 1.0
+                elif "deepseek-coder-33b" in model_name:
+                    seconds_per_step = 4.0
+                elif "ul2" in model_name:
+                    seconds_per_step = 1.2
+                
+                estimated_seconds = estimated_steps * seconds_per_step * 1.15  # 15% buffer
+                estimated_hours = estimated_seconds / 3600
+                
+                # Calculate expected completion time
+                now = time.time()
+                completion_time = now + estimated_seconds
+                completion_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(completion_time))
+                
+                logger.info(f"Estimated training steps: {estimated_steps}")
+                logger.info(f"Estimated training time: {estimated_hours:.1f} hours")
+                logger.info(f"Expected completion time: {completion_str}")
+                
+                # Record start time for final calculation
+                training_start_time = time.time()
+                
+            except Exception as e:
+                logger.warning(f"Error estimating training time: {e}")
+        
         # Start training
         logger.info(f"Starting training with data from {args.data_dir}")
         metrics = tuner.train(args.data_dir)
         
+        # Calculate actual training time if we recorded start time
+        if args.estimate_time and 'training_start_time' in locals():
+            training_end_time = time.time()
+            actual_training_time = training_end_time - training_start_time
+            actual_hours = actual_training_time / 3600
+            logger.info(f"Actual training time: {actual_hours:.2f} hours")
+            if 'estimated_hours' in locals():
+                diff_pct = (actual_hours / estimated_hours - 1.0) * 100
+                logger.info(f"Time estimate {'overestimated' if diff_pct < 0 else 'underestimated'} by {abs(diff_pct):.1f}%")
+            
+            # Add timing info to metrics
+            if metrics is None:
+                metrics = {}
+            metrics['training_time_hours'] = actual_hours
+            if 'estimated_hours' in locals():
+                metrics['estimated_hours'] = estimated_hours
+        
         logger.info(f"Training completed with metrics: {metrics}")
         return 0  # Return success code
+        
     except Exception as e:
         # Catch and log any errors during the training process
         logger.error(f"Training failed with error: {str(e)}")

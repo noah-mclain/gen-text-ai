@@ -62,6 +62,92 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Function to calculate expected training time for seq2seq models
+calculate_training_time_seq2seq() {
+    # Input parameters
+    local max_steps=$1
+    local batch_size=$2
+    local grad_accum=$3
+    local dataset_count=$4  # Number of text datasets being used
+    
+    # Get model info from config
+    local model_name=$(grep -o '"model_name_or_path": "[^"]*"' config/training_config_text.json | cut -d'"' -f4)
+    
+    # Base time calculation
+    # For seq2seq models like FLAN-UL2, we calculate time differently than causal LMs
+    # Average time per step in seconds for FLAN-UL2 on A6000 with batch size 1
+    local base_time_per_step=1.2  
+    
+    # Adjust for model size factor
+    local model_size_factor=1.0
+    if [[ "$model_name" == *"flan-t5-xl"* ]]; then
+        model_size_factor=0.7  # Smaller than UL2
+    elif [[ "$model_name" == *"flan-ul2"* ]]; then
+        model_size_factor=1.0  # Base reference
+    elif [[ "$model_name" == *"flan-t5-xxl"* ]]; then
+        model_size_factor=1.5  # Larger model
+    fi
+    
+    # Adjust for effective batch size (batch_size * grad_accum)
+    # Smaller effective batch is slower per sample but processes fewer samples
+    local batch_factor=$(echo "scale=2; sqrt(16 / ($batch_size * $grad_accum))" | bc)
+    if (( $(echo "$batch_factor < 0.5" | bc -l) )); then batch_factor=0.5; fi
+    if (( $(echo "$batch_factor > 2.0" | bc -l) )); then batch_factor=2.0; fi
+    
+    # Dataset complexity factor - more datasets mean more varied data
+    local dataset_factor=$(echo "scale=2; 1 + (($dataset_count - 1) * 0.1)" | bc)
+    if (( $(echo "$dataset_factor > 1.5" | bc -l) )); then dataset_factor=1.5; fi
+    
+    # Calculate total training time in seconds
+    local total_seconds=$(echo "$base_time_per_step * $max_steps * $model_size_factor * $batch_factor * $dataset_factor" | bc)
+    
+    # Convert to hours with one decimal place
+    local total_hours=$(echo "scale=1; $total_seconds / 3600" | bc)
+    
+    # Add 15% buffer for safety
+    total_hours=$(echo "scale=1; $total_hours * 1.15" | bc)
+    
+    # Round up to nearest integer
+    total_hours=$(echo "scale=0; $total_hours+0.5" | bc)
+    if [ "$total_hours" -lt 1 ]; then total_hours=1; fi
+    
+    echo "$total_hours"
+}
+
+# Get number of datasets from config
+echo "===== COUNTING TEXT DATASETS ====="
+TEXT_DATASET_COUNT=$(python -c "
+import json
+import sys
+try:
+    with open('config/dataset_config_text.json', 'r') as f:
+        config = json.load(f)
+        # Count only enabled datasets
+        enabled_count = sum(1 for _, info in config.items() if info.get('enabled', True))
+        print(enabled_count)
+except Exception as e:
+    print('3')  # Default count if file read fails
+    sys.stderr.write(f'Error reading dataset config: {e}\\n')
+")
+
+# Calculate expected training time
+ESTIMATED_HOURS=$(calculate_training_time_seq2seq $MAX_STEPS $BATCH_SIZE $GRAD_ACCUMULATION $TEXT_DATASET_COUNT)
+echo "===== TRAINING TIME ESTIMATE ====="
+echo "Model parameters:"
+echo "- Max steps: $MAX_STEPS"
+echo "- Batch size: $BATCH_SIZE"
+echo "- Gradient accumulation: $GRAD_ACCUMULATION"
+echo "- Effective batch size: $((BATCH_SIZE * GRAD_ACCUMULATION))"
+echo "- Number of datasets: $TEXT_DATASET_COUNT"
+echo "- Learning rate: $LR"
+echo "Estimated training time: $ESTIMATED_HOURS hours"
+
+# Calculate expected completion time
+START_TIME=$(date +%s)
+END_TIME=$((START_TIME + ESTIMATED_HOURS * 3600))
+COMPLETION_TIME=$(date -r $END_TIME "+%Y-%m-%d %H:%M:%S")
+echo "Expected completion time: $COMPLETION_TIME"
+
 # Check if HF_TOKEN is set
 if [ -z "$HF_TOKEN" ]; then
   echo "Warning: HF_TOKEN is not set. Some datasets might be inaccessible and you won't be able to push to Hugging Face Hub."
@@ -87,23 +173,38 @@ mkdir -p logs
 mkdir -p data/processed
 mkdir -p text_models/flan-ul2-fine-tuned
 
-# Clean any DeepSpeed environment variables that might cause conflicts
-echo "===== CLEANING DEEPSPEED ENVIRONMENT VARIABLES ====="
-chmod +x scripts/clean_deepspeed_env.py
-python scripts/clean_deepspeed_env.py
-
-# Unset any DeepSpeed variables in the current shell
-unset ACCELERATE_USE_DEEPSPEED
-unset ACCELERATE_DEEPSPEED_CONFIG_FILE
-unset ACCELERATE_DEEPSPEED_PLUGIN_TYPE
-unset HF_DS_CONFIG
-unset DEEPSPEED_CONFIG_FILE
-unset DS_ACCELERATOR
-unset DS_OFFLOAD_PARAM
-unset DS_OFFLOAD_OPTIMIZER
-
 # Set up Google Drive environment
 mkdir -p text_models/flan-ul2-fine-tuned
+
+# Update config to ensure DeepSpeed is disabled
+echo "===== UPDATING CONFIG FOR STANDARD TRAINING ====="
+python -c "
+import json
+import sys
+try:
+    with open('config/training_config_text.json', 'r') as f:
+        config = json.load(f)
+    
+    if 'training' not in config:
+        config['training'] = {}
+    
+    # Ensure DeepSpeed is disabled in config
+    if 'use_deepspeed' in config['training']:
+        config['training']['use_deepspeed'] = False
+        print('Updated config: DeepSpeed disabled')
+    
+    # Also update any other DeepSpeed-related settings
+    if 'deepspeed_config' in config['training']:
+        del config['training']['deepspeed_config']
+        print('Removed DeepSpeed config path from settings')
+    
+    with open('config/training_config_text.json', 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    print('Config file updated successfully')
+except Exception as e:
+    print(f'Error updating config: {e}', file=sys.stderr)
+"
 
 # Set up Google Drive authentication
 if [ "${USE_DRIVE:-True}" = "True" ]; then
@@ -249,6 +350,8 @@ fi
 
 # Step 4: Train the model with checkpointing and logging to Drive
 echo "==== Training FLAN-UL2 with optimizations and Drive integration ===="
+TRAINING_START_TIME=$(date +%s)
+
 python train_text_flan.py \
   --config config/training_config_text.json \
   --data_dir data/processed \
@@ -257,6 +360,47 @@ python train_text_flan.py \
   $DRIVE_OPTS \
   --debug \
   2>&1 | tee logs/train_flan_ul2_a6000_$(date +%Y%m%d_%H%M%S).log
+
+# Calculate actual training time
+TRAINING_END_TIME=$(date +%s)
+ACTUAL_TRAINING_TIME=$((TRAINING_END_TIME - TRAINING_START_TIME))
+ACTUAL_HOURS=$(echo "scale=2; $ACTUAL_TRAINING_TIME / 3600" | bc)
+
+echo "==== Training Summary ===="
+echo "Actual training time: $ACTUAL_HOURS hours (estimated: $ESTIMATED_HOURS hours)"
+
+# Create completion marker with timing information
+COMPLETION_FILE="logs/flan_ul2_training_complete_$(date +%Y%m%d_%H%M%S).txt"
+echo "Training completed at $(date)" > $COMPLETION_FILE
+echo "Actual training time: $ACTUAL_HOURS hours" >> $COMPLETION_FILE
+echo "Estimated training time: $ESTIMATED_HOURS hours" >> $COMPLETION_FILE
+echo "Model parameters:" >> $COMPLETION_FILE
+echo "- Max steps: $MAX_STEPS" >> $COMPLETION_FILE
+echo "- Batch size: $BATCH_SIZE" >> $COMPLETION_FILE
+echo "- Gradient accumulation: $GRAD_ACCUMULATION" >> $COMPLETION_FILE
+echo "- Learning rate: $LR" >> $COMPLETION_FILE
+
+# Calculate training statistics from log file
+LOG_FILE=$(find logs -name "train_flan_ul2_a6000_*.log" -type f -exec ls -t {} \; | head -1)
+if [ -f "$LOG_FILE" ]; then
+  echo "Extracting statistics from training log..."
+  
+  # Extract key metrics
+  FINAL_LOSS=$(grep -o "loss: [0-9.]*" $LOG_FILE | tail -1 | cut -d' ' -f2)
+  STEPS_COMPLETED=$(grep -o "Step [0-9]*/" $LOG_FILE | tail -1 | cut -d' ' -f2 | cut -d'/' -f1)
+  
+  # Add to summary
+  echo "Steps completed: $STEPS_COMPLETED of $MAX_STEPS" >> $COMPLETION_FILE
+  echo "Final loss: $FINAL_LOSS" >> $COMPLETION_FILE
+  
+  # Calculate steps per second
+  if [ -n "$STEPS_COMPLETED" ] && [ "$ACTUAL_TRAINING_TIME" -gt 0 ]; then
+    STEPS_PER_SEC=$(echo "scale=4; $STEPS_COMPLETED / $ACTUAL_TRAINING_TIME" | bc)
+    STEPS_PER_HOUR=$(echo "scale=2; $STEPS_PER_SEC * 3600" | bc)
+    echo "Training speed: $STEPS_PER_HOUR steps/hour" >> $COMPLETION_FILE
+    echo "Training speed: $STEPS_PER_HOUR steps/hour"
+  fi
+fi
 
 # Step 5: Sync any remaining results to Drive if enabled
 if [ "$USE_DRIVE" = true ]; then
