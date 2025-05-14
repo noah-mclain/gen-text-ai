@@ -4,6 +4,7 @@ import sys
 import argparse
 import logging
 import time  # Added for time tracking
+from pathlib import Path
 
 # Add the project root to the Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -43,61 +44,84 @@ from peft import LoraConfig
 # Import trainer directly with absolute path reference
 try:
     # Try to import the trainer as absolute path when run from project root
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from src.training.trainer import DeepseekFineTuner
-except (ImportError, ModuleNotFoundError):
     try:
+        from src.training.trainer import DeepseekFineTuner
+        
+        # Also try to import dataset mapping helper
+        try:
+            from src.training.dataset_mapping import get_dataset_paths, find_matching_directories
+            logger.info("Successfully imported dataset mapping module")
+        except (ImportError, ModuleNotFoundError):
+            logger.warning("Could not import dataset mapping module, datasets may not be found correctly")
+            # Define simple fallback function
+            def get_dataset_paths(dataset_names):
+                return {}
+            def find_matching_directories(data_dir, pattern):
+                return []
+    except (ImportError, ModuleNotFoundError):
         # Try direct import from current directory
         from trainer import DeepseekFineTuner
-    except (ImportError, ModuleNotFoundError):
+        
+        # Also try to import dataset mapping helper from current directory
         try:
-            # Try relative import
-            from .trainer import DeepseekFineTuner
+            from dataset_mapping import get_dataset_paths, find_matching_directories
+            logger.info("Successfully imported dataset mapping module")
         except (ImportError, ModuleNotFoundError):
-            # Last resort: create a simple wrapper class as fallback
-            print("WARNING: Could not import DeepseekFineTuner - creating minimal fallback class")
-            
-            class DeepseekFineTuner:
-                """Fallback class when trainer.py cannot be imported"""
-                def __init__(self, config_path, use_drive=False, drive_base_dir=None):
-                    self.config_path = config_path
-                    self.use_drive = use_drive
-                    self.drive_base_dir = drive_base_dir
-                    
-                    # Load configuration
-                    try:
-                        with open(config_path, 'r') as f:
-                            self.config = json.load(f)
-                    except Exception as e:
-                        print(f"Error loading config: {str(e)}")
-                        self.config = {}
-                    
-                    print(f"Initialized fallback DeepseekFineTuner with config: {config_path}")
+            logger.warning("Could not import dataset mapping module, datasets may not be found correctly")
+            # Define simple fallback function
+            def get_dataset_paths(dataset_names):
+                return {}
+            def find_matching_directories(data_dir, pattern):
+                return []
+except (ImportError, ModuleNotFoundError):
+    try:
+        # Try relative import
+        from .trainer import DeepseekFineTuner
+    except (ImportError, ModuleNotFoundError):
+        # Last resort: create a simple wrapper class as fallback
+        print("WARNING: Could not import DeepseekFineTuner - creating minimal fallback class")
+        
+        class DeepseekFineTuner:
+            """Fallback class when trainer.py cannot be imported"""
+            def __init__(self, config_path, use_drive=False, drive_base_dir=None):
+                self.config_path = config_path
+                self.use_drive = use_drive
+                self.drive_base_dir = drive_base_dir
                 
-                def train(self, data_dir):
-                    """Fallback training method"""
-                    print(f"WARNING: Using fallback training with data from {data_dir}")
-                    print("This is a minimal implementation as the real trainer could not be imported")
+                # Load configuration
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+                except Exception as e:
+                    print(f"Error loading config: {str(e)}")
+                    self.config = {}
+                
+                print(f"Initialized fallback DeepseekFineTuner with config: {config_path}")
+            
+            def train(self, data_dir):
+                """Fallback training method"""
+                print(f"WARNING: Using fallback training with data from {data_dir}")
+                print("This is a minimal implementation as the real trainer could not be imported")
+                
+                try:
+                    # Minimal dataset loading
+                    from datasets import load_from_disk
+                    datasets = {}
                     
-                    try:
-                        # Minimal dataset loading
-                        from datasets import load_from_disk
-                        datasets = {}
-                        
-                        # Try to load at least one dataset
-                        for entry in os.listdir(data_dir):
-                            path = os.path.join(data_dir, entry)
-                            if os.path.isdir(path) and entry.endswith("_processed"):
-                                try:
-                                    dataset = load_from_disk(path)
-                                    print(f"Loaded dataset from {path} with {len(dataset)} examples")
-                                    return {"success": False, "error": "Training aborted - proper trainer not available"}
-                                except Exception:
-                                    pass
-                    except Exception as e:
-                        print(f"Fallback training failed: {str(e)}")
-                    
-                    return {"success": False, "error": "Training aborted - proper trainer not available"}
+                    # Try to load at least one dataset
+                    for entry in os.listdir(data_dir):
+                        path = os.path.join(data_dir, entry)
+                        if os.path.isdir(path) and entry.endswith("_processed"):
+                            try:
+                                dataset = load_from_disk(path)
+                                print(f"Loaded dataset from {path} with {len(dataset)} examples")
+                                return {"success": False, "error": "Training aborted - proper trainer not available"}
+                            except Exception:
+                                pass
+                except Exception as e:
+                    print(f"Fallback training failed: {str(e)}")
+                
+                return {"success": False, "error": "Training aborted - proper trainer not available"}
 
 # Import drive utils with fallbacks
 try:

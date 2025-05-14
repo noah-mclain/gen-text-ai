@@ -1023,4 +1023,102 @@ if os.path.exists(train_file):
         print(f'{train_file} already supports dataloader_workers argument')
 else:
     print(f'Warning: {train_file} not found, cannot add dataloader_workers argument')
+"
+
+# Thoroughly validate local datasets and fix dataset directories using symbolic links
+echo "===== FIXING DATASET MAPPING ISSUES ====="
+python -c "
+import os
+import sys
+import glob
+import logging
+from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter('%(message)s'))
+logger.addHandler(console_handler)
+
+# Dataset name mappings
+DATASET_MAPPINGS = {
+    # Expected name -> list of possible actual names
+    'codesearchnet_all_processed': ['codesearchnet_all_*_processed', 'codesearchnet_all_*_processed_interim_*'],
+    'codesearchnet_python_processed': ['codesearchnet_python_processed_*', 'codesearchnet_all_python_processed'],
+    'codesearchnet_java_processed': ['codesearchnet_java_processed_*', 'codesearchnet_all_java_processed'],
+    'codesearchnet_javascript_processed': ['codesearchnet_javascript_processed_*', 'codesearchnet_all_javascript_processed'],
+    'codesearchnet_php_processed': ['codesearchnet_php_processed_*', 'codesearchnet_all_php_processed'],
+    'codesearchnet_ruby_processed': ['codesearchnet_ruby_processed_*', 'codesearchnet_all_ruby_processed'],
+    'codesearchnet_go_processed': ['codesearchnet_go_processed_*', 'codesearchnet_all_go_processed'],
+    'code_alpaca_processed': ['code_alpaca_processed_interim_*'],
+    'instruct_code_processed': ['instruct_code_processed_interim_*'],
+}
+
+def find_matching_dirs(data_dir, pattern):
+    if not os.path.exists(data_dir):
+        return []
+    glob_pattern = os.path.join(data_dir, pattern)
+    matches = glob.glob(glob_pattern)
+    return [os.path.basename(path) for path in matches if os.path.isdir(path)]
+
+def prioritize_dirs(dirs):
+    def priority_key(directory):
+        # Final versions have highest priority
+        if 'final' in directory:
+            return (0, 0)
+        # For numbered versions, extract the number and sort by it
+        import re
+        numbers = re.findall(r'\\d+', directory)
+        if numbers:
+            # Use the highest number found
+            max_number = max(int(n) for n in numbers)
+            # Negative because we want higher numbers first
+            return (1, -max_number)
+        # Default priority based on position in list
+        return (2, directory)
+    return sorted(dirs, key=priority_key)
+
+# First list datasets in each directory
+for data_dir in ['data/processed', '/notebooks/data/processed']:
+    if not os.path.exists(data_dir):
+        continue
+    
+    logger.info(f'\\nChecking datasets in {data_dir}:')
+    all_dirs = os.listdir(data_dir)
+    dataset_dirs = [d for d in all_dirs if os.path.isdir(os.path.join(data_dir, d)) and ('_processed' in d or '_interim_' in d)]
+    
+    if dataset_dirs:
+        logger.info(f'Found {len(dataset_dirs)} potential dataset directories:')
+        for i, d in enumerate(sorted(dataset_dirs)):
+            logger.info(f'  {i+1}. {d}')
+    else:
+        logger.info('No dataset directories found')
+    
+    # Create symbolic links for expected names
+    for expected_name, patterns in DATASET_MAPPINGS.items():
+        expected_path = os.path.join(data_dir, expected_name)
+        if os.path.exists(expected_path):
+            # Skip if it already exists
+            continue
+        
+        # Find matching directories for all patterns
+        all_matches = []
+        for pattern in patterns:
+            all_matches.extend(find_matching_dirs(data_dir, pattern))
+        
+        if all_matches:
+            # Sort by priority
+            best_matches = prioritize_dirs(all_matches)
+            best_match = best_matches[0]
+            source_path = os.path.join(data_dir, best_match)
+            
+            # Create symbolic link
+            try:
+                os.symlink(source_path, expected_path)
+                logger.info(f'✅ Created symlink: {expected_name} -> {best_match}')
+            except Exception as e:
+                logger.warning(f'⚠️ Failed to create symlink for {expected_name}: {e}')
+        else:
+            logger.info(f'❌ No matching directory found for {expected_name}')
 " 

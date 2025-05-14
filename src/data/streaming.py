@@ -11,6 +11,14 @@ from datasets import load_dataset, IterableDataset, Dataset, load_from_disk
 
 logger = logging.getLogger(__name__)
 
+# Import the new dataset mapping module
+try:
+    from src.training.dataset_mapping import get_dataset_paths
+except ImportError:
+    # Define a simple function in case the import fails
+    def get_dataset_paths(dataset_names):
+        return {}
+
 def load_streaming_dataset(
     dataset_name: str,
     tokenizer,
@@ -44,8 +52,15 @@ def load_streaming_dataset(
     streaming_config = {**default_config, **config}
     
     try:
-        # First check if the dataset exists locally in processed form
-        local_dataset_path = os.path.join(data_dir, f"{dataset_name}_processed")
+        # First try to find the dataset using our new mapping
+        dataset_paths = get_dataset_paths([dataset_name])
+        local_dataset_path = dataset_paths.get(dataset_name)
+        
+        # If not found with the mapping, try the old direct path
+        if not local_dataset_path:
+            # Generate conventional path
+            local_dataset_path = os.path.join(data_dir, f"{dataset_name}_processed")
+        
         if os.path.exists(local_dataset_path):
             try:
                 # Load the dataset from disk
@@ -92,7 +107,8 @@ def load_streaming_dataset(
             dataset = load_dataset(
                 dataset_path, 
                 streaming=True,
-                split=split
+                split=split,
+                token=os.environ.get("HF_TOKEN") if "HF_TOKEN" in os.environ else None
             )
             logger.info(f"✅ Successfully loaded {dataset_name} from Hugging Face Hub")
         except Exception as e:
