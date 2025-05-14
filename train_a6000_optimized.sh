@@ -236,8 +236,7 @@ try:
         'codesearchnet_ruby': ['codesearchnet_ruby'],
         'humaneval': ['humaneval'],
         'instruct_code': ['instruct_code'],
-        'mbpp': ['mbpp'],
-        'openassistant': ['openassistant']
+        'mbpp': ['mbpp']
     }
     
     # Find all processed dataset directories that exist
@@ -433,8 +432,7 @@ try:
         'codesearchnet_ruby': ['codesearchnet_all_ruby', 'codesearchnet_ruby'],
         'humaneval': ['humaneval'],
         'instruct_code': ['instruct_code'],
-        'mbpp': ['mbpp'],
-        'openassistant': ['openassistant']
+        'mbpp': ['mbpp']
     }
     
     # Find all processed dataset directories
