@@ -2,32 +2,6 @@
 # Fully optimized training script for A6000 GPU with 48GB VRAM
 # This script is configured for maximum performance with multi-language support
 
-# Make diagnose_deepspeed.sh executable
-chmod +x scripts/diagnose_deepspeed.sh 2>/dev/null || true
-
-# Function to verify DeepSpeed setup
-verify_deepspeed_setup() {
-    # Check if DeepSpeed is available
-    if ! python -c "import deepspeed" 2>/dev/null; then
-        echo "⚠️ DeepSpeed not found. Installing..."
-        pip install deepspeed --no-cache-dir
-    fi
-    
-    # Check environment variables
-    if [ -z "$ACCELERATE_USE_DEEPSPEED" ] || [ -z "$ACCELERATE_DEEPSPEED_PLUGIN_TYPE" ] || [ -z "$HF_DS_CONFIG" ]; then
-        echo "⚠️ Some DeepSpeed environment variables are not set. Running fix script..."
-        python scripts/fix_deepspeed.py
-    fi
-    
-    # Check if the config file exists
-    if [ ! -f "$ACCELERATE_DEEPSPEED_CONFIG_FILE" ] && [ ! -f "$HF_DS_CONFIG" ]; then
-        echo "⚠️ DeepSpeed config file not found. Creating one..."
-        python scripts/fix_deepspeed.py
-    fi
-    
-    echo "DeepSpeed setup verification complete."
-}
-
 # Set environment variables for better performance
 export CUDA_VISIBLE_DEVICES=0
 export OMP_NUM_THREADS=8
@@ -45,72 +19,21 @@ echo "Detected $NUM_EPOCHS epochs in training configuration"
 export MAX_HOURS=$((2 * NUM_EPOCHS))
 echo "Setting default training time to $MAX_HOURS hours based on $NUM_EPOCHS epochs"
 
-# Create Triton autotune directory to prevent df error
-mkdir -p /root/.triton/autotune 2>/dev/null || true
+# Clean any DeepSpeed environment variables that might cause conflicts
+echo "===== CLEANING DEEPSPEED ENVIRONMENT VARIABLES ====="
+chmod +x scripts/clean_deepspeed_env.py
+python scripts/clean_deepspeed_env.py
 
-# Fix DeepSpeed configuration before training
-echo "===== SETTING UP DEEPSPEED CONFIGURATION ====="
-
-# Check if DeepSpeed is installed
-if ! python -c "import deepspeed" 2>/dev/null; then
-  echo "DeepSpeed not found. Installing..."
-  pip install deepspeed --no-cache-dir
-fi
-
-# Run the DeepSpeed fix script
-python scripts/fix_deepspeed.py
-
-# Create symbolic link for Config detection (helps with newer Transformers versions)
-if [ -f "ds_config_a6000.json" ]; then
-  # Create a symlink in the root directory
-  ln -sf "$(realpath ds_config_a6000.json)" ./deepspeed_config.json
-  # Update environment variables
-  export DEEPSPEED_CONFIG_FILE="$(realpath deepspeed_config.json)"
-fi
-
-# Set DeepSpeed environment variables with robust error handling
-export DS_ACCELERATOR=cuda
-export DS_OFFLOAD_PARAM=cpu
-export DS_OFFLOAD_OPTIMIZER=cpu
-export ACCELERATE_USE_DEEPSPEED=true
-
-# Get the absolute path to DeepSpeed config
-DS_CONFIG_PATH=$(realpath ds_config_a6000.json)
-
-# Set all necessary environment variables for DeepSpeed
-export ACCELERATE_DEEPSPEED_CONFIG_FILE="$DS_CONFIG_PATH"
-# Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
-export ACCELERATE_DEEPSPEED_PLUGIN_TYPE=deepspeed
-# Make sure HF_DS_CONFIG is set for transformers to recognize DeepSpeed config
-export HF_DS_CONFIG="$DS_CONFIG_PATH"
-# Optional but recommended for better performance
-export TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT=1
-
-echo "DeepSpeed config at: $ACCELERATE_DEEPSPEED_CONFIG_FILE"
-echo "DeepSpeed plugin type: $ACCELERATE_DEEPSPEED_PLUGIN_TYPE"
-echo "HF_DS_CONFIG: $HF_DS_CONFIG"
-
-# Make a local backup copy of the DeepSpeed config for debugging
-mkdir -p logs/deepspeed
-cp "$DS_CONFIG_PATH" "logs/deepspeed/ds_config_backup_$(date +%Y%m%d_%H%M%S).json"
-
-# Copy DeepSpeed config to Paperspace notebooks directory if running there
-if [ -d "/notebooks" ]; then
-  echo "Paperspace environment detected. Copying DeepSpeed config to /notebooks directory..."
-  cp "$DS_CONFIG_PATH" /notebooks/ds_config_a6000.json
-  echo "Config copied successfully to /notebooks/ds_config_a6000.json"
-  
-  # Also create directory for models config
-  mkdir -p /notebooks/models
-  cp "$DS_CONFIG_PATH" /notebooks/models/ds_config.json
-  echo "Config copied to /notebooks/models/ds_config.json for model initialization"
-fi
-
-# Test DeepSpeed configuration if script exists
-if [ -f "scripts/test_deepspeed_config.py" ]; then
-  echo "===== TESTING DEEPSPEED CONFIGURATION ====="
-  python scripts/test_deepspeed_config.py || echo "⚠️ DeepSpeed configuration test completed with warnings (continuing anyway)"
-fi
+# Unset any DeepSpeed variables in the current shell
+unset ACCELERATE_USE_DEEPSPEED
+unset ACCELERATE_DEEPSPEED_CONFIG_FILE
+unset ACCELERATE_DEEPSPEED_PLUGIN_TYPE
+unset HF_DS_CONFIG
+unset DEEPSPEED_CONFIG_FILE
+unset DS_ACCELERATOR
+unset DS_OFFLOAD_PARAM
+unset DS_OFFLOAD_OPTIMIZER
+unset TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT
 
 # Check if HF_TOKEN is set
 if [ -z "$HF_TOKEN" ]; then
@@ -122,14 +45,6 @@ fi
 
 # Fix Unsloth import order warning
 export PYTHONPATH=$PYTHONPATH:.
-# Create a wrapper for imports
-cat > import_wrapper.py << EOL
-from unsloth import FastLanguageModel
-import transformers
-import peft
-print("✅ Imports properly ordered for optimal performance")
-EOL
-python import_wrapper.py
 
 # Make directories
 mkdir -p logs
@@ -151,7 +66,6 @@ fi
 # Clean any cached files for better memory management
 echo "Cleaning cache directories..."
 rm -rf ~/.cache/huggingface/datasets/downloads/completed.lock
-rm -rf ~/.cache/huggingface/transformers/models--deepseek-ai--deepseek-coder-6.7b-base/snapshots/*/*.safetensors.tmp*
 
 # Override MAX_HOURS if provided as a command-line argument
 if [ "$1" != "" ] && [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -245,8 +159,6 @@ else
 fi
 
 echo "===== STARTING TRAINING ====="
-# Verify DeepSpeed setup before training
-verify_deepspeed_setup
 
 # Train with direct module call (bypassing main_api.py)
 echo "Starting training with direct module call (avoids argument mismatch)..."
@@ -255,48 +167,11 @@ python -m src.training.train \
     --data_dir data/processed \
     $USE_DRIVE_FLAG \
     --push_to_hub \
-    --deepspeed \
-    --deepspeed_config "$DS_CONFIG_PATH" \
+    --no_deepspeed \
     2>&1 | tee logs/train_a6000_optimized_$(date +%Y%m%d_%H%M%S).log
 
 # Check exit status
 EXIT_STATUS=$?
-
-# Check for DeepSpeed-related errors in the log
-LATEST_LOG=$(find logs -name "train_a6000_optimized_*.log" -type f -exec ls -t {} \; | head -1)
-if [ -f "$LATEST_LOG" ]; then
-    # Check for common DeepSpeed errors
-    if grep -q "NoneType.* has no attribute 'hf_ds_config'" "$LATEST_LOG" || \
-       grep -q "DeepSpeed configuration issue" "$LATEST_LOG" || \
-       grep -q "DeepSpeedPlugin" "$LATEST_LOG" && grep -q "Error" "$LATEST_LOG"; then
-        
-        echo "===== DEEPSPEED ERROR DETECTED ====="
-        echo "Running diagnostics script..."
-        bash scripts/diagnose_deepspeed.sh 2>&1 | tee logs/deepspeed_error_$(date +%Y%m%d_%H%M%S).log
-        
-        echo "Attempting to fix DeepSpeed configuration and retry training..."
-        # Fix DeepSpeed configuration
-        python scripts/fix_deepspeed.py
-        
-        # Save the original log
-        cp "$LATEST_LOG" "${LATEST_LOG%.log}_failed.log"
-        
-        echo "Retrying training with fixed configuration..."
-        verify_deepspeed_setup
-        python -m src.training.train \
-            --config config/training_config.json \
-            --data_dir data/processed \
-            $USE_DRIVE_FLAG \
-            --push_to_hub \
-            --deepspeed \
-            --deepspeed_config "$DS_CONFIG_PATH" \
-            --debug \
-            2>&1 | tee logs/train_a6000_optimized_retry_$(date +%Y%m%d_%H%M%S).log
-            
-        # Update exit status based on retry
-        EXIT_STATUS=$?
-    fi
-fi
 
 # Report completion
 if [ $EXIT_STATUS -eq 0 ]; then

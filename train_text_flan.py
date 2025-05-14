@@ -73,6 +73,8 @@ def main():
                         help="Enable debug logging")
     parser.add_argument("--process_only", action="store_true",
                         help="Only process datasets without training")
+    parser.add_argument("--no_deepspeed", action="store_true",
+                        help="Explicitly disable DeepSpeed even if configured in the config file")
     
     args = parser.parse_args()
     
@@ -160,6 +162,11 @@ def main():
                     if args.hub_model_id:
                         config["training"]["hub_model_id"] = args.hub_model_id
                     
+                    # If --no_deepspeed flag is present, disable DeepSpeed
+                    if args.no_deepspeed:
+                        logger.info("Explicitly disabling DeepSpeed as requested via --no_deepspeed flag")
+                        config["training"]["use_deepspeed"] = False
+                    
                     with open(args.config, 'w') as f:
                         json.dump(config, f, indent=2)
                     
@@ -196,6 +203,11 @@ def main():
             use_drive=args.use_drive, 
             drive_base_dir=args.drive_base_dir
         )
+        
+        # Explicitly disable DeepSpeed if requested
+        if args.no_deepspeed and hasattr(tuner, 'training_config') and 'use_deepspeed' in tuner.training_config:
+            logger.info("Disabling DeepSpeed as requested via --no_deepspeed flag")
+            tuner.training_config['use_deepspeed'] = False
         
         # Start training
         logger.info(f"Starting training with data from {args.data_dir}")

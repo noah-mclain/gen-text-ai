@@ -186,8 +186,10 @@ def main():
                         help="Model ID for pushing to Hugging Face Hub")
     parser.add_argument("--debug", action="store_true",
                         help="Enable debug logging")
-    parser.add_argument("--deepspeed", action="store_true", default=True,
-                        help="Enable DeepSpeed (enabled by default)")
+    parser.add_argument("--deepspeed", action="store_true", default=False,
+                        help="Enable DeepSpeed (disabled by default)")
+    parser.add_argument("--no_deepspeed", action="store_true", 
+                        help="Explicitly disable DeepSpeed even if configured in the config file")
     parser.add_argument("--deepspeed_config", type=str, 
                         help="Path to DeepSpeed config file (optional)")
     
@@ -233,8 +235,51 @@ def main():
     logger.info(f"Using config path: {args.config}")
     logger.info(f"Using data directory: {args.data_dir}")
     
+    # First check if we're explicitly disabling DeepSpeed
+    if args.no_deepspeed:
+        logger.info("DeepSpeed is explicitly disabled via --no_deepspeed flag")
+        
+        # Clean up any existing DeepSpeed environment variables
+        logger.info("Cleaning DeepSpeed environment variables...")
+        ds_env_vars = [
+            "ACCELERATE_USE_DEEPSPEED",
+            "ACCELERATE_DEEPSPEED_CONFIG_FILE",
+            "ACCELERATE_DEEPSPEED_PLUGIN_TYPE",
+            "HF_DS_CONFIG",
+            "DEEPSPEED_CONFIG_FILE",
+            "DS_ACCELERATOR",
+            "DS_OFFLOAD_PARAM",
+            "DS_OFFLOAD_OPTIMIZER"
+        ]
+        for var in ds_env_vars:
+            if var in os.environ:
+                logger.info(f"Unsetting {var}={os.environ[var]}")
+                del os.environ[var]
+        
+        # Also update the config file to disable DeepSpeed
+        if os.path.exists(args.config):
+            logger.info("Updating config file to disable DeepSpeed")
+            try:
+                with open(args.config, 'r') as f:
+                    config = json.load(f)
+                
+                if "training" not in config:
+                    config["training"] = {}
+                
+                config["training"]["use_deepspeed"] = False
+                
+                with open(args.config, 'w') as f:
+                    json.dump(config, f, indent=2)
+                
+                logger.info("Successfully updated config to disable DeepSpeed")
+            except Exception as e:
+                logger.warning(f"Failed to update config file: {e}")
+        
+        # Override the --deepspeed flag
+        args.deepspeed = False
+    
     # Setup DeepSpeed configuration if enabled
-    if args.deepspeed:
+    elif args.deepspeed:
         logger.info("Setting up DeepSpeed environment...")
         
         # Check for existing environment variables

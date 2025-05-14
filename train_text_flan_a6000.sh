@@ -74,23 +74,33 @@ fi
 echo "===== CHECKING PAPERSPACE ENVIRONMENT ====="
 python scripts/check_paperspace_env.py
 
-# Ensure Unsloth works properly with NVIDIA GPUs on Paperspace
-echo "===== ENSURING UNSLOTH COMPATIBILITY ====="
-python -c "
-import os
-try:
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # Ensure we only use the first GPU if multiple are available
-    from unsloth import FastLanguageModel
-    print('✅ Unsloth properly imported and configured for Paperspace')
-except Exception as e:
-    print(f'⚠️ Unsloth error: {str(e)}')
-    print('Will use standard HuggingFace model loading instead')
-"
+# Set CUDA visible devices to control which GPU is used
+export CUDA_VISIBLE_DEVICES=0
+
+# Set environment variables for better performance
+export OMP_NUM_THREADS=8
+export TOKENIZERS_PARALLELISM=true
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
 # Make directories
 mkdir -p logs
 mkdir -p data/processed
 mkdir -p text_models/flan-ul2-fine-tuned
+
+# Clean any DeepSpeed environment variables that might cause conflicts
+echo "===== CLEANING DEEPSPEED ENVIRONMENT VARIABLES ====="
+chmod +x scripts/clean_deepspeed_env.py
+python scripts/clean_deepspeed_env.py
+
+# Unset any DeepSpeed variables in the current shell
+unset ACCELERATE_USE_DEEPSPEED
+unset ACCELERATE_DEEPSPEED_CONFIG_FILE
+unset ACCELERATE_DEEPSPEED_PLUGIN_TYPE
+unset HF_DS_CONFIG
+unset DEEPSPEED_CONFIG_FILE
+unset DS_ACCELERATOR
+unset DS_OFFLOAD_PARAM
+unset DS_OFFLOAD_OPTIMIZER
 
 # Set up Google Drive environment
 mkdir -p text_models/flan-ul2-fine-tuned
@@ -237,77 +247,13 @@ else
     echo "✅ All datasets already available. Skipping dataset processing step."
 fi
 
-# Fix DeepSpeed configuration before training
-echo "===== SETTING UP DEEPSPEED CONFIGURATION ====="
-# Run the DeepSpeed fix script
-python scripts/fix_deepspeed.py
-
-# Set DeepSpeed environment variables with robust error handling
-export DS_ACCELERATOR=cuda
-export DS_OFFLOAD_PARAM=cpu
-export DS_OFFLOAD_OPTIMIZER=cpu
-export ACCELERATE_USE_DEEPSPEED=true
-
-# Get the absolute path to DeepSpeed config
-DS_CONFIG_PATH=$(realpath ds_config_a6000.json)
-if [ ! -f "$DS_CONFIG_PATH" ]; then
-    echo "⚠️ DeepSpeed config not found at $DS_CONFIG_PATH. Creating default config."
-    cat > "$DS_CONFIG_PATH" << EOL
-{
-  "fp16": {
-    "enabled": true,
-    "loss_scale": 0,
-    "loss_scale_window": 1000,
-    "initial_scale_power": 16,
-    "hysteresis": 2,
-    "min_loss_scale": 1
-  },
-  "zero_optimization": {
-    "stage": 2,
-    "offload_optimizer": {
-      "device": "cpu",
-      "pin_memory": true
-    },
-    "offload_param": {
-      "device": "cpu",
-      "pin_memory": true
-    },
-    "contiguous_gradients": true,
-    "overlap_comm": true,
-    "reduce_scatter": true
-  },
-  "gradient_accumulation_steps": 16,
-  "gradient_clipping": 1.0,
-  "steps_per_print": 50,
-  "train_batch_size": 32,
-  "train_micro_batch_size_per_gpu": 2,
-  "wall_clock_breakdown": false
-}
-EOL
-fi
-
-# Set all necessary environment variables for DeepSpeed
-export ACCELERATE_DEEPSPEED_CONFIG_FILE="$DS_CONFIG_PATH"
-# Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
-export ACCELERATE_DEEPSPEED_PLUGIN_TYPE=deepspeed
-# Make sure HF_DS_CONFIG is set for transformers to recognize DeepSpeed config
-export HF_DS_CONFIG="$DS_CONFIG_PATH"
-# Fix potential GPU device issues with CUDA
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
-
-echo "DeepSpeed config at: $ACCELERATE_DEEPSPEED_CONFIG_FILE"
-echo "DeepSpeed plugin type: $ACCELERATE_DEEPSPEED_PLUGIN_TYPE"
-echo "HF_DS_CONFIG: $HF_DS_CONFIG"
-
-# Make a local backup copy of the DeepSpeed config for debugging
-cp "$DS_CONFIG_PATH" "logs/ds_config_backup_$(date +%Y%m%d_%H%M%S).json"
-
 # Step 4: Train the model with checkpointing and logging to Drive
 echo "==== Training FLAN-UL2 with optimizations and Drive integration ===="
 python train_text_flan.py \
   --config config/training_config_text.json \
   --data_dir data/processed \
   --push_to_hub \
+  --no_deepspeed \
   $DRIVE_OPTS \
   --debug \
   2>&1 | tee logs/train_flan_ul2_a6000_$(date +%Y%m%d_%H%M%S).log
