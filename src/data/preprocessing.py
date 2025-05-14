@@ -799,13 +799,19 @@ class DataPreprocessor:
         
     def process_instruct_code(self, dataset: Union[Dataset, DatasetDict],
                              streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """Process InstructCode dataset."""
+        """
+        Process InstructCode dataset.
+        
+        This processor handles instruction datasets like:
+        - Magicoder-OSS-Instruct
+        - Other instruction-tuning datasets with code
+        """
         logger.info("Processing InstructCode dataset...")
         
         # Define field mappings for different dataset structures
         field_mappings = {
-            "prompt": ["problem", "instruction", "instructions", "input", "query"],
-            "completion": ["solution", "output", "response", "answer", "code"]
+            "prompt": ["problem", "instruction", "instructions", "input", "query", "question", "text"],
+            "completion": ["solution", "output", "response", "answer", "code", "content"]
         }
         
         # For streaming mode, process examples one at a time to avoid issues
@@ -1072,33 +1078,148 @@ class DataPreprocessor:
                     batched=True
                 )
     
-    def process_ds1000(self, dataset: Union[Dataset, DatasetDict],
+    def process_ds1000(self, dataset: Union[Dataset, DatasetDict, str] = None,
                       streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """Process DS-1000 dataset."""
-        logger.info("Processing DS-1000 dataset...")
+        """
+        Process DS-1000 benchmark dataset.
+        
+        Args:
+            dataset: Optional dataset object or path to the dataset
+            streaming: Whether to use streaming mode for memory efficiency
+            
+        Returns:
+            Processed dataset or list of processed examples
+        """
+        logger.info("Attempting to process DS-1000 benchmark...")
         
         try:
-            return dataset.map(
-                lambda examples: self.common_preprocessing(
-                    {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
-                    "prompt", "completion",
-                    streaming=streaming
-                ),
-                batched=True,
-                remove_columns=dataset.column_names if not streaming else None,
-                batch_size=100 if streaming else None
-            )
+            # DS-1000 is a benchmark for code generation, not a standard dataset on HF Hub
+            # Check if the dataset was provided as a local path or object
+            if dataset is None or isinstance(dataset, str):
+                # Try to locate DS-1000 manually if not provided
+                possible_paths = [
+                    "data/raw/DS-1000",
+                    "DS-1000",
+                    "../DS-1000",
+                    "data/DS-1000"
+                ]
+                
+                # Check if any path exists
+                ds_path = None
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        ds_path = path
+                        logger.info(f"Found DS-1000 at {path}")
+                        break
+                
+                if ds_path is None:
+                    logger.warning("DS-1000 benchmark not found. Please clone it from GitHub: "
+                                 "https://github.com/salesforce/DS-1000")
+                    logger.warning("You can clone it with: git clone https://github.com/salesforce/DS-1000.git")
+                    return {"processed_text": [], "length": [], "message": "DS-1000 benchmark not found"}
+                
+                # Create a simpler dataset format from the benchmark
+                processed_examples = []
+                
+                # Process each problem domain directory
+                domains = [d for d in os.listdir(ds_path) if os.path.isdir(os.path.join(ds_path, d)) 
+                          and not d.startswith('.')]
+                
+                logger.info(f"Found {len(domains)} domains in DS-1000: {domains}")
+                
+                for domain in domains:
+                    domain_path = os.path.join(ds_path, domain)
+                    problems = [d for d in os.listdir(domain_path) if os.path.isdir(os.path.join(domain_path, d))]
+                    
+                    for problem_id in problems:
+                        problem_path = os.path.join(domain_path, problem_id)
+                        
+                        # Look for prompt and canonical solution files
+                        prompt_file = os.path.join(problem_path, "prompt.txt")
+                        solution_file = os.path.join(problem_path, "solutions/reference.py")
+                        
+                        if not os.path.exists(prompt_file) or not os.path.exists(solution_file):
+                            continue
+                        
+                        try:
+                            # Read prompt and solution
+                            with open(prompt_file, 'r', encoding='utf-8') as f:
+                                prompt = f.read().strip()
+                            
+                            with open(solution_file, 'r', encoding='utf-8') as f:
+                                solution = f.read().strip()
+                            
+                            # Skip if either is empty
+                            if not prompt or not solution:
+                                continue
+                            
+                            # Add domain information to prompt
+                            formatted_prompt = f"Given a problem from {domain}:\n\n{prompt}"
+                            
+                            # Process using common preprocessing
+                            processed = self.common_preprocessing(
+                                {"prompt": formatted_prompt, "completion": solution},
+                                "prompt", "completion",
+                                streaming=True  # Use streaming processing for individual examples
+                            )
+                            
+                            # Add metadata
+                            if "processed_text" in processed and processed["processed_text"]:
+                                processed["domain"] = domain
+                                processed["problem_id"] = problem_id
+                                processed_examples.append(processed)
+                            
+                        except Exception as e:
+                            logger.warning(f"Error processing DS-1000 problem {domain}/{problem_id}: {e}")
+                
+                # Create proper dataset object if not in streaming mode
+                if not streaming and processed_examples:
+                    from datasets import Dataset as HFDataset
+                    
+                    # Extract features
+                    features = {
+                        "processed_text": [ex["processed_text"][0] if isinstance(ex["processed_text"], list) else ex["processed_text"] 
+                                         for ex in processed_examples if "processed_text" in ex and ex["processed_text"]],
+                        "length": [ex["length"][0] if isinstance(ex["length"], list) else ex["length"] 
+                                 for ex in processed_examples if "length" in ex and ex["length"]],
+                        "domain": [ex.get("domain", "") for ex in processed_examples if "processed_text" in ex and ex["processed_text"]],
+                        "problem_id": [ex.get("problem_id", "") for ex in processed_examples if "processed_text" in ex and ex["processed_text"]]
+                    }
+                    
+                    logger.info(f"Created dataset with {len(features['processed_text'])} examples from DS-1000 benchmark")
+                    return HFDataset.from_dict(features)
+                else:
+                    logger.info(f"Processed {len(processed_examples)} examples from DS-1000 benchmark")
+                    return processed_examples
+            else:
+                # If a dataset object was provided directly, process it normally
+                logger.info("Processing provided DS-1000 dataset object")
+                try:
+                    return dataset.map(
+                        lambda examples: self.common_preprocessing(
+                            {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
+                            "prompt", "completion",
+                            streaming=streaming
+                        ),
+                        batched=True,
+                        remove_columns=dataset.column_names if not streaming else None,
+                        batch_size=100 if streaming else None
+                    )
+                except Exception as e:
+                    logger.warning(f"Error processing provided DS-1000 dataset: {e}")
+                    return dataset.map(
+                        lambda examples: self.common_preprocessing(
+                            {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
+                            "prompt", "completion",
+                            streaming=streaming
+                        ),
+                        batched=True,
+                        batch_size=100 if streaming else None
+                    )
         except Exception as e:
-            logger.warning(f"Error removing columns in streaming mode: {e}")
-            return dataset.map(
-                lambda examples: self.common_preprocessing(
-                    {"prompt": examples["prompt"], "completion": examples["canonical_solution"]},
-                    "prompt", "completion",
-                    streaming=streaming
-                ),
-                batched=True,
-                batch_size=100 if streaming else None
-            )
+            logger.error(f"Error processing DS-1000 benchmark: {e}")
+            logger.error(traceback.format_exc())
+            return {"processed_text": [], "length": [], "error": str(e)}
     
     def process_codeparrot(self, dataset: Union[Dataset, DatasetDict],
                           streaming: bool = False) -> Union[Dataset, DatasetDict]:
@@ -1357,6 +1478,21 @@ class DataPreprocessor:
                     except Exception as e:
                         logger.warning(f"Error loading existing dataset: {e}. Will reprocess.")
                 
+                # Map some dataset names to their appropriate processors if needed
+                # This ensures we handle datasets that might have different names than their processors
+                processor_mapping = {
+                    "magicoder": "instruct_code",   # Magicoder is an instruction-tuning dataset
+                    "codealpaca": "code_alpaca",    # Normalize name
+                    "mbpp": "mbpp",                 # Already matches
+                    "humaneval": "humaneval",       # Already matches
+                    "codesearchnet": "codesearchnet", # Already matches
+                    "codeparrot": "codeparrot",     # Already matches
+                }
+                
+                # Apply mapping if available
+                if dataset_name.lower() in processor_mapping:
+                    processor_name = processor_mapping[dataset_name.lower()]
+                
                 # For text datasets, use the specialized processors that handle streaming and saving
                 is_text_dataset = processor_name in ['openassistant', 'gpteacher', 'pile', 'persona_chat', 'writingprompts']
                 
@@ -1392,7 +1528,7 @@ class DataPreprocessor:
                         
                         # Process the dataset with a large timeout for larger datasets
                         with tqdm(total=1, desc=f"Processing {dataset_name}", leave=True) as pbar:
-                # Process the dataset
+                            # Process the dataset
                             processed_dataset = processor_func(
                                 dataset_path=dataset_path,
                                 output_dir=save_path,
@@ -1418,7 +1554,35 @@ class DataPreprocessor:
                         # Get the processor method
                         processor = getattr(self, processor_method)
                         
-                        # Load the dataset
+                        # Special case for DS-1000 benchmark which is not on HF Hub
+                        if processor_name == 'ds1000':
+                            try:
+                                logger.info(f"Processing DS-1000 benchmark")
+                                processed_dataset = processor(None, streaming=streaming)
+                                
+                                # Save the processed dataset
+                                if processed_dataset:
+                                    logger.info(f"Saving processed DS-1000 to {output_path}")
+                                    if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+                                        processed_dataset.save_to_disk(output_path)
+                                    processed_datasets[dataset_name] = processed_dataset
+                                    successful_count += 1
+                                    logger.info(f"Successfully processed {dataset_name}")
+                                else:
+                                    logger.error(f"No data returned when processing {dataset_name}")
+                                    failed_count += 1
+                                continue
+                            except Exception as e:
+                                logger.error(f"Error processing DS-1000 benchmark: {e}")
+                                logger.error(traceback.format_exc())
+                                failed_count += 1
+                                continue
+                        
+                        # Handle Magicoder dataset which is an instruction-tuning dataset
+                        if processor_name == 'instruct_code' and 'magicoder' in dataset_path.lower():
+                            logger.info(f"Processing Magicoder dataset using instruct_code processor")
+                        
+                        # Load the dataset from HF Hub for other datasets
                         try:
                             # Some datasets require special configurations
                             logger.info(f"Loading dataset: {dataset_path}")
@@ -1429,18 +1593,29 @@ class DataPreprocessor:
                             # Additional parameters for specific datasets or formats
                             extra_params = {}
                             
-                            # For MBPP and other datasets with Python examples, trust remote code
-                            if "mbpp" in dataset_path or "code" in dataset_path:
+                            # For MBPP, Magicoder and other datasets with Python examples, trust remote code
+                            if any(name in dataset_path.lower() for name in ['mbpp', 'code', 'magicoder']):
                                 extra_params["trust_remote_code"] = True
                             
                             with timer(f"Loading dataset {dataset_name}"):
-                                dataset = load_dataset(
-                                    dataset_path,
-                                    split=split,
-                                    streaming=streaming,
-                                    token=os.environ.get("HF_TOKEN") if token_available else None,
-                                    **extra_params
-                                )
+                                try:
+                                    dataset = load_dataset(
+                                        dataset_path,
+                                        split=split,
+                                        streaming=streaming,
+                                        token=os.environ.get("HF_TOKEN") if token_available else None,
+                                        **extra_params
+                                    )
+                                except Exception as e:
+                                    # Try with a different authentication approach
+                                    logger.warning(f"Error loading dataset with token: {e}, trying alternative")
+                                    dataset = load_dataset(
+                                        dataset_path,
+                                        split=split,
+                                        streaming=streaming,
+                                        use_auth_token=os.environ.get("HF_TOKEN") if token_available else None,
+                                        **extra_params
+                                    )
                                 
                                 # Ensure the dataset is not empty
                                 if not dataset:
@@ -1457,12 +1632,14 @@ class DataPreprocessor:
                                     logger.info(f"Saving processed dataset to {output_path}")
                                     if not streaming and hasattr(processed_dataset, 'save_to_disk'):
                                         processed_dataset.save_to_disk(output_path)
-                                        processed_datasets[dataset_name] = processed_dataset
-                                        successful_count += 1
-                                        logger.info(f"Successfully processed {dataset_name}")
+                                    
+                                    # Important: Store the processed dataset and increment success count
+                                    processed_datasets[dataset_name] = processed_dataset
+                                    successful_count += 1
+                                    logger.info(f"Successfully processed {dataset_name}")
                                 else:
-                                        logger.error(f"No data returned when processing {dataset_name}")
-                                        failed_count += 1
+                                    logger.error(f"No data returned when processing {dataset_name}")
+                                    failed_count += 1
                         except Exception as e:
                             logger.error(f"Error loading or processing dataset {dataset_name}: {e}")
                             logger.error(traceback.format_exc())
@@ -1482,293 +1659,8 @@ class DataPreprocessor:
             logger.info(f"GPU memory: {memory_info.get('gpu_allocated_mb', 0):.1f} MB ({memory_info.get('gpu_percent', 0):.1f}% of GPU memory)")
         
         logger.info(f"Processed {successful_count} datasets successfully, {failed_count} failed")
-        return processed_datasets 
-    
-    def process_openassistant(self, dataset: Union[Dataset, DatasetDict],
-                       streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """
-        Process the OpenAssistant dataset for fine-tuning.
         
-        Args:
-            dataset: The dataset to process
-            streaming: Whether to use streaming mode
-            
-        Returns:
-            Processed dataset
-        """
-        logger.info("Processing OpenAssistant dataset")
+        if successful_count == 0:
+            logger.warning("No datasets were processed successfully")
         
-        # Check if text processors are available
-        if not TEXT_PROCESSORS_AVAILABLE:
-            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
-        
-        # Calculate output directory path
-        output_dir = "data/processed"
-        
-        # Use the provided dataset instead of loading it again
-        def process_example(example):
-            """Process a single example from the OpenAssistant dataset"""
-            # Check if it's a prompt (role is "prompter") or response (role is "assistant")
-            if example.get('role') == 'prompter':
-                instruction = example.get('text', '')
-                response = ""
-            elif example.get('role') == 'assistant':
-                instruction = ""
-                response = example.get('text', '')
-            else:
-                instruction = ""
-                response = ""
-                
-            # Extract the language if available
-            lang = example.get('lang', 'en')
-            
-            return {
-                "instruction": instruction,
-                "response": response,
-                "language": lang,
-                "text": f"Instruction: {instruction}\nResponse: {response}",
-                "source": "openassistant",
-                "processed_text": f"Instruction: {instruction}\nResponse: {response}"
-            }
-            
-        # Process the dataset
-        processed_dataset = dataset.map(process_example)
-        
-        # Filter out empty examples
-        processed_dataset = processed_dataset.filter(lambda x: 
-            x["instruction"] != "" or x["response"] != "")
-        
-        # Save the processed dataset
-        output_path = os.path.join(output_dir, "openassistant_processed")
-        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
-            logger.info(f"Saving processed dataset to {output_path}")
-            processed_dataset.save_to_disk(output_path)
-        
-        return processed_dataset
-    
-    def process_gpteacher(self, dataset: Union[Dataset, DatasetDict],
-                    streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """
-        Process the GPTeacher dataset for fine-tuning.
-        
-        Args:
-            dataset: The dataset to process
-            streaming: Whether to use streaming mode
-            
-        Returns:
-            Processed dataset
-        """
-        logger.info("Processing GPTeacher dataset")
-        
-        # Check if text processors are available
-        if not TEXT_PROCESSORS_AVAILABLE:
-            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
-        
-        # Calculate output directory path
-        output_dir = "data/processed"
-        
-        # Use the provided dataset instead of loading it again
-        def process_example(example):
-            """Process a single example from the GPTeacher dataset"""
-            instruction = example.get('instruction', '')
-            response = example.get('response', '')
-            context = example.get('context', '')
-            
-            if context:
-                full_instruction = f"{context}\n\n{instruction}"
-            else:
-                full_instruction = instruction
-                
-            return {
-                "instruction": full_instruction,
-                "response": response,
-                "text": f"Instruction: {full_instruction}\nResponse: {response}",
-                "language": "en",
-                "source": "gpteacher",
-                "processed_text": f"Instruction: {full_instruction}\nResponse: {response}"
-            }
-            
-        # Process the dataset
-        processed_dataset = dataset.map(process_example)
-        
-        # Filter out empty examples
-        processed_dataset = processed_dataset.filter(lambda x: 
-            x["instruction"] != "" and x["response"] != "")
-        
-        # Save the processed dataset
-        output_path = os.path.join(output_dir, "gpteacher_general_processed")
-        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
-            logger.info(f"Saving processed dataset to {output_path}")
-            processed_dataset.save_to_disk(output_path)
-        
-        return processed_dataset
-    
-    def process_pile(self, dataset: Union[Dataset, DatasetDict],
-                streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """
-        Process the Pile dataset for fine-tuning.
-        
-        Args:
-            dataset: The dataset to process
-            streaming: Whether to use streaming mode
-            
-        Returns:
-            Processed dataset
-        """
-        logger.info("Processing Pile dataset")
-        
-        # Check if text processors are available
-        if not TEXT_PROCESSORS_AVAILABLE:
-            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
-        
-        # Calculate output directory path
-        output_dir = "data/processed"
-        
-        # Use the provided dataset instead of loading it again
-        def process_example(example):
-            """Process a single example from the Pile dataset"""
-            text = example.get('text', '')
-            
-            # For Pile, we'll just use the text directly
-            # Since it's not instruction-based, we'll leave instruction/response empty
-            return {
-                "instruction": "",
-                "response": "",
-                "text": text,
-                "language": "en",  # Assuming English, but Pile has mixed languages
-                "source": "pile",
-                "processed_text": text
-            }
-            
-        # Process the dataset
-        processed_dataset = dataset.map(process_example)
-        
-        # Filter out empty examples
-        processed_dataset = processed_dataset.filter(lambda x: x["text"] != "")
-        
-        # Save the processed dataset
-        output_path = os.path.join(output_dir, "pile_processed")
-        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
-            logger.info(f"Saving processed dataset to {output_path}")
-            processed_dataset.save_to_disk(output_path)
-        
-        return processed_dataset
-    
-    def process_persona_chat(self, dataset: Union[Dataset, DatasetDict],
-                       streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """
-        Process the Persona Chat dataset for fine-tuning.
-        
-        Args:
-            dataset: The dataset to process
-            streaming: Whether to use streaming mode
-            
-        Returns:
-            Processed dataset
-        """
-        logger.info("Processing Persona Chat dataset")
-        
-        # Check if text processors are available
-        if not TEXT_PROCESSORS_AVAILABLE:
-            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
-        
-        # Calculate output directory path
-        output_dir = "data/processed"
-        
-        # Use the provided dataset instead of loading it again
-        def process_example(example):
-            """Process a single example from the Persona Chat dataset"""
-            persona = example.get('persona', '')
-            dialog = example.get('dialog', [])
-            
-            if isinstance(persona, list):
-                persona = "\n".join(persona)
-            
-            # Combine persona with dialog as context
-            instruction = f"Persona: {persona}\n\nConversation:"
-            response = ""
-            
-            # Extract dialog turns
-            if isinstance(dialog, list):
-                for i, turn in enumerate(dialog):
-                    if i % 2 == 0:  # User turn
-                        instruction += f"\nUser: {turn}"
-                    else:  # Assistant turn
-                        instruction += f"\nAssistant: {turn}"
-                        response = turn  # Last assistant response
-            
-            return {
-                "instruction": instruction,
-                "response": response,
-                "text": f"{instruction}\n{response}",
-                "language": "en",
-                "source": "persona_chat",
-                "processed_text": f"{instruction}\n{response}"
-            }
-            
-        # Process the dataset
-        processed_dataset = dataset.map(process_example)
-        
-        # Filter out empty examples
-        processed_dataset = processed_dataset.filter(lambda x: 
-            x["instruction"] != "" and x["response"] != "")
-        
-        # Save the processed dataset
-        output_path = os.path.join(output_dir, "persona_chat_processed")
-        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
-            logger.info(f"Saving processed dataset to {output_path}")
-            processed_dataset.save_to_disk(output_path)
-        
-        return processed_dataset
-    
-    def process_writingprompts(self, dataset: Union[Dataset, DatasetDict],
-                         streaming: bool = False) -> Union[Dataset, DatasetDict]:
-        """
-        Process the WritingPrompts dataset for fine-tuning.
-        
-        Args:
-            dataset: The dataset to process
-            streaming: Whether to use streaming mode
-            
-        Returns:
-            Processed dataset
-        """
-        logger.info("Processing WritingPrompts dataset")
-        
-        # Check if text processors are available
-        if not TEXT_PROCESSORS_AVAILABLE:
-            raise ImportError("Text processors module not available. Make sure src/data/processors/text_processors.py exists.")
-        
-        # Calculate output directory path
-        output_dir = "data/processed"
-        
-        # Use the provided dataset instead of loading it again
-        def process_example(example):
-            """Process a single example from the WritingPrompts dataset"""
-            prompt = example.get('prompt', '')
-            story = example.get('story', '')
-            
-            # Format as instruction-response pair
-            return {
-                "instruction": f"Writing Prompt: {prompt}",
-                "response": story,
-                "text": f"Writing Prompt: {prompt}\n\n{story}",
-                "language": "en",
-                "source": "writingprompts",
-                "processed_text": f"Writing Prompt: {prompt}\n\n{story}"
-            }
-            
-        # Process the dataset
-        processed_dataset = dataset.map(process_example)
-        
-        # Filter out empty examples
-        processed_dataset = processed_dataset.filter(lambda x: 
-            x["instruction"] != "" and x["response"] != "")
-        
-        # Save the processed dataset
-        output_path = os.path.join(output_dir, "writingprompts_processed")
-        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
-            logger.info(f"Saving processed dataset to {output_path}")
-            processed_dataset.save_to_disk(output_path)
-        
-        return processed_dataset
+        return processed_datasets
