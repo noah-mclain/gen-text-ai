@@ -750,13 +750,39 @@ class DeepseekFineTuner:
         deepspeed_config_path = None
         
         if use_deepspeed:
+            # Ensure ACCELERATE_USE_DEEPSPEED is set
+            os.environ["ACCELERATE_USE_DEEPSPEED"] = "true"
+            
+            # Log current DeepSpeed environment variables for debugging
+            hf_ds_config = os.environ.get("HF_DS_CONFIG", "")
+            accelerate_ds_config = os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")
+            
+            logger.info(f"Current DeepSpeed env vars - HF_DS_CONFIG: {hf_ds_config}")
+            logger.info(f"Current DeepSpeed env vars - ACCELERATE_DEEPSPEED_CONFIG_FILE: {accelerate_ds_config}")
+            logger.info(f"Current DeepSpeed env vars - ACCELERATE_DEEPSPEED_PLUGIN_TYPE: {os.environ.get('ACCELERATE_DEEPSPEED_PLUGIN_TYPE', 'not set')}")
+            
             # Try different potential locations for the DeepSpeed config
-            potential_paths = [
-                "/notebooks/ds_config_a6000.json",  # Absolute path on Paperspace
+            potential_paths = []
+            
+            # First check environment variables which have highest priority
+            if accelerate_ds_config and os.path.exists(accelerate_ds_config):
+                potential_paths.append(accelerate_ds_config)
+                
+            if hf_ds_config and os.path.exists(hf_ds_config):
+                potential_paths.append(hf_ds_config)
+            
+            # Then check common locations
+            common_paths = [
                 os.path.join(os.getcwd(), "ds_config_a6000.json"),  # Current working directory
-                os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")  # From environment variable
+                "/notebooks/ds_config_a6000.json" if os.path.exists("/notebooks") else None,  # Paperspace path
+                os.path.join(os.getcwd(), "config", "ds_config_zero3.json"),  # Config directory
+                os.path.join(os.getcwd(), "models", "ds_config.json")  # Models directory
             ]
             
+            # Add valid paths to the potential paths
+            potential_paths.extend([p for p in common_paths if p and os.path.exists(p)])
+            
+            # Find the first valid DeepSpeed config
             for path in potential_paths:
                 if path and os.path.exists(path):
                     logger.info(f"Found DeepSpeed config at: {path}")
@@ -764,7 +790,7 @@ class DeepseekFineTuner:
                     break
             
             if not deepspeed_config_path:
-                # As a last resort, create a temporary DeepSpeed config file
+                # As a last resort, create a persistent DeepSpeed config file
                 logger.info("No DeepSpeed config file found, creating one with proper ZeRO settings")
                 import tempfile
                 import json
@@ -779,7 +805,12 @@ class DeepseekFineTuner:
                         "overlap_comm": True,
                         "contiguous_gradients": True,
                         "reduce_scatter": True
-                    }
+                    },
+                    "gradient_accumulation_steps": self.training_config.get("gradient_accumulation_steps", 8),
+                    "gradient_clipping": self.training_config.get("max_grad_norm", 1.0),
+                    "train_batch_size": self.training_config.get("per_device_train_batch_size", 4) * 
+                                     self.training_config.get("gradient_accumulation_steps", 8),
+                    "train_micro_batch_size_per_gpu": self.training_config.get("per_device_train_batch_size", 4)
                 }
                 
                 # Add other settings from training config if available
@@ -790,12 +821,38 @@ class DeepseekFineTuner:
                             self.training_config["deepspeed"]["zero_optimization"] = ds_config["zero_optimization"]
                         ds_config = self.training_config["deepspeed"]
                 
-                # Create a temporary file with the config
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
-                json.dump(ds_config, temp_file)
-                temp_file.close()
-                deepspeed_config_path = temp_file.name
-                logger.info(f"Created temporary DeepSpeed config at: {deepspeed_config_path}")
+                # Create a persistent file in the output directory
+                persistent_config_path = os.path.join(self.training_config.get("output_dir", "models/deepseek-coder-finetune"), "ds_config.json")
+                
+                try:
+                    # Ensure output directory exists
+                    os.makedirs(os.path.dirname(persistent_config_path), exist_ok=True)
+                    
+                    # Write to the persistent config file
+                    with open(persistent_config_path, 'w') as f:
+                        json.dump(ds_config, f, indent=2)
+                    
+                    deepspeed_config_path = persistent_config_path
+                    logger.info(f"Created persistent DeepSpeed config at: {deepspeed_config_path}")
+                except Exception as e:
+                    logger.error(f"Failed to create persistent DeepSpeed config: {e}")
+                    logger.info("Falling back to temporary file")
+                    
+                    # Create a temporary file with the config as fallback
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+                    json.dump(ds_config, temp_file)
+                    temp_file.close()
+                    deepspeed_config_path = temp_file.name
+                    logger.info(f"Created temporary DeepSpeed config at: {deepspeed_config_path}")
+            
+            # Always set these environment variables to ensure DeepSpeed integration works properly
+            os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = deepspeed_config_path
+            os.environ["HF_DS_CONFIG"] = deepspeed_config_path
+            os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
+            
+            logger.info(f"Set DeepSpeed env vars - ACCELERATE_DEEPSPEED_CONFIG_FILE: {os.environ['ACCELERATE_DEEPSPEED_CONFIG_FILE']}")
+            logger.info(f"Set DeepSpeed env vars - HF_DS_CONFIG: {os.environ['HF_DS_CONFIG']}")
+            logger.info(f"Set DeepSpeed env vars - ACCELERATE_DEEPSPEED_PLUGIN_TYPE: {os.environ['ACCELERATE_DEEPSPEED_PLUGIN_TYPE']}")
         
         # Create training arguments
         training_args_dict = {

@@ -2,6 +2,32 @@
 # Fully optimized training script for A6000 GPU with 48GB VRAM
 # This script is configured for maximum performance with multi-language support
 
+# Make diagnose_deepspeed.sh executable
+chmod +x scripts/diagnose_deepspeed.sh 2>/dev/null || true
+
+# Function to verify DeepSpeed setup
+verify_deepspeed_setup() {
+    # Check if DeepSpeed is available
+    if ! python -c "import deepspeed" 2>/dev/null; then
+        echo "⚠️ DeepSpeed not found. Installing..."
+        pip install deepspeed --no-cache-dir
+    fi
+    
+    # Check environment variables
+    if [ -z "$ACCELERATE_USE_DEEPSPEED" ] || [ -z "$ACCELERATE_DEEPSPEED_PLUGIN_TYPE" ] || [ -z "$HF_DS_CONFIG" ]; then
+        echo "⚠️ Some DeepSpeed environment variables are not set. Running fix script..."
+        python scripts/fix_deepspeed.py
+    fi
+    
+    # Check if the config file exists
+    if [ ! -f "$ACCELERATE_DEEPSPEED_CONFIG_FILE" ] && [ ! -f "$HF_DS_CONFIG" ]; then
+        echo "⚠️ DeepSpeed config file not found. Creating one..."
+        python scripts/fix_deepspeed.py
+    fi
+    
+    echo "DeepSpeed setup verification complete."
+}
+
 # Set environment variables for better performance
 export CUDA_VISIBLE_DEVICES=0
 export OMP_NUM_THREADS=8
@@ -29,24 +55,81 @@ export DS_OFFLOAD_OPTIMIZER=cpu
 export ACCELERATE_USE_DEEPSPEED=true
 
 # Fix DeepSpeed configuration - ensure the config is valid and accessible
-echo "Fixing DeepSpeed configuration..."
+echo "===== SETTING UP DEEPSPEED CONFIGURATION ====="
+# Run the DeepSpeed fix script
 python scripts/fix_deepspeed.py
-# Set explicit path to make sure accelerate can find it
-export ACCELERATE_DEEPSPEED_CONFIG_FILE=$(pwd)/ds_config_a6000.json
+
+# Get the absolute path to DeepSpeed config 
+DS_CONFIG_PATH=$(realpath ds_config_a6000.json)
+if [ ! -f "$DS_CONFIG_PATH" ]; then
+  echo "⚠️ DeepSpeed config not found at $DS_CONFIG_PATH. Creating default config."
+  cat > "$DS_CONFIG_PATH" << EOL
+{
+  "fp16": {
+    "enabled": true,
+    "loss_scale": 0,
+    "loss_scale_window": 1000,
+    "initial_scale_power": 16,
+    "hysteresis": 2,
+    "min_loss_scale": 1
+  },
+  "zero_optimization": {
+    "stage": 2,
+    "offload_optimizer": {
+      "device": "cpu",
+      "pin_memory": true
+    },
+    "offload_param": {
+      "device": "cpu",
+      "pin_memory": true
+    },
+    "contiguous_gradients": true,
+    "overlap_comm": true,
+    "reduce_scatter": true
+  },
+  "gradient_accumulation_steps": 8,
+  "gradient_clipping": 1.0,
+  "steps_per_print": 50,
+  "train_batch_size": 32,
+  "train_micro_batch_size_per_gpu": 4,
+  "wall_clock_breakdown": false
+}
+EOL
+fi
+
+# Set all necessary environment variables for DeepSpeed
+export ACCELERATE_DEEPSPEED_CONFIG_FILE="$DS_CONFIG_PATH"
 # Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
 export ACCELERATE_DEEPSPEED_PLUGIN_TYPE=deepspeed
 # Make sure HF_DS_CONFIG is set for transformers to recognize DeepSpeed config
-export HF_DS_CONFIG=$(pwd)/ds_config_a6000.json
+export HF_DS_CONFIG="$DS_CONFIG_PATH"
 # Optional but recommended for better performance
 export TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT=1
+
 echo "DeepSpeed config at: $ACCELERATE_DEEPSPEED_CONFIG_FILE"
 echo "DeepSpeed plugin type: $ACCELERATE_DEEPSPEED_PLUGIN_TYPE"
+echo "HF_DS_CONFIG: $HF_DS_CONFIG"
+
+# Make a local backup copy of the DeepSpeed config for debugging
+mkdir -p logs/deepspeed
+cp "$DS_CONFIG_PATH" "logs/deepspeed/ds_config_backup_$(date +%Y%m%d_%H%M%S).json"
 
 # Copy DeepSpeed config to Paperspace notebooks directory if running there
 if [ -d "/notebooks" ]; then
   echo "Paperspace environment detected. Copying DeepSpeed config to /notebooks directory..."
-  cp ds_config_a6000.json /notebooks/ds_config_a6000.json
+  cp "$DS_CONFIG_PATH" /notebooks/ds_config_a6000.json
   echo "Config copied successfully to /notebooks/ds_config_a6000.json"
+  
+  # Also create directory for models config
+  mkdir -p /notebooks/models
+  cp "$DS_CONFIG_PATH" /notebooks/models/ds_config.json
+  echo "Config copied to /notebooks/models/ds_config.json for model initialization"
+fi
+
+# Test DeepSpeed configuration if script exists
+if [ -f "scripts/test_deepspeed_config.py" ]; then
+  echo "===== TESTING DEEPSPEED CONFIGURATION ====="
+  python scripts/test_deepspeed_config.py || echo "⚠️ DeepSpeed configuration test completed with warnings (continuing anyway)"
 fi
 
 # Check if HF_TOKEN is set
@@ -182,6 +265,9 @@ else
 fi
 
 echo "===== STARTING TRAINING ====="
+# Verify DeepSpeed setup before training
+verify_deepspeed_setup
+
 # Train with direct module call (bypassing main_api.py)
 echo "Starting training with direct module call (avoids argument mismatch)..."
 python -m src.training.train \
@@ -189,6 +275,8 @@ python -m src.training.train \
     --data_dir data/processed \
     $USE_DRIVE_FLAG \
     --push_to_hub \
+    --deepspeed \
+    --deepspeed_config "$DS_CONFIG_PATH" \
     2>&1 | tee logs/train_a6000_optimized_$(date +%Y%m%d_%H%M%S).log
 
 # Check exit status

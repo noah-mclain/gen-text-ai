@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from .preprocessing import DataPreprocessor
 from typing import List, Dict, Optional
+import time
+import datetime
 
 # Import drive utils
 import sys
@@ -31,8 +33,12 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                     streaming: bool = False, no_cache: bool = False, 
                     use_drive_api: bool = False, credentials_path: Optional[str] = None,
                     drive_base_dir: Optional[str] = None, headless: bool = False,
-                    skip_local_storage: bool = False):
+                    skip_local_storage: bool = False, verbose: bool = False):
     """Process datasets according to the configuration."""
+    
+    # Set logging level
+    if verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
     
     # Check for existing HF_TOKEN environment variable first
     if os.environ.get("HF_TOKEN"):
@@ -62,6 +68,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
     try:
         with open(config_path, 'r') as f:
             dataset_config = json.load(f)
+            logger.info(f"Loaded dataset configuration with {len(dataset_config)} datasets")
     except Exception as e:
         logger.error(f"Error loading dataset configuration: {str(e)}")
         return
@@ -75,6 +82,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
             continue
         filtered_config[dataset_name] = config
     dataset_config = filtered_config
+    logger.info(f"Found {len(dataset_config)} enabled datasets")
 
     # Filter datasets if specified
     if datasets:
@@ -82,20 +90,37 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         for dataset_name in datasets:
             if dataset_name in dataset_config:
                 filtered_config[dataset_name] = dataset_config[dataset_name]
+                logger.info(f"Including specified dataset: {dataset_name}")
             else:
                 logger.warning(f"Dataset {dataset_name} not found in configuration")
         dataset_config = filtered_config
+        logger.info(f"Processing {len(dataset_config)} datasets specified by user")
 
     # Set streaming option for each dataset
     for dataset_name in dataset_config:
         dataset_config[dataset_name]["streaming"] = streaming
         dataset_config[dataset_name]["use_cache"] = not no_cache
+        logger.debug(f"Dataset {dataset_name} configuration: streaming={streaming}, use_cache={not no_cache}")
 
     # Initialize preprocessor
     preprocessor = DataPreprocessor()
 
     # Process datasets
-    output_dir = "data/processed"
+    output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/processed"))
+    logger.info(f"Using output directory: {output_dir}")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Make sure the output directory has write permissions
+    test_file_path = os.path.join(output_dir, ".write_test")
+    try:
+        with open(test_file_path, "w") as f:
+            f.write("test")
+        os.remove(test_file_path)
+        logger.info(f"Confirmed write access to output directory: {output_dir}")
+    except Exception as e:
+        logger.error(f"Cannot write to output directory {output_dir}: {e}")
+        logger.error("Please check directory permissions")
+        return
 
     # Configure Google Drive syncing
     if use_drive_api:
@@ -133,8 +158,21 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         output_dir = os.path.join(temp_dir, "processed")
         os.makedirs(output_dir, exist_ok=True)
 
-    # Process the datasets
+    # Process the datasets - measure time for logging
+    start_time = time.time()
+    logger.info(f"Starting dataset processing at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     processed_datasets = preprocessor.load_and_process_all_datasets(dataset_config, output_dir)
+    end_time = time.time()
+    processing_time = end_time - start_time
+    logger.info(f"Dataset processing completed in {processing_time:.2f} seconds")
+
+    # Check if any datasets were processed
+    if not processed_datasets:
+        logger.warning("No datasets were processed successfully")
+    else:
+        logger.info(f"Successfully processed {len(processed_datasets)} datasets")
+        for name in processed_datasets.keys():
+            logger.info(f"  - {name}")
 
     # Upload processed datasets if using Drive API
     if use_drive_api:
@@ -142,7 +180,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         try:
             # Sync the processed datasets to Drive
             for dataset_name in processed_datasets:
-                dataset_path = os.path.join(output_dir, dataset_name)
+                dataset_path = os.path.join(output_dir, f"{dataset_name}_processed")
                 if os.path.exists(dataset_path):
                     # Sync to the "preprocessed" directory in Drive
                     logger.info(f"Syncing dataset {dataset_name} to Drive")
@@ -170,6 +208,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
             logger.error(f"Error syncing datasets to Google Drive: {str(e)}")
 
     logger.info(f"Processed {len(processed_datasets)} datasets")
+    return processed_datasets
 
 def main():
     parser = argparse.ArgumentParser(description="Process datasets for fine-tuning deepseek-coder")

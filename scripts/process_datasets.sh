@@ -1,164 +1,79 @@
 #!/bin/bash
 
-# Combined script for processing datasets with authentication support
-# This script handles both standard processing and authenticated access to datasets
+# Process text datasets with improved settings
+# This script processes text-based datasets with proper error handling and dependencies
 
-# Set color codes for better readability
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Set bash to exit on error and show error trace
+set -e
 
-echo -e "${BLUE}==========================================${NC}"
-echo -e "${GREEN}DeepSeek-Coder Dataset Processing Script${NC}"
-echo -e "${BLUE}==========================================${NC}"
+# Set up environment
+export PYTHONPATH=.
 
-# Get the directory where the script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-# Navigate to the project root directory
-PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
-cd "$PROJECT_ROOT"
-echo -e "${GREEN}Working directory: $(pwd)${NC}"
+# Create data directory structure
+mkdir -p data/processed
+PROCESSED_DIR=$(pwd)/data/processed
+echo "Output directory: $PROCESSED_DIR"
 
-# Set PYTHONPATH to include the project root
-export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
-echo -e "${GREEN}PYTHONPATH: $PYTHONPATH${NC}"
+# Check for required dependencies
+echo "==== Installing Required Dependencies ===="
+pip install --quiet zstandard langid nltk
 
-# Default configuration
-CONFIG="config/dataset_config.json"
-CREDENTIALS_PATH="credentials.json"
-STREAMING=true
-NO_CACHE=true
-USE_DRIVE_API=false
-DRIVE_BASE_DIR="DeepseekCoder"
-HEADLESS=true
-INSTALL_DEPS=false
-DATASETS="code_alpaca mbpp codeparrot humaneval"
+# Download necessary NLTK resources 
+python -c "
+import nltk
+try:
+    nltk.download('punkt', quiet=True)
+    print('Successfully downloaded NLTK punkt')
+except Exception as e:
+    print(f'Could not download NLTK data: {e}')
+"
 
-# Parse command line arguments
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --config)
-      CONFIG="$2"
-      shift 2
-      ;;
-    --credentials)
-      CREDENTIALS_PATH="$2"
-      shift 2
-      ;;
-    --datasets)
-      shift
-      DATASETS=""
-      while [[ $# -gt 0 && ! $1 =~ ^-- ]]; do
-        DATASETS="$DATASETS $1"
-        shift
-      done
-      ;;
-    --no-streaming)
-      STREAMING=false
-      shift
-      ;;
-    --use-cache)
-      NO_CACHE=false
-      shift
-      ;;
-    --drive)
-      USE_DRIVE_API=true
-      shift
-      ;;
-    --drive-dir)
-      DRIVE_BASE_DIR="$2"
-      shift 2
-      ;;
-    --browser)
-      HEADLESS=false
-      shift
-      ;;
-    --install)
-      INSTALL_DEPS=true
-      shift
-      ;;
-    *)
-      echo -e "${YELLOW}Unknown option: $1 (ignoring)${NC}"
-      shift
-      ;;
-  esac
-done
-
-# Install dependencies if requested
-if [ "$INSTALL_DEPS" = "true" ]; then
-    echo -e "${BLUE}Installing dependencies...${NC}"
-    pip install -r requirements.txt
-    pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
-fi
-
-# Ensure necessary directories exist
-mkdir -p data/raw data/processed models results visualizations logs
-
-# Handle Hugging Face authentication
+# Verify HF_TOKEN is available
 if [ -z "$HF_TOKEN" ]; then
-  echo -e "${YELLOW}HF_TOKEN not set in environment, checking credentials...${NC}"
-  
-  # Try to set token using the Python script
-  python scripts/set_hf_token.py --credentials "$CREDENTIALS_PATH"
-  
-  # Check if token was set
-  if [ -z "$HF_TOKEN" ]; then
-    echo -e "${YELLOW}Warning: HF_TOKEN is not set. Some datasets may be inaccessible.${NC}"
-  else
-    echo -e "${GREEN}Successfully set HF_TOKEN from credentials${NC}"
-  fi
+    echo "Warning: HF_TOKEN environment variable is not set. Some datasets might be inaccessible."
+    echo "You can set it with: export HF_TOKEN=your_huggingface_token"
 else
-  echo -e "${GREEN}HF_TOKEN is already set in environment${NC}"
+    echo "HF_TOKEN is set. Will use for authentication with Hugging Face Hub."
 fi
 
-# Build command
-CMD="python main_api.py --mode process --dataset_config $CONFIG"
+# Process the datasets with streaming mode for memory efficiency and detailed logging
+# We also use no_cache to avoid disk space issues
+echo "==== Processing Datasets ===="
+LOG_FILE="logs/dataset_processing_$(date +%Y%m%d_%H%M%S).log"
+mkdir -p logs
 
-# Add datasets if specified
-if [ -n "$DATASETS" ]; then
-  CMD="$CMD --datasets $DATASETS"
-fi
+python -m src.data.process_datasets \
+    --config config/dataset_config_text.json \
+    --streaming \
+    --no_cache 2>&1 | tee "$LOG_FILE"
 
-# Add streaming and caching options
-if [ "$STREAMING" = "true" ]; then
-  CMD="$CMD --streaming"
-fi
-
-if [ "$NO_CACHE" = "true" ]; then
-  CMD="$CMD --no_cache"
-fi
-
-# Add Google Drive integration if enabled
-if [ "$USE_DRIVE_API" = "true" ]; then
-  # Check if credentials file exists
-  if [ ! -f "$CREDENTIALS_PATH" ]; then
-    echo -e "${RED}Credentials file not found at $CREDENTIALS_PATH${NC}"
-    echo -e "${RED}Cannot use Google Drive API without credentials${NC}"
-    USE_DRIVE_API=false
-  else
-    CMD="$CMD --use_drive_api --credentials_path $CREDENTIALS_PATH --drive_base_dir $DRIVE_BASE_DIR"
-    
-    if [ "$HEADLESS" = "true" ]; then
-      CMD="$CMD --headless"
-    fi
-  fi
-fi
-
-# Print the command
-echo -e "${BLUE}===================${NC}"
-echo -e "${GREEN}Executing:${NC}"
-echo -e "${YELLOW}$CMD${NC}"
-echo -e "${BLUE}===================${NC}"
-
-# Execute the command
-eval "$CMD"
-
-# Check result
+# Check if processing was successful
 if [ $? -eq 0 ]; then
-  echo -e "${GREEN}Dataset processing completed successfully!${NC}"
+    echo "✅ Dataset processing completed successfully!"
 else
-  echo -e "${RED}Dataset processing failed with exit code $?${NC}"
-  exit 1
-fi 
+    echo "⚠️ Dataset processing encountered issues. Check the log for details."
+fi
+
+# Verify the output directory
+echo "==== Checking Processed Datasets ===="
+
+# Check if any processed datasets exist
+DATASETS_COUNT=$(find "$PROCESSED_DIR" -type d -name "*_processed" | wc -l)
+if [ "$DATASETS_COUNT" -eq 0 ]; then
+    echo "⚠️ Warning: No processed datasets found in $PROCESSED_DIR"
+    echo "This could indicate processing failures or incorrect output paths."
+else
+    echo "Found $DATASETS_COUNT processed dataset directories:"
+    find "$PROCESSED_DIR" -type d -name "*_processed" | while read -r dir; do
+        BASE_NAME=$(basename "$dir")
+        echo "  - $BASE_NAME"
+        # Check if the dataset contains any data
+        if [ -f "$dir/dataset_info.json" ]; then
+            echo "    ✓ Dataset appears to be valid (dataset_info.json exists)"
+        else
+            echo "    ⚠️ Dataset may be incomplete or empty (no dataset_info.json)"
+        fi
+    done
+fi
+
+echo "==== Processing Completed at $(date) ====" 

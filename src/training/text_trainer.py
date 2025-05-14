@@ -465,18 +465,42 @@ class FlanUL2TextTrainer:
         
         # Add deepspeed configuration if requested
         if self.training_config.get("use_deepspeed", True):
+            # Ensure ACCELERATE_USE_DEEPSPEED is set
+            os.environ["ACCELERATE_USE_DEEPSPEED"] = "true"
+            
+            # Check if these environment variables are set; if not, our code will set them
+            hf_ds_config = os.environ.get("HF_DS_CONFIG", "")
+            accelerate_ds_config = os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")
+            
+            # Log the current state for debugging
+            logger.info(f"Current DeepSpeed env vars - HF_DS_CONFIG: {hf_ds_config}")
+            logger.info(f"Current DeepSpeed env vars - ACCELERATE_DEEPSPEED_CONFIG_FILE: {accelerate_ds_config}")
+            logger.info(f"Current DeepSpeed env vars - ACCELERATE_DEEPSPEED_PLUGIN_TYPE: {os.environ.get('ACCELERATE_DEEPSPEED_PLUGIN_TYPE', 'not set')}")
+            
             # Try different potential locations for the DeepSpeed config
-            potential_paths = [
-                os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", ""),  # From environment variable first
-                os.environ.get("HF_DS_CONFIG", ""),  # Also check HF-specific var
-                "/notebooks/ds_config_a6000.json",  # Absolute path on Paperspace
+            potential_paths = []
+            
+            # First check environment variables which have highest priority
+            if accelerate_ds_config and os.path.exists(accelerate_ds_config):
+                potential_paths.append(accelerate_ds_config)
+                
+            if hf_ds_config and os.path.exists(hf_ds_config):
+                potential_paths.append(hf_ds_config)
+            
+            # Then check common locations
+            common_paths = [
                 os.path.join(os.getcwd(), "ds_config_a6000.json"),  # Current working directory
+                "/notebooks/ds_config_a6000.json" if os.path.exists("/notebooks") else None,  # Paperspace path
                 os.path.join(os.getcwd(), "config", "ds_config_zero3.json"),  # Config directory
                 os.path.join(os.getcwd(), "models", "ds_config.json")  # Models directory
             ]
             
+            # Add valid paths to the potential paths
+            potential_paths.extend([p for p in common_paths if p and os.path.exists(p)])
+            
             ds_config_file = None
             
+            # Use the first valid config file
             for path in potential_paths:
                 if path and os.path.exists(path):
                     logger.info(f"Found DeepSpeed config at: {path}")
@@ -484,14 +508,24 @@ class FlanUL2TextTrainer:
                     break
                     
             if ds_config_file:
+                # Found a valid config file, set it in the training args
                 args.deepspeed = ds_config_file
-                # Ensure the env variable is also set for transformers internal use
+                
+                # Make sure both environment variables are set - crucial for Transformers DeepSpeed integration
                 os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = ds_config_file
                 os.environ["HF_DS_CONFIG"] = ds_config_file
-                # Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
+                
+                # Set the plugin type - crucial to avoid 'NoneType' object has no attribute 'hf_ds_config' error
                 os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
+                
+                # Log settings for debugging
+                logger.info(f"Set DeepSpeed config - args.deepspeed: {args.deepspeed}")
+                logger.info(f"Set DeepSpeed env vars - ACCELERATE_DEEPSPEED_CONFIG_FILE: {os.environ['ACCELERATE_DEEPSPEED_CONFIG_FILE']}")
+                logger.info(f"Set DeepSpeed env vars - HF_DS_CONFIG: {os.environ['HF_DS_CONFIG']}")
+                logger.info(f"Set DeepSpeed env vars - ACCELERATE_DEEPSPEED_PLUGIN_TYPE: {os.environ['ACCELERATE_DEEPSPEED_PLUGIN_TYPE']}")
             else:
-                # Use the deepspeed configuration from the training config or create a default one
+                # No existing config found, create one from scratch
+                logger.warning(f"No DeepSpeed config file found, creating one with proper ZeRO settings")
                 import tempfile
                 import json
                 
@@ -505,7 +539,12 @@ class FlanUL2TextTrainer:
                         "overlap_comm": True,
                         "contiguous_gradients": True,
                         "reduce_scatter": True
-                    }
+                    },
+                    "gradient_accumulation_steps": self.training_config.get("gradient_accumulation_steps", 8),
+                    "gradient_clipping": self.training_config.get("max_grad_norm", 1.0),
+                    "train_batch_size": self.training_config.get("per_device_train_batch_size", 2) * 
+                                        self.training_config.get("gradient_accumulation_steps", 8),
+                    "train_micro_batch_size_per_gpu": self.training_config.get("per_device_train_batch_size", 2)
                 }
                 
                 # If we have a config in the training config, use it
@@ -515,19 +554,48 @@ class FlanUL2TextTrainer:
                         self.training_config["deepspeed"]["zero_optimization"] = ds_config["zero_optimization"]
                     ds_config = self.training_config["deepspeed"]
                 
-                # Write the config to a temporary file
-                ds_config_file = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.json')
-                json.dump(ds_config, ds_config_file)
-                ds_config_file.close()
+                # Create a persistent file rather than a temporary one to ensure it exists throughout training
+                persistent_config_path = os.path.join(self.training_config["output_dir"], "ds_config.json")
                 
-                args.deepspeed = ds_config_file.name
-                # Ensure the env variable is also set for transformers internal use
-                os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = ds_config_file.name
-                os.environ["HF_DS_CONFIG"] = ds_config_file.name
-                # Explicitly set plugin type to fix 'NoneType' object has no attribute 'hf_ds_config' error
-                os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
-                logger.info(f"Created temporary DeepSpeed config at: {ds_config_file.name}")
-        
+                try:
+                    # Write to the persistent config file
+                    with open(persistent_config_path, 'w') as f:
+                        json.dump(ds_config, f, indent=2)
+                    
+                    logger.info(f"Created DeepSpeed config at: {persistent_config_path}")
+                    
+                    # Set the config file in both environment variables and args
+                    args.deepspeed = persistent_config_path
+                    os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = persistent_config_path
+                    os.environ["HF_DS_CONFIG"] = persistent_config_path
+                    os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
+                    
+                    # Log for debugging
+                    logger.info(f"Set DeepSpeed config - args.deepspeed: {args.deepspeed}")
+                    logger.info(f"Set DeepSpeed env vars - ACCELERATE_DEEPSPEED_CONFIG_FILE: {os.environ['ACCELERATE_DEEPSPEED_CONFIG_FILE']}")
+                    logger.info(f"Set DeepSpeed env vars - HF_DS_CONFIG: {os.environ['HF_DS_CONFIG']}")
+                    logger.info(f"Set DeepSpeed env vars - ACCELERATE_DEEPSPEED_PLUGIN_TYPE: {os.environ['ACCELERATE_DEEPSPEED_PLUGIN_TYPE']}")
+                
+                except Exception as e:
+                    # Fallback to tempfile if we can't write to the persistent location
+                    logger.error(f"Failed to create persistent DeepSpeed config: {e}")
+                    logger.info("Using temporary file as fallback")
+                    
+                    # Write the config to a temporary file
+                    ds_config_file = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.json')
+                    json.dump(ds_config, ds_config_file)
+                    ds_config_file.close()
+                    
+                    args.deepspeed = ds_config_file.name
+                    os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = ds_config_file.name
+                    os.environ["HF_DS_CONFIG"] = ds_config_file.name
+                    os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
+                    
+                    logger.info(f"Created temporary DeepSpeed config at: {ds_config_file.name}")
+                    logger.info(f"Set DeepSpeed env vars - ACCELERATE_DEEPSPEED_CONFIG_FILE: {os.environ['ACCELERATE_DEEPSPEED_CONFIG_FILE']}")
+                    logger.info(f"Set DeepSpeed env vars - HF_DS_CONFIG: {os.environ['HF_DS_CONFIG']}")
+                    logger.info(f"Set DeepSpeed env vars - ACCELERATE_DEEPSPEED_PLUGIN_TYPE: {os.environ['ACCELERATE_DEEPSPEED_PLUGIN_TYPE']}")
+
         return args
     
     def train(self, data_dir: str) -> Dict[str, Any]:

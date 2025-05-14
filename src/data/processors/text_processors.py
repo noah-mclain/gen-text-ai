@@ -4,6 +4,7 @@ import json
 from typing import Dict, List, Any, Union, Optional
 from datasets import Dataset, load_dataset
 from tqdm.auto import tqdm
+import traceback
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -35,7 +36,12 @@ def openassistant_processor(
     
     try:
         # Load the dataset with appropriate split
-        dataset = load_dataset(dataset_path, split=split, streaming=streaming)
+        dataset = load_dataset(
+            dataset_path, 
+            split=split, 
+            streaming=streaming,
+            use_auth_token=os.environ.get("HF_TOKEN")
+        )
         
         def process_example(example):
             """Process a single example from the OpenAssistant dataset"""
@@ -57,7 +63,7 @@ def openassistant_processor(
                 "instruction": instruction,
                 "response": response,
                 "language": lang,
-                "text": f"Instruction: {instruction}\nResponse: {response}",
+                "text": f"User: {instruction}\nAssistant: {response}",
                 "source": "openassistant"
             }
             
@@ -77,12 +83,15 @@ def openassistant_processor(
         output_path = os.path.join(output_dir, "openassistant_processed")
         if not streaming:
             logger.info(f"Saving processed dataset to {output_path}")
+            os.makedirs(output_path, exist_ok=True)
             processed_dataset.save_to_disk(output_path)
+            logger.info(f"Dataset saved to {output_path}")
         
         return processed_dataset
         
     except Exception as e:
         logger.error(f"Error processing OpenAssistant dataset: {str(e)}")
+        logger.error(traceback.format_exc())
         # Return an empty dataset as a fallback
         return Dataset.from_dict({"instruction": [], "response": [], "text": [], "language": [], "source": []})
 
@@ -113,7 +122,12 @@ def gpteacher_processor(
     
     try:
         # Load the dataset with appropriate split
-        dataset = load_dataset(dataset_path, split=split, streaming=streaming)
+        dataset = load_dataset(
+            dataset_path, 
+            split=split, 
+            streaming=streaming,
+            use_auth_token=os.environ.get("HF_TOKEN")
+        )
         
         def process_example(example):
             """Process a single example from the GPTeacher dataset"""
@@ -129,7 +143,7 @@ def gpteacher_processor(
             return {
                 "instruction": full_instruction,
                 "response": response,
-                "text": f"Instruction: {full_instruction}\nResponse: {response}",
+                "text": f"User: {full_instruction}\nAssistant: {response}",
                 "language": "en",
                 "source": "gpteacher"
             }
@@ -150,12 +164,15 @@ def gpteacher_processor(
         output_path = os.path.join(output_dir, "gpteacher_general_processed")
         if not streaming:
             logger.info(f"Saving processed dataset to {output_path}")
+            os.makedirs(output_path, exist_ok=True)
             processed_dataset.save_to_disk(output_path)
+            logger.info(f"Dataset saved to {output_path}")
         
         return processed_dataset
         
     except Exception as e:
         logger.error(f"Error processing GPTeacher dataset: {str(e)}")
+        logger.error(traceback.format_exc())
         # Return an empty dataset as a fallback
         return Dataset.from_dict({"instruction": [], "response": [], "text": [], "language": [], "source": []})
 
@@ -185,19 +202,34 @@ def pile_processor(
     logger.info(f"Loading Pile dataset from {dataset_path}")
     
     try:
+        # Verify zstandard is available
+        try:
+            import zstandard
+            logger.info("zstandard package is available for Pile dataset")
+        except ImportError:
+            logger.error("Missing required dependency 'zstandard' for Pile dataset")
+            logger.error("Install with: pip install zstandard")
+            return Dataset.from_dict({"instruction": [], "response": [], "text": [], "language": [], "source": []})
+            
         # Load the dataset with appropriate split
-        dataset = load_dataset(dataset_path, split=split, streaming=streaming)
+        dataset = load_dataset(
+            dataset_path, 
+            split=split, 
+            streaming=streaming, 
+            trust_remote_code=True,
+            use_auth_token=os.environ.get("HF_TOKEN")
+        )
         
         def process_example(example):
             """Process a single example from the Pile dataset"""
             text = example.get('text', '')
             
             # For Pile, we'll just use the text directly
-            # Since it's not instruction-based, we'll leave instruction/response empty
+            # Since it's not instruction-based, we'll format it as an instruction pair
             return {
-                "instruction": "",
-                "response": "",
-                "text": text,
+                "instruction": "Write a continuation of the following text:",
+                "response": text,
+                "text": f"User: Write a continuation of the following text:\nAssistant: {text}",
                 "language": "en",  # Assuming English, but Pile has mixed languages
                 "source": "pile"
             }
@@ -217,12 +249,15 @@ def pile_processor(
         output_path = os.path.join(output_dir, "pile_processed")
         if not streaming:
             logger.info(f"Saving processed dataset to {output_path}")
+            os.makedirs(output_path, exist_ok=True)
             processed_dataset.save_to_disk(output_path)
+            logger.info(f"Dataset saved to {output_path}")
         
         return processed_dataset
         
     except Exception as e:
         logger.error(f"Error processing Pile dataset: {str(e)}")
+        logger.error(traceback.format_exc())
         # Return an empty dataset as a fallback
         return Dataset.from_dict({"instruction": [], "response": [], "text": [], "language": [], "source": []})
 
@@ -253,25 +288,77 @@ def persona_chat_processor(
     
     try:
         # Load the dataset with appropriate split
-        dataset = load_dataset(dataset_path, split=split, streaming=streaming)
+        dataset = load_dataset(
+            dataset_path, 
+            split=split, 
+            streaming=streaming,
+            use_auth_token=os.environ.get("HF_TOKEN")
+        )
         
         def process_example(example):
             """Process a single example from the Synthetic-Persona-Chat dataset"""
-            instruction = example.get('human', '')
-            response = example.get('assistant', '')
-            persona = example.get('persona', '')
+            # Look for different field names - personas might be in different formats
+            persona_fields = ['personas', 'persona', 'personality']
+            dialogue_fields = ['dialogue', 'dialog', 'conversation', 'utterances']
             
-            if persona:
-                full_instruction = f"Persona: {persona}\n\nUser: {instruction}"
+            # Get persona
+            persona = None
+            for field in persona_fields:
+                if field in example and example[field]:
+                    persona = example[field]
+                    break
+                    
+            # Get dialogue
+            dialogues = None
+            for field in dialogue_fields:
+                if field in example and example[field]:
+                    dialogues = example[field]
+                    break
+            
+            if not persona or not dialogues:
+                return {
+                    "instruction": "",
+                    "response": "",
+                    "text": "",
+                    "language": "en",
+                    "source": "persona_chat"
+                }
+                
+            # Format persona as a string
+            if isinstance(persona, list):
+                persona_str = "\n".join([f"- {p}" for p in persona if p])
             else:
-                full_instruction = f"User: {instruction}"
+                persona_str = str(persona)
+                
+            # Extract conversation turns
+            instruction = f"Persona:\n{persona_str}\n\nConversation:\n"
+            response = ""
+            
+            # Extract the conversation
+            if dialogues:
+                if isinstance(dialogues, list):
+                    # Format dialogue as instruction/response pairs
+                    conversation = []
+                    for i, turn in enumerate(dialogues):
+                        if i % 2 == 0:  # User turn (even indices)
+                            conversation.append(f"User: {turn}")
+                        else:  # Assistant turn (odd indices)
+                            conversation.append(f"Assistant: {turn}")
+                            
+                    instruction += "\n".join(conversation)
+                    
+                    # Last assistant response (if exists) becomes the target response
+                    if len(dialogues) > 1:
+                        response = dialogues[-1] if len(dialogues) % 2 == 0 else ""
+                else:
+                    instruction += str(dialogues)
                 
             return {
-                "instruction": full_instruction,
+                "instruction": instruction,
                 "response": response,
-                "text": f"{full_instruction}\n\nAssistant: {response}",
+                "text": f"User: {instruction}\nAssistant: {response}",
                 "language": "en",
-                "source": "synthetic_persona"
+                "source": "persona_chat"
             }
             
         # Process the dataset
@@ -279,8 +366,7 @@ def persona_chat_processor(
         processed_dataset = dataset.map(process_example)
         
         # Filter out empty examples
-        processed_dataset = processed_dataset.filter(lambda x: 
-            x["instruction"] != "" and x["response"] != "")
+        processed_dataset = processed_dataset.filter(lambda x: x["text"] != "")
         
         # Limit the number of samples if specified
         if max_samples and not streaming:
@@ -290,12 +376,15 @@ def persona_chat_processor(
         output_path = os.path.join(output_dir, "synthetic_persona_processed")
         if not streaming:
             logger.info(f"Saving processed dataset to {output_path}")
+            os.makedirs(output_path, exist_ok=True)
             processed_dataset.save_to_disk(output_path)
+            logger.info(f"Dataset saved to {output_path}")
         
         return processed_dataset
         
     except Exception as e:
         logger.error(f"Error processing Synthetic-Persona-Chat dataset: {str(e)}")
+        logger.error(traceback.format_exc())
         # Return an empty dataset as a fallback
         return Dataset.from_dict({"instruction": [], "response": [], "text": [], "language": [], "source": []})
 
@@ -326,17 +415,24 @@ def writingprompts_processor(
     
     try:
         # Load the dataset with appropriate split
-        dataset = load_dataset(dataset_path, split=split, streaming=streaming)
+        dataset = load_dataset(
+            dataset_path, 
+            split=split, 
+            streaming=streaming,
+            use_auth_token=os.environ.get("HF_TOKEN")
+        )
         
         def process_example(example):
             """Process a single example from the WritingPrompts dataset"""
             prompt = example.get('prompt', '')
             story = example.get('story', '')
             
+            # Format as instruction/response where the prompt is the instruction
+            # and the story is the response
             return {
-                "instruction": f"Writing Prompt: {prompt}\n\nWrite a story based on this prompt:",
+                "instruction": f"Write a story for the following prompt: {prompt}",
                 "response": story,
-                "text": f"Writing Prompt: {prompt}\n\nWrite a story based on this prompt:\n\n{story}",
+                "text": f"User: Write a story for the following prompt: {prompt}\nAssistant: {story}",
                 "language": "en",
                 "source": "writingprompts"
             }
@@ -357,12 +453,15 @@ def writingprompts_processor(
         output_path = os.path.join(output_dir, "writingprompts_processed")
         if not streaming:
             logger.info(f"Saving processed dataset to {output_path}")
+            os.makedirs(output_path, exist_ok=True)
             processed_dataset.save_to_disk(output_path)
+            logger.info(f"Dataset saved to {output_path}")
         
         return processed_dataset
         
     except Exception as e:
         logger.error(f"Error processing WritingPrompts dataset: {str(e)}")
+        logger.error(traceback.format_exc())
         # Return an empty dataset as a fallback
         return Dataset.from_dict({"instruction": [], "response": [], "text": [], "language": [], "source": []})
 
@@ -374,3 +473,67 @@ PROCESSOR_MAP = {
     'persona_chat': persona_chat_processor,
     'writingprompts': writingprompts_processor
 } 
+
+def process_datasets(
+    dataset_paths: Dict[str, str],
+    output_dir: str,
+    split: str = 'train',
+    streaming: bool = False,
+    config: Dict[str, Any] = {},
+    failed_count: int = 0,
+    successful_count: int = 0,
+    processed_datasets: Dict[str, Dataset] = {}
+) -> Dict[str, Dataset]:
+    """
+    Process multiple datasets and save them to disk.
+    
+    Args:
+        dataset_paths: Dictionary of dataset names to dataset paths
+        output_dir: Directory to save the processed datasets
+        split: Dataset split to use
+        streaming: Whether to stream the datasets to save memory
+        config: Configuration for processing datasets
+        failed_count: Counter for failed processing attempts
+        successful_count: Counter for successfully processed datasets
+        processed_datasets: Dictionary to store processed datasets
+        
+    Returns:
+        Dictionary of processed datasets
+    """
+    for dataset_name, dataset_path in dataset_paths.items():
+        try:
+            # Process with a large timeout for larger datasets
+            with tqdm(total=1, desc=f"Processing {dataset_name}", leave=True) as pbar:
+                # Check if we have the necessary dependencies before processing
+                if dataset_name == 'pile':
+                    try:
+                        import zstandard
+                        logger.info("zstandard package is available for Pile dataset")
+                    except ImportError:
+                        logger.error("Missing required dependency 'zstandard' for Pile dataset")
+                        logger.error("Install with: pip install zstandard")
+                        failed_count += 1
+                        continue
+                
+                # Process the dataset
+                processor_func = PROCESSOR_MAP[dataset_name]
+                processed_dataset = processor_func(
+                    dataset_path=dataset_path,
+                    output_dir=output_dir,
+                    split=split,
+                    streaming=streaming,
+                    use_cache=config.get("use_cache", True),
+                    max_samples=config.get("max_samples", None)
+                )
+                
+                # Store the processed dataset
+                processed_datasets[dataset_name] = processed_dataset
+                pbar.update(1)
+                successful_count += 1
+                logger.info(f"Successfully processed {dataset_name}")
+        except Exception as e:
+            logger.error(f"Error processing dataset {dataset_name}: {e}")
+            logger.error(traceback.format_exc())
+            failed_count += 1
+    
+    return processed_datasets 

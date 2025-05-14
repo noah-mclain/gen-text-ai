@@ -186,6 +186,10 @@ def main():
                         help="Model ID for pushing to Hugging Face Hub")
     parser.add_argument("--debug", action="store_true",
                         help="Enable debug logging")
+    parser.add_argument("--deepspeed", action="store_true", default=True,
+                        help="Enable DeepSpeed (enabled by default)")
+    parser.add_argument("--deepspeed_config", type=str, 
+                        help="Path to DeepSpeed config file (optional)")
     
     args = parser.parse_args()
     
@@ -228,6 +232,72 @@ def main():
     
     logger.info(f"Using config path: {args.config}")
     logger.info(f"Using data directory: {args.data_dir}")
+    
+    # Setup DeepSpeed configuration if enabled
+    if args.deepspeed:
+        logger.info("Setting up DeepSpeed environment...")
+        
+        # Check for existing environment variables
+        current_ds_config = os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")
+        current_hf_ds_config = os.environ.get("HF_DS_CONFIG", "")
+        current_plugin_type = os.environ.get("ACCELERATE_DEEPSPEED_PLUGIN_TYPE", "")
+        
+        logger.info(f"Current DeepSpeed env vars - ACCELERATE_DEEPSPEED_CONFIG_FILE: {current_ds_config}")
+        logger.info(f"Current DeepSpeed env vars - HF_DS_CONFIG: {current_hf_ds_config}")
+        logger.info(f"Current DeepSpeed env vars - ACCELERATE_DEEPSPEED_PLUGIN_TYPE: {current_plugin_type}")
+        
+        # Try to fix DeepSpeed configuration using the dedicated script if available
+        ds_fix_script = os.path.join(project_root, "scripts", "fix_deepspeed.py")
+        if os.path.exists(ds_fix_script):
+            logger.info("Running DeepSpeed configuration fix script")
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("fix_deepspeed", ds_fix_script)
+                fix_deepspeed = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(fix_deepspeed)
+                fix_deepspeed.fix_deepspeed_config()
+                logger.info("DeepSpeed configuration fixed")
+            except Exception as e:
+                logger.error(f"Failed to run DeepSpeed fix script: {e}")
+        
+        # Set basic DeepSpeed environment variables if not already set
+        if not os.environ.get("ACCELERATE_USE_DEEPSPEED"):
+            os.environ["ACCELERATE_USE_DEEPSPEED"] = "true"
+            logger.info("Set ACCELERATE_USE_DEEPSPEED to 'true'")
+            
+        if not os.environ.get("ACCELERATE_DEEPSPEED_PLUGIN_TYPE"):
+            os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
+            logger.info("Set ACCELERATE_DEEPSPEED_PLUGIN_TYPE to 'deepspeed'")
+        
+        # Check for explicit DeepSpeed config file argument
+        if args.deepspeed_config and os.path.exists(args.deepspeed_config):
+            logger.info(f"Using specified DeepSpeed config: {args.deepspeed_config}")
+            os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = args.deepspeed_config
+            os.environ["HF_DS_CONFIG"] = args.deepspeed_config
+        else:
+            # Check for common locations for DeepSpeed config
+            default_paths = [
+                os.path.join(os.getcwd(), "ds_config_a6000.json"),
+                os.path.join(project_root, "ds_config_a6000.json"),
+                "/notebooks/ds_config_a6000.json" if os.path.exists("/notebooks") else None
+            ]
+            
+            # Filter out None values
+            default_paths = [p for p in default_paths if p]
+            
+            # Use the first valid config
+            for path in default_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found DeepSpeed config at: {path}")
+                    os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = path
+                    os.environ["HF_DS_CONFIG"] = path
+                    break
+        
+        # Double check we have a valid configuration
+        if not os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE") or not os.path.exists(os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"]):
+            logger.warning("No valid DeepSpeed config found in environment variables or default locations")
+        else:
+            logger.info(f"Using DeepSpeed config at: {os.environ.get('ACCELERATE_DEEPSPEED_CONFIG_FILE')}")
     
     # Check for HF_TOKEN environment variable
     hf_token = os.environ.get("HF_TOKEN")
