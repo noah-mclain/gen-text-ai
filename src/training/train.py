@@ -195,8 +195,14 @@ def main():
                         help="Estimate and report training time (enabled by default)")
     parser.add_argument("--disable_wandb", action="store_true", default=False,
                         help="Disable Weights & Biases logging (disabled by default)")
+    parser.add_argument("--dataloader_workers", type=int, default=1,
+                        help="Number of workers for DataLoader")
     
     args = parser.parse_args()
+    
+    # Set dataloader workers environment variable from argument
+    os.environ['DATALOADER_NUM_WORKERS'] = str(args.dataloader_workers)
+    logger.info(f"Setting dataloader workers to {args.dataloader_workers}")
     
     # Set up verbose logging if debug mode is enabled
     if args.debug:
