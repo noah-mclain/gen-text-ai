@@ -20,6 +20,9 @@ unset DS_OFFLOAD_OPTIMIZER
 unset TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT
 unset DEEPSPEED_OVERRIDE_DISABLE
 
+# Set environment variables for mixed precision training (instead of command-line args)
+export ACCELERATE_MIXED_PRECISION="bf16"
+
 # Remove any existing DeepSpeed config files to prevent conflicts
 if [ -f "ds_config.json" ]; then
     echo "Removing existing DeepSpeed config file: ds_config.json"
@@ -337,6 +340,10 @@ try:
         config['training']['torch_dtype'] = 'bfloat16'
         print('Set torch_dtype to bfloat16')
     
+    # Enable mixed precision in the config directly
+    config['training']['mixed_precision'] = 'bf16'
+    print('Set mixed_precision to bf16 in the config')
+    
     # Make sure gradient checkpointing is enabled for memory efficiency
     config['training']['gradient_checkpointing'] = True  # Enable memory optimization
     
@@ -462,11 +469,29 @@ except Exception as e:
     print(f'Error updating config: {e}', file=sys.stderr)
 "
 
+# Create accelerate config if it doesn't exist
+echo "===== CREATING ACCELERATE CONFIG ====="
+mkdir -p ~/.cache/huggingface/accelerate/
+cat > ~/.cache/huggingface/accelerate/default_config.yaml << EOF
+compute_environment: LOCAL_MACHINE
+distributed_type: NO
+downcast_bf16: 'no'
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 1
+rdzv_backend: static
+same_network: true
+use_cpu: false
+EOF
+echo "Created accelerate config with bf16 precision"
+
 echo "===== STARTING OPTIMIZED TRAINING ====="
 TRAINING_START_TIME=$(date +%s)
 
 # Train with direct module call without the problematic arguments
-# Explicitly set --mixed_precision bf16 and ensure no_deepspeed is true
+# Note: Removed --mixed_precision bf16 argument that was causing the error
 echo "Starting training with optimizations..."
 python -m src.training.train \
     --config config/training_config.json \
@@ -474,7 +499,6 @@ python -m src.training.train \
     $USE_DRIVE_FLAG \
     --push_to_hub \
     --no_deepspeed \
-    --mixed_precision bf16 \
     --estimate_time \
     2>&1 | tee logs/train_a6000_optimized_$(date +%Y%m%d_%H%M%S).log
 

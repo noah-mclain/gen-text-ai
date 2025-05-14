@@ -75,6 +75,9 @@ unset DS_OFFLOAD_OPTIMIZER
 unset TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT
 unset DEEPSPEED_OVERRIDE_DISABLE
 
+# Set environment variables for mixed precision training (instead of command-line args)
+export ACCELERATE_MIXED_PRECISION="bf16"
+
 # Remove any existing DeepSpeed config files to prevent conflicts
 if [ -f "ds_config.json" ]; then
     echo "Removing existing DeepSpeed config file: ds_config.json"
@@ -372,6 +375,24 @@ fi
 # Clean up temporary files
 rm -f $TEMP_TEST_SCRIPT model_loading_result.txt
 
+# Create accelerate config if it doesn't exist
+echo "===== CREATING ACCELERATE CONFIG ====="
+mkdir -p ~/.cache/huggingface/accelerate/
+cat > ~/.cache/huggingface/accelerate/default_config.yaml << EOF
+compute_environment: LOCAL_MACHINE
+distributed_type: NO
+downcast_bf16: 'no'
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 1
+rdzv_backend: static
+same_network: true
+use_cpu: false
+EOF
+echo "Created accelerate config with bf16 precision"
+
 # Update config to use optimized training settings
 echo "===== UPDATING CONFIG FOR OPTIMIZED TRAINING ====="
 python -c "
@@ -405,6 +426,10 @@ try:
         config['training']['fp16'] = False          # Don't use fp16 with bf16
         config['training']['optim'] = 'adamw_torch' # Best optimizer for T5
         
+        # Add mixed precision setting directly to the config
+        config['training']['mixed_precision'] = 'bf16'
+        print('Set mixed_precision to bf16 in the config')
+        
         # FIX FOR MODEL LOADING ERROR: Use text2text-generation instead of SEQ_TO_SEQ_LM
         # T5/FLAN models use text2text-generation as task_type
         # Explicitly set the proper task type for T5-based models
@@ -432,6 +457,10 @@ try:
         config['training']['bf16'] = True
         config['training']['fp16'] = False
         config['training']['task_type'] = 'CAUSAL_LM'
+        
+        # Add mixed precision setting directly to the config
+        config['training']['mixed_precision'] = 'bf16'
+        print('Set mixed_precision to bf16 in the config')
         
         # Make sure torch_dtype is set correctly if it exists
         if 'torch_dtype' in config['training']:
@@ -612,14 +641,13 @@ TRAINING_START_TIME=$(date +%s)
 # Create a simple environment variable for direct task_type passing
 export HF_TASK_TYPE="text2text-generation"
 
-# Start training with explicit mixed precision setting and text2text task type
+# Start training - removed the mixed_precision flag that was causing errors
 python train_text_flan.py \
   --config config/training_config_text.json \
   --data_dir data/processed \
   --push_to_hub \
   $DRIVE_OPTS \
   --debug \
-  --mixed_precision bf16 \
   --no_deepspeed \
   --model_task text2text-generation \
   2>&1 | tee logs/train_flan_ul2_a6000_$(date +%Y%m%d_%H%M%S).log
@@ -633,7 +661,6 @@ if [ $? -ne 0 ]; then
     --push_to_hub \
     $DRIVE_OPTS \
     --debug \
-    --mixed_precision bf16 \
     --no_deepspeed \
     --model_task seq2seq_lm \
     2>&1 | tee logs/train_flan_ul2_a6000_retry_$(date +%Y%m%d_%H%M%S).log
