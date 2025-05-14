@@ -97,6 +97,11 @@ def copy_google_drive_manager(project_root):
     
     # Copy to all target locations
     for target_path in target_paths:
+        # Skip if source and target are the same file
+        if os.path.abspath(source_file) == os.path.abspath(target_path):
+            logger.info(f"Skipped copying to {target_path} (same as source)")
+            continue
+            
         target_dir = os.path.dirname(target_path)
         os.makedirs(target_dir, exist_ok=True)
         

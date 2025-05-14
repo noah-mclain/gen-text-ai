@@ -100,6 +100,85 @@ except ImportError as e:
 # Inform users about the redirect
 logger.debug(f"google_drive_manager redirected to {implementation_path}")
 
+# Expose important classes and variables
+try:
+    # Explicitly define DriveManager
+    DriveManager = getattr(module, 'DriveManager', None)
+    if DriveManager is None:
+        # Create a dummy DriveManager class if not available
+        class DriveManager:
+            def __init__(self, *args, **kwargs):
+                logger.warning("Using dummy DriveManager class")
+                self.base_dir = kwargs.get('base_dir', 'DeepseekCoder')
+                self.folder_ids = {}
+                self.credentials_path = kwargs.get('credentials_path', 'credentials.json')
+            
+            def authenticate(self):
+                logger.warning("Dummy authenticate method called")
+                return False
+            
+            def _setup_drive_structure(self):
+                logger.warning("Dummy _setup_drive_structure method called")
+                return False
+                
+            def find_file_id(self, *args, **kwargs):
+                return None
+                
+            def upload_folder(self, *args, **kwargs):
+                return False
+                
+            def upload_file(self, *args, **kwargs):
+                return False
+                
+            def download_folder(self, *args, **kwargs):
+                return False
+    
+    # Create a default instance
+    _drive_manager = getattr(module, '_drive_manager', None)
+    if _drive_manager is None:
+        _drive_manager = DriveManager()
+    
+    # Get other important variables with defaults
+    DRIVE_FOLDERS = getattr(module, 'DRIVE_FOLDERS', {})
+    SCOPES = getattr(module, 'SCOPES', [])
+    GOOGLE_API_AVAILABLE = getattr(module, 'GOOGLE_API_AVAILABLE', False)
+    
+except Exception as e:
+    logger.error(f"Error setting up DriveManager: {e}")
+    # Create a dummy class as fallback
+    class DriveManager:
+        def __init__(self, *args, **kwargs):
+            logger.warning("Using fallback dummy DriveManager class")
+            self.base_dir = kwargs.get('base_dir', 'DeepseekCoder')
+            self.folder_ids = {}
+            self.credentials_path = kwargs.get('credentials_path', 'credentials.json')
+        
+        def authenticate(self):
+            logger.warning("Dummy authenticate method called")
+            return False
+        
+        def _setup_drive_structure(self):
+            logger.warning("Dummy _setup_drive_structure method called")
+            return False
+            
+        def find_file_id(self, *args, **kwargs):
+            return None
+            
+        def upload_folder(self, *args, **kwargs):
+            return False
+            
+        def upload_file(self, *args, **kwargs):
+            return False
+            
+        def download_folder(self, *args, **kwargs):
+            return False
+    
+    # Create default values
+    _drive_manager = DriveManager()
+    DRIVE_FOLDERS = {}
+    SCOPES = []
+    GOOGLE_API_AVAILABLE = False
+
 # Define functions to ensure they're available directly from this module
 def test_authentication():
     """Test authentication with Google Drive."""

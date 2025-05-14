@@ -33,6 +33,8 @@ import_attempts = [
     {"module": "src.utils.google_drive_manager", "log": "absolute import"},
     # 3. Try scripts path (new structure)
     {"module": "scripts.google_drive.google_drive_manager", "log": "scripts import"},
+    # 4. Try scripts implementation file directly
+    {"module": "scripts.google_drive.google_drive_manager_impl", "log": "scripts implementation import"}
 ]
 
 for attempt in import_attempts:
@@ -43,32 +45,87 @@ for attempt in import_attempts:
         module_name = attempt["module"]
         # Use importlib to dynamically import
         import importlib
+        logger.info(f"Attempting to import {module_name}...")
         module = importlib.import_module(module_name)
         
         # Import all necessary components
-        DriveManager = module.DriveManager
-        drive_manager = getattr(module, "_drive_manager", None)
-        sync_to_drive = module.sync_to_drive
-        sync_from_drive = module.sync_from_drive
-        configure_sync_method = module.configure_sync_method
-        test_authentication = module.test_authentication
-        test_drive_mounting = getattr(module, "test_drive_mounting", None)
-        DRIVE_FOLDERS = module.DRIVE_FOLDERS
-        SCOPES = getattr(module, "SCOPES", [])
-        GOOGLE_API_AVAILABLE = getattr(module, "GOOGLE_API_AVAILABLE", True)
-        
-        logger.info(f"Successfully imported from {module_name} via {attempt['log']}")
-        drive_utils_imported = True
-        DRIVE_API_AVAILABLE = GOOGLE_API_AVAILABLE
+        try:
+            DriveManager = getattr(module, "DriveManager", None)
+            if DriveManager is None:
+                logger.warning(f"DriveManager class not found in {module_name}")
+                continue
+                
+            drive_manager = getattr(module, "_drive_manager", None)
+            sync_to_drive = getattr(module, "sync_to_drive", None)
+            if sync_to_drive is None:
+                logger.warning(f"sync_to_drive function not found in {module_name}")
+                continue
+                
+            sync_from_drive = getattr(module, "sync_from_drive", None)
+            configure_sync_method = getattr(module, "configure_sync_method", None)
+            test_authentication = getattr(module, "test_authentication", None)
+            test_drive_mounting = getattr(module, "test_drive_mounting", None)
+            DRIVE_FOLDERS = getattr(module, "DRIVE_FOLDERS", {})
+            SCOPES = getattr(module, "SCOPES", [])
+            GOOGLE_API_AVAILABLE = getattr(module, "GOOGLE_API_AVAILABLE", True)
+            
+            logger.info(f"Successfully imported from {module_name} via {attempt['log']}")
+            drive_utils_imported = True
+            DRIVE_API_AVAILABLE = GOOGLE_API_AVAILABLE
+        except AttributeError as e:
+            logger.warning(f"Failed to import components from {module_name}: {e}")
     
-    except (ImportError, AttributeError) as e:
+    except ImportError as e:
         logger.debug(f"Failed to import from {attempt['module']}: {e}")
 
-# If all imports failed, fallback to dummy implementations
+# If all imports failed, try explicit file path import
+if not drive_utils_imported:
+    try:
+        # Try to locate the implementation file
+        impl_paths = [
+            os.path.join(project_root, "src", "utils", "google_drive_manager.py"),
+            os.path.join(project_root, "scripts", "google_drive", "google_drive_manager_impl.py")
+        ]
+        
+        impl_file = None
+        for path in impl_paths:
+            if os.path.exists(path):
+                impl_file = path
+                logger.info(f"Found implementation file at {impl_file}")
+                break
+        
+        if impl_file:
+            # Use manual approach to load module from file
+            import importlib.util
+            logger.info(f"Attempting to import directly from file: {impl_file}")
+            
+            module_name = "google_drive_manager_manual"
+            spec = importlib.util.spec_from_file_location(module_name, impl_file)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            
+            # Import necessary components
+            DriveManager = module.DriveManager
+            drive_manager = getattr(module, "_drive_manager", None)
+            sync_to_drive = module.sync_to_drive
+            sync_from_drive = module.sync_from_drive
+            configure_sync_method = module.configure_sync_method
+            test_authentication = module.test_authentication
+            test_drive_mounting = getattr(module, "test_drive_mounting", None)
+            DRIVE_FOLDERS = module.DRIVE_FOLDERS
+            SCOPES = getattr(module, "SCOPES", [])
+            GOOGLE_API_AVAILABLE = getattr(module, "GOOGLE_API_AVAILABLE", True)
+            
+            logger.info(f"Successfully imported from file: {impl_file}")
+            drive_utils_imported = True
+            DRIVE_API_AVAILABLE = GOOGLE_API_AVAILABLE
+    except Exception as e:
+        logger.error(f"Failed to import from implementation file: {e}")
+
+# If all attempts failed, fallback to dummy implementations
 if not drive_utils_imported:
     logger.error("All import attempts for Drive API utils failed")
     logger.warning("Drive API functionality will not be available")
-    DRIVE_API_AVAILABLE = False
     
     # Define empty constants
     DRIVE_FOLDERS = {}

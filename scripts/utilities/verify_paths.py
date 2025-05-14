@@ -126,8 +126,27 @@ def check_imports():
         ("src.data.process_datasets", "Data Processor")
     ]
     
-    results = {}
+    # Also check for specific Google API libraries
+    google_api_libraries = [
+        ("google.auth", "google-auth"),
+        ("googleapiclient", "google-api-python-client"),
+        ("google_auth_oauthlib", "google-auth-oauthlib")
+    ]
     
+    results = {}
+    missing_google_libs = []
+    
+    # Check Google API libraries
+    for module_name, package_name in google_api_libraries:
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing_google_libs.append(package_name)
+    
+    if missing_google_libs:
+        logger.warning(f"Google API libraries not installed. Install with: pip install {' '.join(missing_google_libs)}")
+    
+    # Check main imports
     for module_path, description in imports_to_check:
         try:
             module = __import__(module_path, fromlist=["*"])
@@ -140,22 +159,34 @@ def check_imports():
     return results
 
 def check_credentials():
-    """Check if credentials file exists and is valid."""
+    """Check if credentials file exists and is valid, and if HF token is set."""
     credentials_path = "credentials.json"
     
+    results = {
+        "exists": False,
+        "valid": False,
+        "hf_token": False,
+        "hf_token_source": None
+    }
+    
+    # First check if HF_TOKEN is in environment variables
+    if os.environ.get("HF_TOKEN"):
+        logger.info(f"✓ Found HF_TOKEN in environment variables")
+        results["hf_token"] = True
+        results["hf_token_source"] = "environment"
+    
+    # Then check credentials file
     if not os.path.exists(credentials_path):
         logger.warning(f"✗ Credentials file not found: {credentials_path}")
-        return {
-            "exists": False,
-            "valid": False,
-            "hf_token": False
-        }
+        
+        # If HF token is already found in environment, still consider it a "success"
+        if results["hf_token"]:
+            results["exists"] = True  # We're considering the absence of credentials file OK if HF_TOKEN env var exists
+            return results
+            
+        return results
     
-    results = {
-        "exists": True,
-        "valid": False,
-        "hf_token": False
-    }
+    results["exists"] = True
     
     try:
         with open(credentials_path, 'r') as f:
@@ -164,21 +195,24 @@ def check_credentials():
         results["valid"] = True
         logger.info(f"✓ Credentials file is valid JSON")
         
-        # Check for HF token
-        hf_token = None
-        
-        if "huggingface" in credentials and "token" in credentials["huggingface"]:
-            hf_token = credentials["huggingface"]["token"]
-        elif "hf_token" in credentials:
-            hf_token = credentials["hf_token"]
-        elif "api_keys" in credentials and "huggingface" in credentials["api_keys"]:
-            hf_token = credentials["api_keys"]["huggingface"]
-        
-        if hf_token:
-            results["hf_token"] = True
-            logger.info(f"✓ Found Hugging Face token in credentials")
-        else:
-            logger.warning(f"✗ No Hugging Face token found in credentials")
+        # Only check for HF token in credentials if not already found in environment
+        if not results["hf_token"]:
+            # Check for HF token
+            hf_token = None
+            
+            if "huggingface" in credentials and "token" in credentials["huggingface"]:
+                hf_token = credentials["huggingface"]["token"]
+            elif "hf_token" in credentials:
+                hf_token = credentials["hf_token"]
+            elif "api_keys" in credentials and "huggingface" in credentials["api_keys"]:
+                hf_token = credentials["api_keys"]["huggingface"]
+            
+            if hf_token:
+                results["hf_token"] = True
+                results["hf_token_source"] = "credentials"
+                logger.info(f"✓ Found Hugging Face token in credentials")
+            else:
+                logger.info(f"No Hugging Face token found in credentials (using environment variable)")
     
     except Exception as e:
         logger.error(f"✗ Error reading credentials file: {e}")
@@ -188,6 +222,7 @@ def check_credentials():
 def main():
     parser = argparse.ArgumentParser(description="Verify paths and configurations")
     parser.add_argument("--fix", action="store_true", help="Try to fix issues automatically")
+    parser.add_argument("--install-deps", action="store_true", help="Install missing dependencies")
     args = parser.parse_args()
     
     logger.info("Verifying project setup...")
@@ -239,24 +274,70 @@ def main():
         logger.info("All critical imports successful")
     
     if not credentials_results["exists"]:
-        logger.warning("Credentials file missing")
+        if credentials_results["hf_token"]:
+            logger.info("Credentials file missing, but HF_TOKEN is set in environment")
+        else:
+            logger.warning("Credentials file missing and no HF_TOKEN in environment")
     elif not credentials_results["valid"]:
-        logger.warning("Credentials file is invalid")
+        if credentials_results["hf_token"]:
+            logger.info("Credentials file is invalid, but HF_TOKEN is set in environment")
+        else:
+            logger.warning("Credentials file is invalid and no HF_TOKEN in environment")
     elif not credentials_results["hf_token"]:
-        logger.warning("No Hugging Face token found in credentials")
+        logger.warning("No Hugging Face token found in credentials or environment")
     else:
-        logger.info("Credentials are properly set up")
+        if credentials_results["hf_token_source"] == "environment":
+            logger.info("HF_TOKEN is set in environment variables")
+        else:
+            logger.info("Credentials are properly set up with Hugging Face token")
+    
+    # Install dependencies if requested
+    if args.install_deps:
+        logger.info("\nInstalling missing dependencies...")
+        try:
+            import subprocess
+            
+            # Check for Google API libraries
+            try:
+                import google.auth
+                import googleapiclient
+                import google_auth_oauthlib
+            except ImportError:
+                logger.info("Installing Google API libraries...")
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install",
+                    "google-api-python-client",
+                    "google-auth-httplib2",
+                    "google-auth-oauthlib"
+                ])
+            
+            # Check for other common dependencies
+            try:
+                import torch
+            except ImportError:
+                logger.info("Installing PyTorch...")
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install",
+                    "torch"
+                ])
+            
+            logger.info("Dependencies installation complete!")
+        except Exception as e:
+            logger.error(f"Failed to install dependencies: {e}")
     
     # Final assessment
     if (not missing_dirs and 
         not missing_configs and 
         not failed_imports and 
-        credentials_results["exists"] and 
-        credentials_results["valid"]):
+        (credentials_results["hf_token"] or 
+         (credentials_results["exists"] and credentials_results["valid"]))):
         logger.info("\n✓ Project is set up correctly!")
     else:
         logger.warning("\n✗ Some issues were found with the project setup")
         logger.info("Run paperspace_install.sh or scripts/fix_paperspace_imports.py to fix them")
+        
+        if not args.install_deps:
+            logger.info("You can also run 'python scripts/utilities/verify_paths.py --install-deps' to install missing dependencies")
 
 if __name__ == "__main__":
     main() 

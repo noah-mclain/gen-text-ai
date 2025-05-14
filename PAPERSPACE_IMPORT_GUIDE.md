@@ -49,17 +49,75 @@ bash paperspace_install.sh
 python scripts/utilities/verify_paths.py --fix
 ```
 
-5. Set the PYTHONPATH environment variable:
+5. Install any missing dependencies:
+
+```bash
+python scripts/utilities/verify_paths.py --install-deps
+```
+
+6. Set the PYTHONPATH environment variable:
 
 ```bash
 export PYTHONPATH=/notebooks:$PYTHONPATH
 ```
 
-6. Now you can run your scripts with the fixed imports:
+7. Set the HF_TOKEN environment variable (if you have a Hugging Face token):
+
+```bash
+export HF_TOKEN=your_huggingface_token
+```
+
+8. Now you can run your scripts with the fixed imports:
 
 ```bash
 python src/main_api.py --mode process --streaming --no_cache --dataset_config config/dataset_config.json --use_drive --drive_base_dir DeepseekCoder
 ```
+
+## Hugging Face Token
+
+The pipeline supports two ways to provide your Hugging Face token:
+
+1. **Environment Variable (Recommended)**:
+
+   ```bash
+   export HF_TOKEN=your_huggingface_token
+   ```
+
+2. **Credentials File**:
+   Create a `credentials.json` file with this structure:
+   ```json
+   {
+     "huggingface": {
+       "token": "your_huggingface_token"
+     }
+   }
+   ```
+
+The verification script checks for the token in both places, with the environment variable taking precedence.
+
+## Troubleshooting Google Drive Imports
+
+If you encounter issues with Google Drive imports, use the diagnostic script:
+
+```bash
+python scripts/test_drive_imports.py
+```
+
+This will:
+
+1. Check if Google API dependencies are installed
+2. Test all possible import paths
+3. Try direct file loading
+4. Show the current Python path
+5. Provide a summary of what works and what doesn't
+
+Based on the results, you may need to:
+
+1. Install missing Google API dependencies:
+   ```bash
+   pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+   ```
+2. Ensure the implementation file exists in the expected locations
 
 ## Permanent Solution
 
@@ -71,6 +129,7 @@ For a more permanent solution, we've added several improvements:
 4. `paperspace_install.sh` - Comprehensive setup script for Paperspace
 5. `scripts/fix_paperspace_imports.py` - More advanced setup for complex cases
 6. `scripts/utilities/verify_paths.py` - Verifies all paths are set up correctly
+7. `scripts/test_drive_imports.py` - Diagnoses Google Drive import issues
 
 The fixes use a combination of:
 
@@ -95,6 +154,12 @@ If issues are found, you can try to fix them automatically:
 python scripts/utilities/verify_paths.py --fix
 ```
 
+To install missing dependencies:
+
+```bash
+python scripts/utilities/verify_paths.py --install-deps
+```
+
 ## Testing the Fix
 
 After applying the fixes, test with:
@@ -105,6 +170,9 @@ python -c "from scripts.google_drive.google_drive_manager import test_authentica
 
 # Test checking paths
 python scripts/utilities/verify_paths.py
+
+# Test Google Drive imports specifically
+python scripts/test_drive_imports.py
 
 # Run the process datasets command
 python src/main_api.py --mode process --streaming --no_cache --dataset_config config/dataset_config.json --use_drive --drive_base_dir DeepseekCoder
@@ -118,3 +186,7 @@ If you still encounter issues:
 2. Verify the directory structure: `find . -type d -not -path "*/\.*" | sort`
 3. Check if the config files exist: `find . -name "dataset_config.json"`
 4. Try running with verbose logging: `python src/main_api.py --mode process --verbose ...`
+5. If you see Google API errors, install the required packages:
+   ```bash
+   pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+   ```

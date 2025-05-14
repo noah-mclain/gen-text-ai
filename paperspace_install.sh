@@ -28,12 +28,28 @@ DRIVE_IMPL=$(find . -name "google_drive_manager.py" -o -name "google_drive_manag
 if [ -n "$DRIVE_IMPL" ]; then
   echo "Found implementation at: $DRIVE_IMPL"
   
-  # Copy to necessary locations
-  cp "$DRIVE_IMPL" src/utils/google_drive_manager.py
-  cp "$DRIVE_IMPL" scripts/src/utils/google_drive_manager.py
-  cp "$DRIVE_IMPL" scripts/google_drive/google_drive_manager_impl.py
+  # Copy to necessary locations, but only if the source and destination are different
+  DEST_FILES=(
+    "src/utils/google_drive_manager.py"
+    "scripts/src/utils/google_drive_manager.py"
+    "scripts/google_drive/google_drive_manager_impl.py"
+  )
   
-  echo "Copied implementation to all required locations"
+  for dest_file in "${DEST_FILES[@]}"; do
+    # Get absolute paths
+    src_abs=$(realpath "$DRIVE_IMPL")
+    dest_abs=$(realpath -m "$dest_file")
+    
+    # Only copy if source and destination are different
+    if [ "$src_abs" != "$dest_abs" ]; then
+      # Create the directory if it doesn't exist
+      mkdir -p "$(dirname "$dest_file")"
+      cp "$DRIVE_IMPL" "$dest_file"
+      echo "Copied implementation to: $dest_file"
+    else
+      echo "Skipped copying to $dest_file (same as source)"
+    fi
+  done
 else
   echo "Could not find Google Drive implementation file"
 fi
@@ -42,8 +58,18 @@ fi
 CONFIG_FILES=$(find . -name "dataset_config.json" -o -name "training_config.json")
 for config_file in $CONFIG_FILES; do
   filename=$(basename "$config_file")
-  cp "$config_file" "config/$filename"
-  echo "Copied $config_file to config/$filename"
+  dest_file="config/$filename"
+  
+  # Only copy if source and destination are different
+  src_abs=$(realpath "$config_file")
+  dest_abs=$(realpath -m "$dest_file")
+  
+  if [ "$src_abs" != "$dest_abs" ]; then
+    cp "$config_file" "$dest_file"
+    echo "Copied $config_file to $dest_file"
+  else
+    echo "Skipped copying $config_file (same as destination)"
+  fi
 done
 
 # If no config files found, create default configs
