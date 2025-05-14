@@ -47,8 +47,12 @@ def get_datasets_from_config(config_path: str) -> List[str]:
         with open(config_path, 'r') as f:
             config = json.load(f)
         
+        # Check for dataset_weights directly in config (dataset_config_text.json format)
         if "dataset_weights" in config:
             return list(config["dataset_weights"].keys())
+        # Check for dataset_weights under dataset key (training_config_text.json format)
+        elif "dataset" in config and "dataset_weights" in config["dataset"]:
+            return list(config["dataset"]["dataset_weights"].keys())
         else:
             logger.warning(f"No dataset_weights found in {config_path}")
             return []

@@ -30,7 +30,9 @@ from transformers import (
     AutoTokenizer,
     AutoModelForSeq2SeqLM,
     BitsAndBytesConfig,
-    set_seed
+    set_seed,
+    AutoConfig,
+    T5ForConditionalGeneration
 )
 from huggingface_hub import login
 import peft
@@ -154,6 +156,17 @@ except (ImportError, ModuleNotFoundError):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Try different imports for the model tokenizer and configuration
+try:
+    from transformers import AutoConfig, AutoTokenizer, AutoModelForSeq2SeqLM, T5ForConditionalGeneration
+    # Since FLAN-UL2 is based on T5 architecture
+    UL2_MODEL_TYPE = "t5"
+    MODEL_LOADING_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    print("Error importing transformer model classes. Make sure transformers is installed.")
+    UL2_MODEL_TYPE = None
+    MODEL_LOADING_AVAILABLE = False
+
 class FlanUL2TextTrainer:
     def __init__(self, config_path: str, use_drive: bool = False, drive_base_dir: Optional[str] = None):
         """
@@ -197,12 +210,32 @@ class FlanUL2TextTrainer:
         if self.training_config.get("push_to_hub", False):
             self._login_huggingface()
         
-        # Initialize tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_config["base_model"],
-            trust_remote_code=True,
-            token=os.environ.get("HF_TOKEN")
-        )
+        # Initialize tokenizer with workaround for Flan-UL2
+        model_path = self.model_config["base_model"]
+        if "flan-ul2" in model_path.lower():
+            logger.info("Loading FLAN-UL2 with T5 configuration...")
+            # Create a T5 config for Flan-UL2
+            config = AutoConfig.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                model_type=UL2_MODEL_TYPE,  # Explicitly set model type to t5
+                token=os.environ.get("HF_TOKEN")
+            )
+            
+            # Now load the tokenizer with the config
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                config=config,
+                trust_remote_code=True,
+                token=os.environ.get("HF_TOKEN")
+            )
+        else:
+            # Regular tokenizer loading for other models
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                token=os.environ.get("HF_TOKEN")
+            )
         
         # Set PAD token if not already defined
         if self.tokenizer.pad_token is None:
@@ -286,65 +319,161 @@ class FlanUL2TextTrainer:
         }
     
     def _load_model(self):
-        """Load and prepare the model for training."""
+        """
+        Load model with appropriate quantization and optimization.
+        """
+        try:
+            from unsloth import FastLanguageModel
+            UNSLOTH_AVAILABLE = True
+        except (ImportError, NotImplementedError):
+            logger.info("Unsloth not installed or not compatible. Using standard model loading.")
+            UNSLOTH_AVAILABLE = False
+            
+        use_unsloth = self.model_config.get("use_unsloth", False) and UNSLOTH_AVAILABLE
+        use_4bit = self.model_config.get("use_4bit", False)
+        use_8bit = self.model_config.get("use_8bit", False)
+        
         logger.info(f"Loading model {self.model_config['base_model']}")
+        logger.info(f"Use Unsloth: {use_unsloth}, Use 4-bit: {use_4bit}, Use 8-bit: {use_8bit}")
         
-        # Initialize tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_config["base_model"], 
-            trust_remote_code=True,
-            token=os.environ.get("HF_TOKEN")
-        )
+        # Get model path
+        model_path = self.model_config["base_model"]
+        is_flan_ul2 = "flan-ul2" in model_path.lower()
         
+        # Make sure tokenizer is initialized with proper padding token
+        if not hasattr(self, 'tokenizer') or self.tokenizer is None:
+            # Initialize tokenizer with workaround for Flan-UL2
+            if is_flan_ul2:
+                logger.info("Loading FLAN-UL2 tokenizer with T5 configuration...")
+                # Create a T5 config for Flan-UL2
+                config = AutoConfig.from_pretrained(
+                    model_path,
+                    trust_remote_code=True,
+                    model_type=UL2_MODEL_TYPE,  # Explicitly set model type to t5
+                    token=os.environ.get("HF_TOKEN")
+                )
+                
+                # Now load the tokenizer with the config
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    model_path,
+                    config=config,
+                    trust_remote_code=True,
+                    token=os.environ.get("HF_TOKEN")
+                )
+            else:
+                # Regular tokenizer loading for other models
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    model_path,
+                    trust_remote_code=True,
+                    token=os.environ.get("HF_TOKEN")
+                )
+                
         # Add special tokens if needed
         if not self.tokenizer.pad_token:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        # Set quantization configuration
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=self.model_config.get("use_4bit", True),
-            use_nested_quantization=self.model_config.get("use_nested_quant", True),
-            bnb_4bit_quant_type="nf4"
-        )
-        
-        # Add robust error handling around model loading
-        try:
-            # Unsloth doesn't support T5/FLAN model which are encoder-decoder
-            logger.info("Using standard HuggingFace model loading (Unsloth doesn't support T5/FLAN models)")
-            
-            # Standard HuggingFace loading
-            model = AutoModelForSeq2SeqLM.from_pretrained(
-                self.model_config["base_model"],
-                quantization_config=quantization_config,
-                device_map="auto",
+        # Create config first for FLAN-UL2 model
+        if is_flan_ul2:
+            logger.info("Creating T5 config for FLAN-UL2 model...")
+            config = AutoConfig.from_pretrained(
+                model_path,
                 trust_remote_code=True,
+                model_type=UL2_MODEL_TYPE,  # Explicitly set model type to t5
                 token=os.environ.get("HF_TOKEN")
             )
+        else:
+            config = None
             
-            # Apply LoRA to the model using PEFT
-            if self.model_config.get("use_4bit", False):
-                model = prepare_model_for_kbit_training(model)
-            
-            # Configure LoRA
-            lora_config = LoraConfig(
-                r=self.peft_config.get("r", 32),
-                lora_alpha=self.peft_config.get("lora_alpha", 16),
-                target_modules=self.peft_config.get("target_modules", ["q", "k", "v", "o", "wi", "wo"]),
-                lora_dropout=self.peft_config.get("lora_dropout", 0.05),
-                bias=self.peft_config.get("bias", "none"),
-                task_type=TaskType.SEQ_TO_SEQ_LM
-            )
-            
-            # Apply LoRA
-            model = get_peft_model(model, lora_config)
-        
-        except Exception as e:
-            logger.error(f"Error loading model: {str(e)}")
-            return None
+        # For FLAN-UL2, we'll use T5ForConditionalGeneration 
+        if is_flan_ul2:
+            logger.info("Loading FLAN-UL2 with T5ForConditionalGeneration...")
+            if use_4bit:
+                # Configure quantization
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4"
+                )
+                model = T5ForConditionalGeneration.from_pretrained(
+                    model_path,
+                    config=config,
+                    quantization_config=bnb_config,
+                    device_map="auto",
+                    trust_remote_code=True,
+                    token=os.environ.get("HF_TOKEN")
+                )
+            elif use_8bit:
+                model = T5ForConditionalGeneration.from_pretrained(
+                    model_path,
+                    config=config,
+                    load_in_8bit=True,
+                    device_map="auto",
+                    trust_remote_code=True,
+                    token=os.environ.get("HF_TOKEN")
+                )
+            else:
+                model = T5ForConditionalGeneration.from_pretrained(
+                    model_path,
+                    config=config,
+                    device_map="auto",
+                    torch_dtype=torch.float16,
+                    trust_remote_code=True,
+                    token=os.environ.get("HF_TOKEN")
+                )
+        else:
+            # Standard model loading with AutoModelForSeq2SeqLM
+            if use_4bit:
+                model = AutoModelForSeq2SeqLM.from_pretrained(
+                    model_path,
+                    quantization_config={
+                        "load_in_4bit": True,
+                        "bnb_4bit_compute_dtype": getattr(torch, self.model_config.get("bnb_4bit_compute_dtype", "float16")),
+                        "bnb_4bit_use_double_quant": self.model_config.get("use_nested_quant", True),
+                        "bnb_4bit_quant_type": "nf4",
+                    },
+                    device_map="auto",
+                    trust_remote_code=True,
+                    token=os.environ.get("HF_TOKEN"),
+                )
+            elif use_8bit:
+                model = AutoModelForSeq2SeqLM.from_pretrained(
+                    model_path,
+                    load_in_8bit=True,
+                    device_map="auto",
+                    trust_remote_code=True,
+                    token=os.environ.get("HF_TOKEN"),
+                )
+            else:
+                model = AutoModelForSeq2SeqLM.from_pretrained(
+                    model_path,
+                    device_map="auto",
+                    torch_dtype=torch.float16,
+                    trust_remote_code=True,
+                    token=os.environ.get("HF_TOKEN"),
+                )
         
         # Enable gradient checkpointing if requested
-        if self.model_config.get("use_gradient_checkpointing", True) and not UNSLOTH_AVAILABLE:
+        if self.model_config.get("use_gradient_checkpointing", True):
             model.gradient_checkpointing_enable()
+            
+        # Apply PEFT/LoRA if we're using quantization
+        if use_4bit or use_8bit:
+            model = prepare_model_for_kbit_training(model)
+            
+        # Configure LoRA
+        lora_config = LoraConfig(
+            r=self.peft_config.get("r", 32),
+            lora_alpha=self.peft_config.get("lora_alpha", 16),
+            target_modules=self.peft_config.get("target_modules", ["q", "k", "v", "o", "wi", "wo"]),
+            lora_dropout=self.peft_config.get("lora_dropout", 0.05),
+            bias=self.peft_config.get("bias", "none"),
+            task_type=TaskType.SEQ_TO_SEQ_LM
+        )
+        
+        # Apply LoRA
+        model = get_peft_model(model, lora_config)
+        logger.info(f"Applied LoRA with rank={lora_config.r} to model")
         
         # Enable xformers attention if available and requested
         if self.model_config.get("xformers_attention", True) and hasattr(model, "config"):
