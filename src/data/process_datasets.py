@@ -4,59 +4,122 @@ import json
 import argparse
 import logging
 from pathlib import Path
-from .preprocessing import DataPreprocessor
 from typing import List, Dict, Optional
 import time
 import datetime
+import sys
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import drive utils
-import sys
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(current_dir))
-sys.path.append(project_root)
+# Add project root to Python path to handle both local and Paperspace environments
+current_file = os.path.abspath(__file__)
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    logger.info(f"Added project root to Python path: {project_root}")
+
+# Try to import preprocessing module
+try:
+    from .preprocessing import DataPreprocessor
+    logger.info("Successfully imported DataPreprocessor using relative import")
+except (ImportError, ValueError):
+    try:
+        # If relative import fails, try absolute import
+        from src.data.preprocessing import DataPreprocessor
+        logger.info("Successfully imported DataPreprocessor using absolute import")
+    except ImportError:
+        try:
+            # Try with direct import as last resort
+            sys.path.append(os.path.dirname(current_file))
+            from preprocessing import DataPreprocessor
+            logger.info("Successfully imported DataPreprocessor using direct import")
+        except ImportError as e:
+            logger.error(f"Failed to import DataPreprocessor: {e}")
+            raise
 
 # Try multiple import paths to handle reorganized structure
+drive_utils_imported = False
+
+# Try scripts.google_drive path first (new structure)
 try:
-    # First try direct import from reorganized path
     from scripts.google_drive.google_drive_manager import sync_to_drive, configure_sync_method
     logger.info("Successfully imported Drive manager from scripts.google_drive")
+    drive_utils_imported = True
 except ImportError:
+    pass
+
+# If not imported yet, try src.utils path
+if not drive_utils_imported:
     try:
-        # Next try the src.utils path
         from src.utils.google_drive_manager import sync_to_drive, configure_sync_method
         logger.info("Successfully imported Drive manager from src.utils")
+        drive_utils_imported = True
     except ImportError:
-        # Lastly try direct import from utils dir
+        pass
+
+# If still not imported, try direct import from utils dir
+if not drive_utils_imported:
+    try:
+        utils_path = os.path.join(project_root, 'src', 'utils')
+        if utils_path not in sys.path:
+            sys.path.append(utils_path)
+        from google_drive_manager import sync_to_drive, configure_sync_method
+        logger.info("Successfully imported Drive manager from utils path")
+        drive_utils_imported = True
+    except ImportError:
+        pass
+
+# If all imports failed, provide dummy functions
+if not drive_utils_imported:
+    logger.error("CRITICAL: Could not import Google Drive functions. Syncing will not work.")
+    # Provide dummy functions to prevent crashes
+    def sync_to_drive(*args, **kwargs):
+        logger.error("Drive sync function not available - no files will be synced")
+        return False
+            
+    def configure_sync_method(*args, **kwargs):
+        logger.error("Drive sync configuration not available")
+        return None
+
+# Try to set HF token from credentials
+try:
+    # Try different import paths for set_hf_token
+    hf_token_set = False
+    
+    # First try scripts.utilities path
+    try:
+        from scripts.utilities.set_hf_token import set_hf_token
+        set_hf_token()
+        logger.info("Set HF_TOKEN from credentials using scripts.utilities path")
+        hf_token_set = True
+    except ImportError:
+        pass
+    
+    # If not set yet, try src.utils path
+    if not hf_token_set:
+        try:
+            from src.utils.set_hf_token import set_hf_token
+            set_hf_token()
+            logger.info("Set HF_TOKEN from credentials using src.utils path")
+            hf_token_set = True
+        except ImportError:
+            pass
+    
+    # If still not set, try direct import
+    if not hf_token_set:
         try:
             utils_path = os.path.join(project_root, 'src', 'utils')
             if utils_path not in sys.path:
                 sys.path.append(utils_path)
-            from google_drive_manager import sync_to_drive, configure_sync_method
-            logger.info("Successfully imported Drive manager from utils path")
+            from set_hf_token import set_hf_token
+            set_hf_token()
+            logger.info("Set HF_TOKEN from credentials using direct import")
         except ImportError:
-            logger.error("CRITICAL: Could not import Google Drive functions. Syncing will not work.")
-            # Provide dummy functions to prevent crashes
-            def sync_to_drive(*args, **kwargs):
-                logger.error("Drive sync function not available - no files will be synced")
-                return False
-                
-            def configure_sync_method(*args, **kwargs):
-                logger.error("Drive sync configuration not available")
-                return None
-
-# Try to set HF token from credentials
-try:
-    from scripts.utilities.set_hf_token import set_hf_token
-    logging.info("Attempting to set HF_TOKEN from credentials")
-    set_hf_token()
-except ImportError:
-    logging.warning("Could not import set_hf_token script. HF_TOKEN may not be set.")
+            logger.warning("Could not import set_hf_token script. HF_TOKEN may not be set.")
 except Exception as e:
-    logging.warning(f"Error setting HF_TOKEN: {e}")
+    logger.warning(f"Error setting HF_TOKEN: {e}")
 
 def process_datasets(config_path: str, datasets: Optional[List[str]] = None, 
                     streaming: bool = False, no_cache: bool = False, 
@@ -135,9 +198,17 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
     preprocessor = DataPreprocessor()
 
     # Process datasets
-    output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/processed"))
+    # Try different paths for output directory to handle different environments
+    if os.path.exists(os.path.join(project_root, "data", "processed")):
+        output_dir = os.path.join(project_root, "data", "processed")
+    elif os.path.exists(os.path.join(os.path.dirname(project_root), "data", "processed")):
+        output_dir = os.path.join(os.path.dirname(project_root), "data", "processed")
+    else:
+        # Create a path if it doesn't exist yet
+        output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/processed"))
+        os.makedirs(output_dir, exist_ok=True)
+        
     logger.info(f"Using output directory: {output_dir}")
-    os.makedirs(output_dir, exist_ok=True)
     
     # Make sure the output directory has write permissions
     test_file_path = os.path.join(output_dir, ".write_test")

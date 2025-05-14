@@ -15,29 +15,58 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Import from the consolidated module
-try:
-    from src.utils.google_drive_manager import (
-        # Classes and main functionality
-        DriveManager,
-        drive_manager,
-        sync_to_drive,
-        sync_from_drive,
-        configure_sync_method,
-        test_authentication,
-        test_drive_mounting,
+# Add project root to Python path to handle both local and Paperspace environments
+current_file = os.path.abspath(__file__)
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    logger.info(f"Added project root to Python path: {project_root}")
+
+# Try multiple import paths to handle different environments
+drive_utils_imported = False
+
+# Try options in priority order
+import_attempts = [
+    # 1. Try direct import first (local path)
+    {"module": "utils.google_drive_manager", "log": "direct import"},
+    # 2. Try absolute import with project in path
+    {"module": "src.utils.google_drive_manager", "log": "absolute import"},
+    # 3. Try scripts path (new structure)
+    {"module": "scripts.google_drive.google_drive_manager", "log": "scripts import"},
+]
+
+for attempt in import_attempts:
+    if drive_utils_imported:
+        break
         
-        # Constants
-        DRIVE_FOLDERS,
-        SCOPES,
-        GOOGLE_API_AVAILABLE
-    )
+    try:
+        module_name = attempt["module"]
+        # Use importlib to dynamically import
+        import importlib
+        module = importlib.import_module(module_name)
+        
+        # Import all necessary components
+        DriveManager = module.DriveManager
+        drive_manager = getattr(module, "_drive_manager", None)
+        sync_to_drive = module.sync_to_drive
+        sync_from_drive = module.sync_from_drive
+        configure_sync_method = module.configure_sync_method
+        test_authentication = module.test_authentication
+        test_drive_mounting = getattr(module, "test_drive_mounting", None)
+        DRIVE_FOLDERS = module.DRIVE_FOLDERS
+        SCOPES = getattr(module, "SCOPES", [])
+        GOOGLE_API_AVAILABLE = getattr(module, "GOOGLE_API_AVAILABLE", True)
+        
+        logger.info(f"Successfully imported from {module_name} via {attempt['log']}")
+        drive_utils_imported = True
+        DRIVE_API_AVAILABLE = GOOGLE_API_AVAILABLE
     
-    logger.debug("Successfully redirected from drive_api_utils to google_drive_manager")
-    DRIVE_API_AVAILABLE = GOOGLE_API_AVAILABLE
-    
-except ImportError as e:
-    logger.error(f"Error importing from google_drive_manager: {e}")
+    except (ImportError, AttributeError) as e:
+        logger.debug(f"Failed to import from {attempt['module']}: {e}")
+
+# If all imports failed, fallback to dummy implementations
+if not drive_utils_imported:
+    logger.error("All import attempts for Drive API utils failed")
     logger.warning("Drive API functionality will not be available")
     DRIVE_API_AVAILABLE = False
     
@@ -49,9 +78,49 @@ except ImportError as e:
     class DriveManager:
         def __init__(self, *args, **kwargs):
             logger.error("DriveManager not available - google_drive_manager could not be imported")
+            self.folder_ids = {}
+            self.base_dir = "DeepseekCoder"
         
         def authenticate(self):
             return False
+            
+        def find_file_id(self, *args, **kwargs):
+            return None
+            
+        def upload_folder(self, *args, **kwargs):
+            return False
+            
+        def upload_file(self, *args, **kwargs):
+            return False
+            
+        def download_folder(self, *args, **kwargs):
+            return False
+            
+        def _setup_drive_structure(self):
+            pass
+    
+    # Create dummy global instance
+    drive_manager = DriveManager()
+    
+    # Define dummy functions
+    def sync_to_drive(*args, **kwargs):
+        logger.error("Drive sync function not available")
+        return False
+        
+    def sync_from_drive(*args, **kwargs):
+        logger.error("Drive sync function not available")
+        return False
+        
+    def configure_sync_method(*args, **kwargs):
+        logger.error("Drive sync configuration not available")
+        
+    def test_authentication(*args, **kwargs):
+        logger.error("Drive authentication test not available")
+        return False
+        
+    def test_drive_mounting(*args, **kwargs):
+        logger.error("Drive mounting test not available")
+        return False
 
 # Re-export compatibility functions that maintain the old API
 def initialize_drive_api(credentials_path=None, headless=False, token_path=None):

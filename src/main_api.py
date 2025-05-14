@@ -9,7 +9,31 @@ import tempfile
 import sys
 from pathlib import Path
 
-from src.utils.drive_api_utils import initialize_drive_api, save_to_drive
+# Add project root to Python path to handle both local and Paperspace environments
+current_file = os.path.abspath(__file__)
+project_root = os.path.dirname(os.path.dirname(current_file))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    print(f"Added project root to Python path: {project_root}")
+
+# Now attempt to import using local relative imports first, then fall back to absolute
+try:
+    # Try direct imports first (assuming we're in the src directory)
+    from utils.drive_api_utils import initialize_drive_api, save_to_drive
+    print("Successfully imported from utils.drive_api_utils")
+except ImportError:
+    try:
+        # Then try absolute imports (using the project root in sys.path)
+        from src.utils.drive_api_utils import initialize_drive_api, save_to_drive
+        print("Successfully imported from src.utils.drive_api_utils")
+    except ImportError as e:
+        print(f"ERROR: Could not import drive_api_utils: {e}")
+        print("Search paths:", sys.path)
+        # Create dummy functions to prevent crashes
+        def initialize_drive_api(*args, **kwargs):
+            return None
+        def save_to_drive(*args, **kwargs):
+            return False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,14 +69,49 @@ except Exception as e:
     
 # Import Drive API utils after PyTorch to avoid import order issues
 try:
-    from src.utils.google_drive_manager import (
+    # Try direct imports first (assuming we're in the src directory)
+    from utils.google_drive_manager import (
         sync_to_drive, 
         sync_from_drive, 
         configure_sync_method,
         setup_drive_directories
     )
-except ImportError as e:
-    logger.error(f"Failed to import Drive utils: {e}")
+    logger.info("Successfully imported from utils.google_drive_manager")
+except ImportError:
+    try:
+        # Then try absolute imports (using the project root in sys.path)
+        from src.utils.google_drive_manager import (
+            sync_to_drive, 
+            sync_from_drive, 
+            configure_sync_method,
+            setup_drive_directories
+        )
+        logger.info("Successfully imported from src.utils.google_drive_manager")
+    except ImportError as e:
+        logger.error(f"Failed to import Drive utils: {e}")
+        # Try importing via scripts.google_drive if available
+        try:
+            from scripts.google_drive.google_drive_manager import (
+                sync_to_drive, 
+                sync_from_drive, 
+                configure_sync_method,
+                setup_drive_directories
+            )
+            logger.info("Successfully imported from scripts.google_drive.google_drive_manager")
+        except ImportError as e2:
+            logger.error(f"All import attempts for Drive utils failed: {e2}")
+            # Create dummy functions to prevent crashes
+            def sync_to_drive(*args, **kwargs):
+                logger.error("Drive sync function not available")
+                return False
+            def sync_from_drive(*args, **kwargs):
+                logger.error("Drive sync function not available") 
+                return False
+            def configure_sync_method(*args, **kwargs):
+                logger.error("Drive sync configuration not available")
+            def setup_drive_directories(*args, **kwargs):
+                logger.error("Drive directory setup not available")
+                return False
 
 def ensure_directories():
     """Ensure all necessary directories exist."""
@@ -107,7 +166,16 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
                     use_drive_api=False, use_drive=False, credentials_path=None, 
                     drive_base_dir=None, headless=False, skip_local_storage=False):
     """Process datasets for fine-tuning."""
-    cmd = f"python -m src.data.process_datasets --config {config_path}"
+    
+    # Check if we need to use absolute path or relative path based on environment
+    if os.path.exists("src/data/process_datasets.py"):
+        cmd = f"python -m src.data.process_datasets --config {config_path}"
+    elif os.path.exists("data/process_datasets.py"):
+        cmd = f"python -m data.process_datasets --config {config_path}"
+    else:
+        # Fallback to direct script execution
+        cmd = f"python src/data/process_datasets.py --config {config_path}"
+    
     if datasets:
         cmd += f" --datasets {' '.join(datasets)}"
     
@@ -130,17 +198,26 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
     if skip_local_storage:
         cmd += " --skip_local_storage"
     
+    # Always set PYTHONPATH to include current directory to ensure imports work
+    pythonpath_cmd = f"PYTHONPATH={os.getcwd()}:$PYTHONPATH "
+    cmd = pythonpath_cmd + cmd
+    
     return run_command(cmd, "Processing datasets")
 
 def train_model(config_path, data_dir, use_drive_api=False, use_drive=False, 
               credentials_path=None, drive_base_dir=None, headless=False):
     """Train the model."""
-    # Check if PYTHONPATH includes the project root, if not, add it to the command
-    pythonpath_cmd = ""
-    if os.getcwd() not in os.environ.get("PYTHONPATH", ""):
-        pythonpath_cmd = f"export PYTHONPATH={os.getcwd()}:$PYTHONPATH && "
-
-    cmd = f"{pythonpath_cmd}python -m src.training.train --config {config_path} --data_dir {data_dir}"
+    # Always include the project root in PYTHONPATH
+    pythonpath_cmd = f"PYTHONPATH={os.getcwd()}:$PYTHONPATH "
+    
+    # Check if we need to use absolute path or relative path based on environment
+    if os.path.exists("src/training/train.py"):
+        cmd = f"python -m src.training.train --config {config_path} --data_dir {data_dir}"
+    elif os.path.exists("training/train.py"):
+        cmd = f"python -m training.train --config {config_path} --data_dir {data_dir}"
+    else:
+        # Fallback to direct script execution
+        cmd = f"python src/training/train.py --config {config_path} --data_dir {data_dir}"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
@@ -151,13 +228,23 @@ def train_model(config_path, data_dir, use_drive_api=False, use_drive=False,
         if headless:
             cmd += " --headless"
     
-    return run_command(cmd, "Training model")
+    return run_command(pythonpath_cmd + cmd, "Training model")
 
 def evaluate_model(model_path, base_model, output_dir="results", 
                  use_drive_api=False, use_drive=False, credentials_path=None, 
                  drive_base_dir=None, headless=False):
     """Evaluate the model."""
-    cmd = f"python -m src.evaluation.evaluate --model_path {model_path} --base_model {base_model} --output_dir {output_dir} --eval_humaneval --eval_mbpp --eval_ds1000"
+    # Always include the project root in PYTHONPATH
+    pythonpath_cmd = f"PYTHONPATH={os.getcwd()}:$PYTHONPATH "
+    
+    # Check if we need to use absolute path or relative path based on environment
+    if os.path.exists("src/evaluation/evaluate.py"):
+        cmd = f"python -m src.evaluation.evaluate --model_path {model_path} --base_model {base_model} --output_dir {output_dir} --eval_humaneval --eval_mbpp --eval_ds1000"
+    elif os.path.exists("evaluation/evaluate.py"):
+        cmd = f"python -m evaluation.evaluate --model_path {model_path} --base_model {base_model} --output_dir {output_dir} --eval_humaneval --eval_mbpp --eval_ds1000"
+    else:
+        # Fallback to direct script execution
+        cmd = f"python src/evaluation/evaluate.py --model_path {model_path} --base_model {base_model} --output_dir {output_dir} --eval_humaneval --eval_mbpp --eval_ds1000"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
@@ -168,13 +255,23 @@ def evaluate_model(model_path, base_model, output_dir="results",
         if headless:
             cmd += " --headless"
     
-    return run_command(cmd, "Evaluating model")
+    return run_command(pythonpath_cmd + cmd, "Evaluating model")
 
 def visualize_results(training_log, results_dir, output_dir="visualizations", 
                      use_drive_api=False, use_drive=False, credentials_path=None, 
                      drive_base_dir=None, headless=False):
     """Visualize results."""
-    cmd = f"python -m src.utils.visualize --training_log {training_log} --results_dir {results_dir} --output_dir {output_dir}"
+    # Always include the project root in PYTHONPATH
+    pythonpath_cmd = f"PYTHONPATH={os.getcwd()}:$PYTHONPATH "
+    
+    # Check if we need to use absolute path or relative path based on environment
+    if os.path.exists("src/utils/visualize.py"):
+        cmd = f"python -m src.utils.visualize --training_log {training_log} --results_dir {results_dir} --output_dir {output_dir}"
+    elif os.path.exists("utils/visualize.py"):
+        cmd = f"python -m utils.visualize --training_log {training_log} --results_dir {results_dir} --output_dir {output_dir}"
+    else:
+        # Fallback to direct script execution
+        cmd = f"python src/utils/visualize.py --training_log {training_log} --results_dir {results_dir} --output_dir {output_dir}"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
@@ -185,7 +282,7 @@ def visualize_results(training_log, results_dir, output_dir="visualizations",
         if headless:
             cmd += " --headless"
     
-    return run_command(cmd, "Visualizing results")
+    return run_command(pythonpath_cmd + cmd, "Visualizing results")
 
 def calculate_hours_until_midnight():
     """Calculate the number of hours until midnight."""
