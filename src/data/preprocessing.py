@@ -159,9 +159,18 @@ class DataPreprocessor:
         errors = 0
         max_errors = 100  # Maximum number of errors before stopping iteration
         
-        # Set max_samples to very high number if None to process all examples
+        # Set max_samples to a reasonable default if None
         if max_samples is None:
-            max_samples = 1000000  # A million examples should be enough
+            # If we can determine dataset size, use that with a cap
+            if hasattr(dataset, '__len__'):
+                max_samples = min(len(dataset), 100000)  # Cap at 100K samples to prevent memory issues
+                logger.info(f"Processing up to {max_samples} examples (dataset size: {len(dataset)})")
+            else:
+                max_samples = 50000  # A more conservative default for unknown size datasets
+                logger.info(f"Processing up to {max_samples} examples (dataset size unknown)")
+            
+            # Inform user they can override
+            logger.info(f"To process more or fewer examples, specify max_samples in your configuration")
         
         # Create iterator with progress tracking
         try:
@@ -178,9 +187,14 @@ class DataPreprocessor:
                         pbar.update(1)
                         
                         # Periodically check memory usage and collect garbage if needed
-                        # Don't log during normal operation to keep terminal clean
                         if count % self._memory_check_interval == 0:
-                            self._check_resources(force=False)
+                            resources = self._check_resources(force=False)
+                            
+                            # Stop processing if memory usage is critically high (90%+)
+                            if resources.get('memory_percent', 0) > 90 or resources.get('gpu_percent', 0) > 90:
+                                logger.warning(f"Memory usage too high (RAM: {resources.get('memory_percent')}%, "
+                                             f"GPU: {resources.get('gpu_percent')}%), stopping early at {count} examples")
+                                break
                     except StopIteration:
                         break
                     except Exception as e:
@@ -613,7 +627,7 @@ class DataPreprocessor:
                 return dataset  # Return original dataset if all processing attempts fail
     
     def process_code_alpaca(self, dataset: Union[Dataset, DatasetDict],
-                           streaming: bool = False) -> Union[Dataset, DatasetDict]:
+                           streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
         """Process CodeAlpaca-20K dataset."""
         logger.info("Processing CodeAlpaca dataset...")
         
@@ -621,9 +635,9 @@ class DataPreprocessor:
         if streaming:
             processed_examples = []
             
-            # Process each example individually
-            for i, example in enumerate(dataset):
-                if i >= 10000:  # Limit to prevent processing too many examples
+            # Process each example individually using our safe iterator
+            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
+                if i >= 10000 and max_samples is None:  # Limit to prevent processing too many examples unless overridden
                     break
                     
                 try:
@@ -728,7 +742,7 @@ class DataPreprocessor:
         return result
         
     def process_instruct_code(self, dataset: Union[Dataset, DatasetDict],
-                             streaming: bool = False) -> Union[Dataset, DatasetDict]:
+                             streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
         """
         Process InstructCode dataset.
         
@@ -749,7 +763,7 @@ class DataPreprocessor:
             processed_examples = []
             
             # Process each example individually using our safe iterator
-            for example in self._safe_dataset_iterator(dataset):
+            for example in self._safe_dataset_iterator(dataset, max_samples=max_samples):
                 try:
                     # Extract fields using our utility method
                     fields = self._extract_fields(example, field_mappings)
@@ -890,7 +904,7 @@ class DataPreprocessor:
                 return {"processed_text": [], "length": [], "duplicates_removed": 0}
     
     def process_mbpp(self, dataset: Union[Dataset, DatasetDict],
-                     streaming: bool = False) -> Union[Dataset, DatasetDict]:
+                     streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
         """Process MBPP dataset."""
         logger.info("Processing MBPP dataset...")
         
@@ -899,6 +913,10 @@ class DataPreprocessor:
             if hasattr(dataset, "__len__"):
                 dataset_size = len(dataset)
                 logger.info(f"MBPP dataset contains {dataset_size} examples")
+                
+                # Apply max_samples limit if specified
+                if max_samples and max_samples < dataset_size:
+                    logger.info(f"Will process at most {max_samples} examples due to max_samples setting")
             else:
                 dataset_size = None
                 logger.info("MBPP dataset size unknown (streaming mode)")
@@ -1187,7 +1205,7 @@ class DataPreprocessor:
             return {"processed_text": [], "length": [], "error": str(e)}
     
     def process_codeparrot(self, dataset: Union[Dataset, DatasetDict],
-                          streaming: bool = False) -> Union[Dataset, DatasetDict]:
+                          streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
         """Process CodeParrot Clean dataset."""
         logger.info("Processing CodeParrot dataset...")
 
@@ -1195,10 +1213,8 @@ class DataPreprocessor:
         if streaming:
             processed_examples = []
 
-            for i, example in enumerate(dataset):
-                if i >= 10000:  # Limit to prevent processing too many examples
-                    break
-
+            # Process using safe iterator with max_samples
+            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
                 try:
                     code = None
 
@@ -1423,12 +1439,19 @@ class DataPreprocessor:
             if 'gpu_allocated_mb' in memory_info:
                 logger.info(f"GPU memory: {memory_info.get('gpu_allocated_mb', 0):.1f} MB ({memory_info.get('gpu_percent', 0):.1f}% of GPU memory)")
             
+            # Skip dataset if system resources are too constrained
+            if memory_info.get('memory_percent', 0) > 85 or memory_info.get('gpu_percent', 0) > 85:
+                logger.warning(f"System resources too low to process dataset {dataset_name}. Skipping.")
+                failed_count += 1
+                continue
+                
             try:
                 # Extract processor name and dataset path
                 processor_name = config.get("processor", dataset_name)
                 dataset_path = config.get("path", dataset_name)
                 split = config.get("split", "train")
                 streaming = config.get("streaming", False)
+                max_samples = config.get("max_samples", None)  # Get max_samples from config
                 
                 # Check if we should skip processing if it already exists
                 output_path = os.path.join(save_path, f"{dataset_name}_processed")
@@ -1500,7 +1523,7 @@ class DataPreprocessor:
                                 split=split,
                                 streaming=streaming,
                                 use_cache=config.get("use_cache", True),
-                                max_samples=config.get("max_samples", None)
+                                max_samples=max_samples
                             )
                             
                             # Store the processed dataset
@@ -1590,7 +1613,7 @@ class DataPreprocessor:
                         
                                 # Process the dataset
                                 logger.info(f"Processing dataset {dataset_name} with {processor_method}")
-                                processed_dataset = processor(dataset, streaming=streaming)
+                                processed_dataset = processor(dataset, streaming=streaming, max_samples=max_samples)
                                 
                                 # Save the processed dataset if we got anything back
                                 if processed_dataset:
