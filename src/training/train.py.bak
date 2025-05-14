@@ -282,7 +282,7 @@ def main():
         args.deepspeed = False
     
     # Setup DeepSpeed configuration if enabled
-    elif False:
+    elif args.deepspeed:
         logger.info("Setting up DeepSpeed environment...")
         
         # Check for existing environment variables
@@ -318,7 +318,7 @@ def main():
             logger.info("Set ACCELERATE_DEEPSPEED_PLUGIN_TYPE to 'deepspeed'")
         
         # Check for explicit DeepSpeed config file argument
-        if False_config and os.path.exists(args.deepspeed_config):
+        if args.deepspeed_config and os.path.exists(args.deepspeed_config):
             logger.info(f"Using specified DeepSpeed config: {args.deepspeed_config}")
             os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = args.deepspeed_config
             os.environ["HF_DS_CONFIG"] = args.deepspeed_config

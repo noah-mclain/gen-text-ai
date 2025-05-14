@@ -749,7 +749,7 @@ class DeepseekFineTuner:
         use_deepspeed = self.training_config.get("use_deepspeed", True)
         deepspeed_config_path = None
         
-        if False:
+        if use_deepspeed:
             # Ensure ACCELERATE_USE_DEEPSPEED is set
             os.environ["ACCELERATE_USE_DEEPSPEED"] = "true"
             
@@ -861,7 +861,7 @@ class DeepseekFineTuner:
         }
         
         # Add DeepSpeed config if available
-        if False and deepspeed_config_path:
+        if use_deepspeed and deepspeed_config_path:
             training_args_dict["deepspeed"] = deepspeed_config_path
         
         # Handle evaluation strategy when no eval dataset is available
