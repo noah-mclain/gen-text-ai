@@ -12,8 +12,11 @@ sys.path.append(current_dir)
 # Fix import order to ensure Unsloth optimizations are applied correctly
 try:
     from unsloth import FastLanguageModel
-except ImportError:
-    print("Unsloth not installed. Install with: pip install unsloth")
+    UNSLOTH_AVAILABLE = True
+except (ImportError, NotImplementedError) as e:
+    print(f"Unsloth not available: {e}")
+    print("Training will continue without Unsloth optimizations.")
+    UNSLOTH_AVAILABLE = False
 
 # Import the trainer module
 try:

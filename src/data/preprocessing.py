@@ -1386,18 +1386,22 @@ class DataPreprocessor:
                             # Some datasets require special configurations
                             logger.info(f"Loading dataset: {dataset_path}")
                             
-                            # Check if we need to use auth token
-                            use_auth_token = "HF_TOKEN" in os.environ
+                            # Check if HuggingFace token is available
+                            token_available = "HF_TOKEN" in os.environ
                             
-                            # Additional dataset-specific parameters
+                            # Additional parameters for specific datasets or formats
                             extra_params = {}
                             
-                            try:
+                            # For MBPP and other datasets with Python examples, trust remote code
+                            if "mbpp" in dataset_path or "code" in dataset_path:
+                                extra_params["trust_remote_code"] = True
+                            
+                            with timer(f"Loading dataset {dataset_name}"):
                                 dataset = load_dataset(
                                     dataset_path,
                                     split=split,
                                     streaming=streaming,
-                                    token=os.environ.get("HF_TOKEN") if use_auth_token else None,
+                                    token=os.environ.get("HF_TOKEN") if token_available else None,
                                     **extra_params
                                 )
                                 
@@ -1422,10 +1426,6 @@ class DataPreprocessor:
                                 else:
                                         logger.error(f"No data returned when processing {dataset_name}")
                                         failed_count += 1
-                            except Exception as e:
-                                logger.error(f"Error loading dataset {dataset_path}: {e}")
-                                logger.error(traceback.format_exc())
-                                failed_count += 1
                         except Exception as e:
                             logger.error(f"Error loading or processing dataset {dataset_name}: {e}")
                             logger.error(traceback.format_exc())

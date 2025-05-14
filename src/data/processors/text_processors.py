@@ -40,7 +40,7 @@ def openassistant_processor(
             dataset_path, 
             split=split, 
             streaming=streaming,
-            use_auth_token=os.environ.get("HF_TOKEN")
+            token=os.environ.get("HF_TOKEN")
         )
         
         def process_example(example):
@@ -126,7 +126,7 @@ def gpteacher_processor(
             dataset_path, 
             split=split, 
             streaming=streaming,
-            use_auth_token=os.environ.get("HF_TOKEN")
+            token=os.environ.get("HF_TOKEN")
         )
         
         def process_example(example):
@@ -217,7 +217,7 @@ def pile_processor(
             split=split, 
             streaming=streaming, 
             trust_remote_code=True,
-            use_auth_token=os.environ.get("HF_TOKEN")
+            token=os.environ.get("HF_TOKEN")
         )
         
         def process_example(example):
@@ -292,7 +292,7 @@ def persona_chat_processor(
             dataset_path, 
             split=split, 
             streaming=streaming,
-            use_auth_token=os.environ.get("HF_TOKEN")
+            token=os.environ.get("HF_TOKEN")
         )
         
         def process_example(example):
@@ -419,7 +419,7 @@ def writingprompts_processor(
             dataset_path, 
             split=split, 
             streaming=streaming,
-            use_auth_token=os.environ.get("HF_TOKEN")
+            token=os.environ.get("HF_TOKEN")
         )
         
         def process_example(example):
@@ -465,13 +465,155 @@ def writingprompts_processor(
         # Return an empty dataset as a fallback
         return Dataset.from_dict({"instruction": [], "response": [], "text": [], "language": [], "source": []})
 
+def standardize_text_processor(
+    dataset_path: str,
+    output_dir: str,
+    split: str = 'train',
+    max_samples: Optional[int] = None,
+    streaming: bool = False,
+    use_cache: bool = True,
+    force_reprocess: bool = False,
+    **kwargs
+) -> Dataset:
+    """
+    Generic processor to standardize any text dataset.
+    
+    Args:
+        dataset_path: Path to the dataset on HuggingFace
+        output_dir: Directory to save the processed dataset
+        split: Dataset split to use
+        max_samples: Maximum number of samples to process
+        streaming: Whether to stream the dataset to save memory
+        use_cache: Whether to use caching for the dataset
+        force_reprocess: Whether to force reprocessing even if the dataset exists
+        
+    Returns:
+        Processed dataset
+    """
+    logger.info(f"Loading dataset from {dataset_path} with standardize_text_processor")
+    dataset_name = os.path.basename(dataset_path).replace("/", "_")
+    output_path = os.path.join(output_dir, f"{dataset_name}_processed")
+    
+    # Check if the processed dataset already exists and we're not forcing reprocessing
+    if os.path.exists(output_path) and not force_reprocess and not streaming:
+        logger.info(f"Processed dataset already exists at {output_path}, loading it")
+        try:
+            from datasets import load_from_disk
+            return load_from_disk(output_path)
+        except Exception as e:
+            logger.warning(f"Error loading existing dataset: {e}, will reprocess")
+    
+    try:
+        # Attempt to handle various dataset formats
+        try:
+            # Try loading as a HuggingFace dataset
+            dataset = load_dataset(
+                dataset_path, 
+                split=split, 
+                streaming=streaming,
+                token=os.environ.get("HF_TOKEN"),
+                trust_remote_code=True
+            )
+        except Exception as e1:
+            logger.warning(f"Error loading as HuggingFace dataset: {e1}")
+            # Try loading as a local path
+            try:
+                from datasets import load_from_disk
+                dataset = load_from_disk(dataset_path)
+                if split in dataset:
+                    dataset = dataset[split]
+            except Exception as e2:
+                logger.error(f"Error loading as local dataset: {e2}")
+                raise ValueError(f"Could not load dataset from {dataset_path}: {e1}; {e2}")
+        
+        def process_example(example):
+            """Process a single example by standardizing its format"""
+            # Try to extract the text field from various possible field names
+            text = None
+            
+            # Check for common field names containing text content
+            for field in ['text', 'content', 'code', 'prompt', 'input', 'source']:
+                if field in example:
+                    text = example[field]
+                    break
+            
+            # If no text field found, try to join all string fields
+            if text is None:
+                text_pieces = []
+                for k, v in example.items():
+                    if isinstance(v, str) and len(v.strip()) > 0:
+                        text_pieces.append(v)
+                text = "\n".join(text_pieces)
+            
+            # If still no text, use the first field
+            if not text and len(example) > 0:
+                first_field = list(example.keys())[0]
+                text = str(example[first_field])
+            
+            # Default if all else fails
+            if not text:
+                text = ""
+                
+            # Get text length
+            length = len(text)
+            
+            # Determine the language if possible (default to English)
+            language = example.get('language', 'en')
+            
+            # For instruction/response format datasets
+            instruction = example.get('instruction', '')
+            response = example.get('response', '')
+            
+            # If instruction and response are available, format accordingly
+            if instruction and response:
+                processed_text = f"User: {instruction}\nAssistant: {response}"
+            else:
+                processed_text = text
+                
+            return {
+                "processed_text": processed_text,
+                "text": text,
+                "length": length,
+                "language": language,
+                "instruction": instruction,
+                "response": response,
+                "source": kwargs.get('language', 'generic')
+            }
+            
+        # Process the dataset
+        logger.info("Standardizing dataset examples")
+        processed_dataset = dataset.map(process_example)
+        
+        # Filter out empty examples
+        processed_dataset = processed_dataset.filter(lambda x: len(x["processed_text"]) > 0)
+        
+        # Limit the number of samples if specified
+        if max_samples and not streaming:
+            processed_dataset = processed_dataset.select(range(min(max_samples, len(processed_dataset))))
+        
+        # Save the processed dataset
+        if not streaming:
+            logger.info(f"Saving processed dataset to {output_path}")
+            os.makedirs(output_path, exist_ok=True)
+            processed_dataset.save_to_disk(output_path)
+            logger.info(f"Dataset saved to {output_path}")
+        
+        return processed_dataset
+        
+    except Exception as e:
+        logger.error(f"Error in standardize_text_processor: {str(e)}")
+        logger.error(traceback.format_exc())
+        # Return an empty dataset as a fallback
+        return Dataset.from_dict({"processed_text": [], "length": [], "language": []})
+
 # Map of dataset names to processor functions
 PROCESSOR_MAP = {
     'openassistant': openassistant_processor,
     'gpteacher': gpteacher_processor,
     'pile': pile_processor,
     'persona_chat': persona_chat_processor,
-    'writingprompts': writingprompts_processor
+    'writingprompts': writingprompts_processor,
+    'standardize_text': standardize_text_processor
 } 
 
 def process_datasets(
