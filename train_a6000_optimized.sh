@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fully optimized training script for A6000 GPU with 48GB VRAM
+# Fully optimized training script for A6000 GPU with 48GB VRAM using Unsloth
 # This script is configured for maximum performance with multi-language support
 
 # Set environment variables for better performance
@@ -7,6 +7,18 @@ export CUDA_VISIBLE_DEVICES=0
 export OMP_NUM_THREADS=8
 export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+
+# Explicitly unset all DeepSpeed-related variables to ensure clean environment
+unset ACCELERATE_USE_DEEPSPEED
+unset ACCELERATE_DEEPSPEED_CONFIG_FILE
+unset ACCELERATE_DEEPSPEED_PLUGIN_TYPE
+unset HF_DS_CONFIG
+unset DEEPSPEED_CONFIG_FILE
+unset DS_ACCELERATOR
+unset DS_OFFLOAD_PARAM
+unset DS_OFFLOAD_OPTIMIZER
+unset TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT
+unset DEEPSPEED_OVERRIDE_DISABLE
 
 # Create function to calculate expected training time
 calculate_training_time() {
@@ -21,34 +33,43 @@ calculate_training_time() {
     if [ -z "$batch_size" ]; then batch_size=1; fi
     if [ -z "$grad_accum" ]; then grad_accum=16; fi
     
-    # Base time calculation - minutes per epoch per dataset
-    local base_time_per_epoch=30  # Base minutes per epoch for a single dataset
-    
-    # Adjust for model size - larger models take longer
-    local model_scale=1.0
-    if [[ "$model_name" == *"deepseek-coder-6.7b"* ]]; then
-        model_scale=1.5
-    elif [[ "$model_name" == *"deepseek-coder-33b"* ]]; then
-        model_scale=4.0
-    fi
-    
-    # Adjust for effective batch size (batch_size * grad_accum)
-    local batch_factor=$(echo "scale=2; 16 / ($batch_size * $grad_accum)" | bc)
-    if (( $(echo "$batch_factor < 0.5" | bc -l) )); then batch_factor=0.5; fi
-    if (( $(echo "$batch_factor > 2.0" | bc -l) )); then batch_factor=2.0; fi
-    
-    # Calculate total hours
-    local total_minutes=$(echo "$base_time_per_epoch * $num_epochs * $num_datasets * $model_scale * $batch_factor" | bc)
-    local total_hours=$(echo "scale=1; $total_minutes / 60" | bc)
-    
-    # Add buffer time (15%)
-    total_hours=$(echo "scale=1; $total_hours * 1.15" | bc)
-    
-    # Round up to nearest integer
-    total_hours=$(echo "scale=0; $total_hours+0.5" | bc)
-    if [ "$total_hours" -lt 1 ]; then total_hours=1; fi
-    
-    echo "$total_hours"
+    # Use Python instead of bc for calculations
+    python -c "
+import sys
+# Inputs
+num_epochs = $num_epochs
+num_datasets = $num_datasets
+batch_size = $batch_size
+grad_accum = $grad_accum
+model_name = '$model_name'
+
+# Base time calculation - minutes per epoch per dataset
+base_time_per_epoch = 30  # Base minutes per epoch for a single dataset
+
+# Adjust for model size - larger models take longer
+model_scale = 1.0
+if 'deepseek-coder-6.7b' in model_name:
+    model_scale = 1.5
+elif 'deepseek-coder-33b' in model_name:
+    model_scale = 4.0
+
+# Adjust for effective batch size
+batch_factor = 16 / (batch_size * grad_accum)
+batch_factor = max(0.5, min(2.0, batch_factor))
+
+# Calculate total hours
+total_minutes = base_time_per_epoch * num_epochs * num_datasets * model_scale * batch_factor
+total_hours = total_minutes / 60
+
+# Add buffer time (15%)
+total_hours = total_hours * 1.15
+
+# Round up to nearest integer
+total_hours = max(1, round(total_hours))
+
+# Output the result
+print(int(total_hours))
+"
 }
 
 # Read number of epochs from training config
@@ -66,10 +87,11 @@ echo "Training on approximately $NUM_DATASETS datasets for $NUM_EPOCHS epochs"
 MAX_HOURS=$(calculate_training_time $NUM_EPOCHS $NUM_DATASETS)
 echo "Estimated training time: $MAX_HOURS hours"
 
-# Calculate expected completion time
+# Calculate expected completion time using portable date command
 START_TIME=$(date +%s)
 END_TIME=$((START_TIME + MAX_HOURS * 3600))
-COMPLETION_TIME=$(date -r $END_TIME "+%Y-%m-%d %H:%M:%S")
+# Use portable date format that works across systems
+COMPLETION_TIME=$(python -c "import time; print(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime($END_TIME)))")
 echo "Expected completion time: $COMPLETION_TIME"
 
 # Override MAX_HOURS if provided as a command-line argument
@@ -140,16 +162,69 @@ from src.utils.drive_dataset_checker import prepare_datasets
 import json
 import os
 import sys
+import glob
 
 config_path = 'config/dataset_config.json'
 skip_drive = ${SKIP_DRIVE:-False}
 
 # This gets datasets available locally or on Drive, and those still needed
-available, needed, download_time = prepare_datasets(
-    config_path, 
-    output_dir='data/processed',
-    skip_drive=skip_drive
-)
+try:
+    # Check what datasets are directly available on disk first
+    processed_dir = 'data/processed'
+    locally_available = []
+    
+    # Create a map between dataset processing names and config names
+    dataset_name_mappings = {
+        'code_alpaca': ['code_alpaca', 'alpaca'],
+        'codeparrot': ['codeparrot'],
+        'codesearchnet_all_go': ['codesearchnet_go'],
+        'codesearchnet_go': ['codesearchnet_go'],
+        'codesearchnet_all_java': ['codesearchnet_java'],
+        'codesearchnet_java': ['codesearchnet_java'],
+        'codesearchnet_all_javascript': ['codesearchnet_javascript'],
+        'codesearchnet_javascript': ['codesearchnet_javascript'],
+        'codesearchnet_all_php': ['codesearchnet_php'],
+        'codesearchnet_php': ['codesearchnet_php'],
+        'codesearchnet_all_python': ['codesearchnet_python'],
+        'codesearchnet_python': ['codesearchnet_python'],
+        'codesearchnet_all_ruby': ['codesearchnet_ruby'],
+        'codesearchnet_ruby': ['codesearchnet_ruby'],
+        'humaneval': ['humaneval'],
+        'instruct_code': ['instruct_code'],
+        'mbpp': ['mbpp'],
+        'openassistant': ['openassistant']
+    }
+    
+    # Find all processed dataset directories that exist
+    all_processed_dirs = glob.glob(os.path.join(processed_dir, '*_processed*'))
+    all_processed_dirs += glob.glob(os.path.join(processed_dir, '*_interim_*'))
+    all_processed_dirs = [os.path.basename(d) for d in all_processed_dirs if os.path.isdir(os.path.join(processed_dir, d))]
+    
+    # Check for datasets from the mapping
+    for processed_prefix, config_names in dataset_name_mappings.items():
+        matching_dirs = [d for d in all_processed_dirs if d.startswith(processed_prefix)]
+        if matching_dirs:
+            # Add all associated config names as available
+            locally_available.extend(config_names)
+    
+    print(f'Found locally available datasets: {locally_available}', file=sys.stderr)
+    
+    # Now run the normal prepare_datasets function with the predetected local datasets
+    available, needed, download_time = prepare_datasets(
+        config_path, 
+        output_dir='data/processed',
+        skip_drive=skip_drive,
+        predetected_local=locally_available
+    )
+
+except Exception as e:
+    print(f'Error checking local datasets: {e}', file=sys.stderr)
+    # Fallback to standard prepare_datasets
+    available, needed, download_time = prepare_datasets(
+        config_path, 
+        output_dir='data/processed',
+        skip_drive=skip_drive
+    )
 
 print('AVAILABLE=' + ','.join(available), file=sys.stdout)
 print('NEEDED=' + ','.join(needed), file=sys.stdout)
@@ -190,8 +265,8 @@ else
     echo "✅ All datasets already available. Skipping dataset processing step."
 fi
 
-# Update config to ensure DeepSpeed is disabled
-echo "===== UPDATING CONFIG FOR STANDARD TRAINING ====="
+# Update config to ensure no DeepSpeed and proper Unsloth configuration
+echo "===== UPDATING CONFIG FOR UNSLOTH TRAINING ====="
 python -c "
 import json
 import sys
@@ -202,35 +277,97 @@ try:
     if 'training' not in config:
         config['training'] = {}
     
-    # Ensure DeepSpeed is disabled in config
+    # Thoroughly remove all DeepSpeed references
     if 'use_deepspeed' in config['training']:
-        config['training']['use_deepspeed'] = False
-        print('Updated config: DeepSpeed disabled')
+        del config['training']['use_deepspeed']
+        print('Removed use_deepspeed from config')
     
-    # Also update any other DeepSpeed-related settings
     if 'deepspeed_config' in config['training']:
         del config['training']['deepspeed_config']
-        print('Removed DeepSpeed config path from settings')
+        print('Removed deepspeed_config from config')
+        
+    if 'deepspeed' in config['training']:
+        del config['training']['deepspeed']
+        print('Removed deepspeed from config')
+    
+    # Make sure Unsloth parameters are set
+    config['training']['use_unsloth'] = True
+    print('Set use_unsloth = True')
+    
+    # Ensure other optimization parameters are compatible with Unsloth
+    config['training']['bf16'] = True  # Use bfloat16 for better performance
+    config['training']['fp16'] = False  # Don't use fp16 with bf16
+    
+    # Add dataset paths configuration
+    if 'dataset_paths' not in config:
+        config['dataset_paths'] = {}
+    
+    # Update dataset paths to include more paths with naming variations
+    import glob
+    import os
+    
+    processed_dir = 'data/processed'
+    dataset_paths = {}
+    
+    # Add mapping for each dataset type we want to support
+    dataset_mapping = {
+        'code_alpaca': 'code_alpaca',
+        'codeparrot': 'codeparrot',
+        'codesearchnet_go': ['codesearchnet_all_go', 'codesearchnet_go'],
+        'codesearchnet_java': ['codesearchnet_all_java', 'codesearchnet_java'],
+        'codesearchnet_javascript': ['codesearchnet_all_javascript', 'codesearchnet_javascript'],
+        'codesearchnet_php': ['codesearchnet_all_php', 'codesearchnet_php'],
+        'codesearchnet_python': ['codesearchnet_all_python', 'codesearchnet_python'],
+        'codesearchnet_ruby': ['codesearchnet_all_ruby', 'codesearchnet_ruby'],
+        'humaneval': ['humaneval'],
+        'instruct_code': ['instruct_code'],
+        'mbpp': ['mbpp'],
+        'openassistant': ['openassistant']
+    }
+    
+    # Find all processed dataset directories
+    all_processed_dirs = os.listdir(processed_dir)
+    processed_dirs = [d for d in all_processed_dirs if os.path.isdir(os.path.join(processed_dir, d)) and ('_processed' in d or '_interim_' in d)]
+    
+    # For each config dataset name, find matching processed directory
+    for config_name, search_prefixes in dataset_mapping.items():
+        if not isinstance(search_prefixes, list):
+            search_prefixes = [search_prefixes]
+            
+        # Look for matching directories
+        for prefix in search_prefixes:
+            matches = [d for d in processed_dirs if d.startswith(prefix)]
+            if matches:
+                # Sort to prioritize final over interim when multiple exist
+                matches.sort(key=lambda x: 0 if 'final' in x else 1)
+                dataset_paths[config_name] = os.path.join(processed_dir, matches[0])
+                print(f'Mapped dataset {config_name} to {matches[0]}')
+                break
+    
+    # Update the config
+    config['dataset_paths'] = dataset_paths
     
     with open('config/training_config.json', 'w') as f:
         json.dump(config, f, indent=2)
     
-    print('Config file updated successfully')
+    print('Config file updated successfully for Unsloth with dataset paths')
 except Exception as e:
     print(f'Error updating config: {e}', file=sys.stderr)
 "
 
-echo "===== STARTING TRAINING ====="
+echo "===== STARTING TRAINING WITH UNSLOTH ====="
 TRAINING_START_TIME=$(date +%s)
 
-# Train with direct module call (bypassing main_api.py)
-echo "Starting training with direct module call (avoids argument mismatch)..."
+# Train with direct module call ensuring Unsloth and no DeepSpeed
+echo "Starting training with Unsloth optimization..."
 python -m src.training.train \
     --config config/training_config.json \
     --data_dir data/processed \
     $USE_DRIVE_FLAG \
     --push_to_hub \
     --no_deepspeed \
+    --use_unsloth \
+    --preload_processed_datasets \
     2>&1 | tee logs/train_a6000_optimized_$(date +%Y%m%d_%H%M%S).log
 
 # Check exit status
@@ -239,7 +376,8 @@ EXIT_STATUS=$?
 # Calculate actual training time
 TRAINING_END_TIME=$(date +%s)
 ACTUAL_TRAINING_TIME=$((TRAINING_END_TIME - TRAINING_START_TIME))
-ACTUAL_HOURS=$(echo "scale=2; $ACTUAL_TRAINING_TIME / 3600" | bc)
+# Use Python instead of bc for floating point division
+ACTUAL_HOURS=$(python -c "print('{:.2f}'.format($ACTUAL_TRAINING_TIME / 3600))")
 
 # Report completion
 if [ $EXIT_STATUS -eq 0 ]; then
@@ -269,10 +407,10 @@ if [ -f "$LOG_FILE" ]; then
   echo "Samples processed: $(grep -o "trained on [0-9]* samples" $LOG_FILE | tail -1)"
   echo "Final loss: $(grep -o "loss=.*" $LOG_FILE | tail -1)"
   
-  # Calculate samples per second
+  # Calculate samples per second using Python instead of bc
   SAMPLES=$(grep -o "trained on [0-9]* samples" $LOG_FILE | tail -1 | grep -o "[0-9]*")
   if [ -n "$SAMPLES" ] && [ "$ACTUAL_TRAINING_TIME" -gt 0 ]; then
-    SAMPLES_PER_SEC=$(echo "scale=2; $SAMPLES / $ACTUAL_TRAINING_TIME" | bc)
+    SAMPLES_PER_SEC=$(python -c "print('{:.2f}'.format($SAMPLES / $ACTUAL_TRAINING_TIME))")
     echo "Processing speed: $SAMPLES_PER_SEC samples/second"
   fi
   

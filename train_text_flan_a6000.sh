@@ -5,6 +5,18 @@
 # Set bash to exit on error
 set -e
 
+# Explicitly unset all DeepSpeed-related variables to ensure clean environment
+unset ACCELERATE_USE_DEEPSPEED
+unset ACCELERATE_DEEPSPEED_CONFIG_FILE
+unset ACCELERATE_DEEPSPEED_PLUGIN_TYPE
+unset HF_DS_CONFIG
+unset DEEPSPEED_CONFIG_FILE
+unset DS_ACCELERATOR
+unset DS_OFFLOAD_PARAM
+unset DS_OFFLOAD_OPTIMIZER
+unset TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT
+unset DEEPSPEED_OVERRIDE_DISABLE
+
 # Parse arguments
 DRIVE_BASE_DIR="FlanUL2Text"
 USE_DRIVE=true
@@ -70,48 +82,61 @@ calculate_training_time_seq2seq() {
     local grad_accum=$3
     local dataset_count=$4  # Number of text datasets being used
     
-    # Get model info from config
-    local model_name=$(grep -o '"model_name_or_path": "[^"]*"' config/training_config_text.json | cut -d'"' -f4)
-    
-    # Base time calculation
-    # For seq2seq models like FLAN-UL2, we calculate time differently than causal LMs
-    # Average time per step in seconds for FLAN-UL2 on A6000 with batch size 1
-    local base_time_per_step=1.2  
-    
-    # Adjust for model size factor
-    local model_size_factor=1.0
-    if [[ "$model_name" == *"flan-t5-xl"* ]]; then
-        model_size_factor=0.7  # Smaller than UL2
-    elif [[ "$model_name" == *"flan-ul2"* ]]; then
-        model_size_factor=1.0  # Base reference
-    elif [[ "$model_name" == *"flan-t5-xxl"* ]]; then
-        model_size_factor=1.5  # Larger model
-    fi
-    
-    # Adjust for effective batch size (batch_size * grad_accum)
-    # Smaller effective batch is slower per sample but processes fewer samples
-    local batch_factor=$(echo "scale=2; sqrt(16 / ($batch_size * $grad_accum))" | bc)
-    if (( $(echo "$batch_factor < 0.5" | bc -l) )); then batch_factor=0.5; fi
-    if (( $(echo "$batch_factor > 2.0" | bc -l) )); then batch_factor=2.0; fi
-    
-    # Dataset complexity factor - more datasets mean more varied data
-    local dataset_factor=$(echo "scale=2; 1 + (($dataset_count - 1) * 0.1)" | bc)
-    if (( $(echo "$dataset_factor > 1.5" | bc -l) )); then dataset_factor=1.5; fi
-    
-    # Calculate total training time in seconds
-    local total_seconds=$(echo "$base_time_per_step * $max_steps * $model_size_factor * $batch_factor * $dataset_factor" | bc)
-    
-    # Convert to hours with one decimal place
-    local total_hours=$(echo "scale=1; $total_seconds / 3600" | bc)
-    
-    # Add 15% buffer for safety
-    total_hours=$(echo "scale=1; $total_hours * 1.15" | bc)
-    
-    # Round up to nearest integer
-    total_hours=$(echo "scale=0; $total_hours+0.5" | bc)
-    if [ "$total_hours" -lt 1 ]; then total_hours=1; fi
-    
-    echo "$total_hours"
+    # Use Python for calculations instead of bc
+    python -c "
+import sys
+# Inputs
+max_steps = $max_steps
+batch_size = $batch_size
+grad_accum = $grad_accum
+dataset_count = $dataset_count
+
+# Get model info from config - will be read within Python
+import os, json
+try:
+    with open('config/training_config_text.json', 'r') as f:
+        config = json.load(f)
+    model_name = config.get('training', {}).get('model_name_or_path', 'flan-ul2')
+except:
+    model_name = 'flan-ul2'  # Default if can't read config
+
+# Base time calculation
+# For seq2seq models like FLAN-UL2, we calculate time differently than causal LMs
+# Average time per step in seconds for FLAN-UL2 on A6000 with batch size 1
+base_time_per_step = 1.2
+
+# Adjust for model size factor
+model_size_factor = 1.0
+if 'flan-t5-xl' in model_name:
+    model_size_factor = 0.7  # Smaller than UL2
+elif 'flan-ul2' in model_name:
+    model_size_factor = 1.0  # Base reference
+elif 'flan-t5-xxl' in model_name:
+    model_size_factor = 1.5  # Larger model
+
+# Adjust for effective batch size
+batch_factor = (16 / (batch_size * grad_accum)) ** 0.5  # sqrt
+batch_factor = max(0.5, min(2.0, batch_factor))
+
+# Dataset complexity factor - more datasets mean more varied data
+dataset_factor = 1 + ((dataset_count - 1) * 0.1)
+dataset_factor = min(1.5, dataset_factor)
+
+# Calculate total training time in seconds
+total_seconds = base_time_per_step * max_steps * model_size_factor * batch_factor * dataset_factor
+
+# Convert to hours
+total_hours = total_seconds / 3600
+
+# Add 15% buffer for safety
+total_hours = total_hours * 1.15
+
+# Round up to nearest integer
+total_hours = max(1, round(total_hours))
+
+# Output result
+print(int(total_hours))
+"
 }
 
 # Get number of datasets from config
@@ -142,10 +167,11 @@ echo "- Number of datasets: $TEXT_DATASET_COUNT"
 echo "- Learning rate: $LR"
 echo "Estimated training time: $ESTIMATED_HOURS hours"
 
-# Calculate expected completion time
+# Calculate expected completion time using portable date command
 START_TIME=$(date +%s)
 END_TIME=$((START_TIME + ESTIMATED_HOURS * 3600))
-COMPLETION_TIME=$(date -r $END_TIME "+%Y-%m-%d %H:%M:%S")
+# Use portable date format that works across systems
+COMPLETION_TIME=$(python -c "import time; print(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime($END_TIME)))")
 echo "Expected completion time: $COMPLETION_TIME"
 
 # Check if HF_TOKEN is set
@@ -173,11 +199,33 @@ mkdir -p logs
 mkdir -p data/processed
 mkdir -p text_models/flan-ul2-fine-tuned
 
-# Set up Google Drive environment
-mkdir -p text_models/flan-ul2-fine-tuned
+# Check if models are compatible with Unsloth
+echo "===== CHECKING MODEL ARCHITECTURE FOR OPTIMIZATIONS ====="
+# Extract model name from config
+MODEL_NAME=$(python -c "
+import json
+try:
+    with open('config/training_config_text.json', 'r') as f:
+        config = json.load(f)
+    model_name = config.get('training', {}).get('model_name_or_path', '')
+    print(model_name)
+except:
+    print('flan-ul2')  # Default
+")
 
-# Update config to ensure DeepSpeed is disabled
-echo "===== UPDATING CONFIG FOR STANDARD TRAINING ====="
+# Check if the model is a T5/UL2 model (seq2seq) vs a causal LM
+IS_SEQ2SEQ=$(python -c "
+import sys
+model_name = '$MODEL_NAME'.lower()
+# T5, UL2, and FLAN models are typically seq2seq
+if any(name in model_name for name in ['t5', 'ul2', 'flan']):
+    print('true')
+else:
+    print('false')
+")
+
+# Update config to use optimized training settings
+echo "===== UPDATING CONFIG FOR OPTIMIZED TRAINING ====="
 python -c "
 import json
 import sys
@@ -188,20 +236,52 @@ try:
     if 'training' not in config:
         config['training'] = {}
     
-    # Ensure DeepSpeed is disabled in config
-    if 'use_deepspeed' in config['training']:
-        config['training']['use_deepspeed'] = False
-        print('Updated config: DeepSpeed disabled')
+    # Thoroughly remove all DeepSpeed references
+    deepspeed_keys = ['use_deepspeed', 'deepspeed_config', 'deepspeed']
+    for key in deepspeed_keys:
+        if key in config['training']:
+            del config['training'][key]
+            print(f'Removed {key} from config')
     
-    # Also update any other DeepSpeed-related settings
-    if 'deepspeed_config' in config['training']:
-        del config['training']['deepspeed_config']
-        print('Removed DeepSpeed config path from settings')
+    # Set model architecture type - this is used by train_text_flan.py
+    config['training']['is_seq2seq'] = $IS_SEQ2SEQ
     
+    # Add optimization settings appropriate for the model type
+    if $IS_SEQ2SEQ:
+        print('Configuring for seq2seq model (T5/UL2/FLAN)')
+        # Best settings for T5/UL2 models
+        config['training']['bf16'] = True           # Use bfloat16 precision
+        config['training']['fp16'] = False          # Don't use fp16 with bf16
+        config['training']['optim'] = 'adamw_torch' # Best optimizer for T5
+        
+        # Ensure task_type is correct for seq2seq
+        config['training']['task_type'] = 'SEQ_TO_SEQ_LM'
+        
+        # These settings improve T5/UL2 training
+        config['training']['gradient_checkpointing'] = True
+        config['training']['use_cache'] = False
+    else:
+        print('Configuring for causal language model')
+        # For causal LMs, we can use Unsloth
+        config['training']['use_unsloth'] = True
+        config['training']['bf16'] = True
+        config['training']['fp16'] = False
+        config['training']['task_type'] = 'CAUSAL_LM'
+    
+    # Add memory optimizations
+    config['training']['gradient_checkpointing'] = True
+    config['training']['gradient_accumulation_steps'] = $GRAD_ACCUMULATION
+    config['training']['per_device_train_batch_size'] = $BATCH_SIZE
+    config['training']['learning_rate'] = $LR
+    config['training']['max_steps'] = $MAX_STEPS
+    config['training']['save_steps'] = $SAVE_STEPS
+    config['training']['warmup_steps'] = $WARMUP_STEPS
+    
+    # Update training configuration settings
     with open('config/training_config_text.json', 'w') as f:
         json.dump(config, f, indent=2)
     
-    print('Config file updated successfully')
+    print('Config file updated successfully for optimized training')
 except Exception as e:
     print(f'Error updating config: {e}', file=sys.stderr)
 "
@@ -348,23 +428,37 @@ else
     echo "✅ All datasets already available. Skipping dataset processing step."
 fi
 
-# Step 4: Train the model with checkpointing and logging to Drive
-echo "==== Training FLAN-UL2 with optimizations and Drive integration ===="
+# Step 4: Train the model with appropriate optimizations
+if [ "$IS_SEQ2SEQ" = "true" ]; then
+    echo "==== Training FLAN-UL2 with seq2seq optimizations ===="
+else
+    echo "==== Training with Unsloth optimizations ===="
+fi
+
 TRAINING_START_TIME=$(date +%s)
 
+# Set up optimization flags based on model type
+OPT_FLAGS="--no_deepspeed"
+if [ "$IS_SEQ2SEQ" = "false" ]; then
+    OPT_FLAGS="$OPT_FLAGS --use_unsloth"
+fi
+
+# Start training
 python train_text_flan.py \
   --config config/training_config_text.json \
   --data_dir data/processed \
   --push_to_hub \
-  --no_deepspeed \
+  $OPT_FLAGS \
   $DRIVE_OPTS \
+  --preload_processed_datasets \
   --debug \
   2>&1 | tee logs/train_flan_ul2_a6000_$(date +%Y%m%d_%H%M%S).log
 
 # Calculate actual training time
 TRAINING_END_TIME=$(date +%s)
 ACTUAL_TRAINING_TIME=$((TRAINING_END_TIME - TRAINING_START_TIME))
-ACTUAL_HOURS=$(echo "scale=2; $ACTUAL_TRAINING_TIME / 3600" | bc)
+# Use Python instead of bc for floating point division
+ACTUAL_HOURS=$(python -c "print('{:.2f}'.format($ACTUAL_TRAINING_TIME / 3600))")
 
 echo "==== Training Summary ===="
 echo "Actual training time: $ACTUAL_HOURS hours (estimated: $ESTIMATED_HOURS hours)"
@@ -395,8 +489,9 @@ if [ -f "$LOG_FILE" ]; then
   
   # Calculate steps per second
   if [ -n "$STEPS_COMPLETED" ] && [ "$ACTUAL_TRAINING_TIME" -gt 0 ]; then
-    STEPS_PER_SEC=$(echo "scale=4; $STEPS_COMPLETED / $ACTUAL_TRAINING_TIME" | bc)
-    STEPS_PER_HOUR=$(echo "scale=2; $STEPS_PER_SEC * 3600" | bc)
+    # Use Python instead of bc for floating point calculations
+    STEPS_PER_SEC=$(python -c "print('{:.4f}'.format($STEPS_COMPLETED / $ACTUAL_TRAINING_TIME))")
+    STEPS_PER_HOUR=$(python -c "print('{:.2f}'.format($STEPS_PER_SEC * 3600))")
     echo "Training speed: $STEPS_PER_HOUR steps/hour" >> $COMPLETION_FILE
     echo "Training speed: $STEPS_PER_HOUR steps/hour"
   fi
