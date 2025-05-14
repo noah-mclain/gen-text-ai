@@ -1,10 +1,12 @@
 # Fix import order to ensure Unsloth optimizations are applied correctly
-try:
-    from unsloth import FastLanguageModel
-    UNSLOTH_AVAILABLE = True
-except ImportError:
-    print("Unsloth not installed. Install with: pip install unsloth")
-    UNSLOTH_AVAILABLE = False
+# Check if the variable has been set in the main script
+if 'UNSLOTH_AVAILABLE' not in globals():
+    try:
+        from unsloth import FastLanguageModel
+        UNSLOTH_AVAILABLE = True
+    except (ImportError, NotImplementedError):
+        print("Unsloth not installed or not compatible. Using standard model loading.")
+        UNSLOTH_AVAILABLE = False
 
 import os
 import json
@@ -287,48 +289,61 @@ class FlanUL2TextTrainer:
         """Load and prepare the model for training."""
         logger.info(f"Loading model {self.model_config['base_model']}")
         
-        # Set up quantization config if using 4-bit
-        quantization_config = None
-        if self.model_config.get("use_4bit", False):
-            logger.info("Using 4-bit quantization")
-            compute_dtype = getattr(torch, self.model_config.get("bnb_4bit_compute_dtype", "float16"))
-            
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=compute_dtype,
-                bnb_4bit_use_double_quant=self.model_config.get("use_nested_quant", True),
-                bnb_4bit_quant_type="nf4"
-            )
+        # Initialize tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_config["base_model"], 
+            trust_remote_code=True,
+            token=os.environ.get("HF_TOKEN")
+        )
         
-        # Use Unsloth for faster training if available
-        if UNSLOTH_AVAILABLE and self.model_config.get("use_unsloth", True):
-            logger.info("Using Unsloth for optimized training")
-            model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=self.model_config["base_model"],
-                max_seq_length=self.dataset_config.get("max_length", 1024),
-                dtype=getattr(torch, self.model_config.get("bnb_4bit_compute_dtype", "float16")),
-                load_in_4bit=self.model_config.get("use_4bit", True),
-                token=os.environ.get("HF_TOKEN"),
-                trust_remote_code=True
-            )
+        # Add special tokens if needed
+        if not self.tokenizer.pad_token:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        # Set quantization configuration
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=self.model_config.get("use_4bit", True),
+            use_nested_quantization=self.model_config.get("use_nested_quant", True),
+            bnb_4bit_quant_type="nf4"
+        )
+        
+        # Add robust error handling around model loading
+        try:
+            # Use Unsloth for faster training if available
+            if UNSLOTH_AVAILABLE and self.model_config.get("use_unsloth", True):
+                logger.info("Using Unsloth for optimized training")
+                try:
+                    model, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name=self.model_config["base_model"],
+                        max_seq_length=self.dataset_config.get("max_length", 1024),
+                        dtype=getattr(torch, self.model_config.get("bnb_4bit_compute_dtype", "float16")),
+                        load_in_4bit=self.model_config.get("use_4bit", True),
+                        token=os.environ.get("HF_TOKEN"),
+                        trust_remote_code=True
+                    )
+                    
+                    # Keep tokenizer from previous initialization to ensure consistency
+                    self.tokenizer.padding_side = "right"
+                    
+                    # Apply LoRA using Unsloth's method
+                    model = FastLanguageModel.get_peft_model(
+                        model,
+                        r=self.peft_config.get("r", 32),
+                        lora_alpha=self.peft_config.get("lora_alpha", 16),
+                        lora_dropout=self.peft_config.get("lora_dropout", 0.05),
+                        target_modules=self.peft_config.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
+                        bias=self.peft_config.get("bias", "none"),
+                        use_gradient_checkpointing=self.model_config.get("use_gradient_checkpointing", True),
+                        random_state=self.training_config.get("seed", 42),
+                        use_rslora=False,  # Regular LoRA
+                        loftq_config=None  # No LoFTQ
+                    )
+                    logger.info("Successfully loaded and configured model with Unsloth")
+                    return model
+                except Exception as e:
+                    logger.warning(f"Failed to load model with Unsloth: {str(e)}. Falling back to standard loading.")
+                    # Will continue to standard loading below
             
-            # Keep tokenizer from previous initialization to ensure consistency
-            self.tokenizer.padding_side = "right"
-            
-            # Apply LoRA using Unsloth's method
-            model = FastLanguageModel.get_peft_model(
-                model,
-                r=self.peft_config.get("r", 32),
-                lora_alpha=self.peft_config.get("lora_alpha", 16),
-                lora_dropout=self.peft_config.get("lora_dropout", 0.05),
-                target_modules=self.peft_config.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
-                bias=self.peft_config.get("bias", "none"),
-                use_gradient_checkpointing=self.model_config.get("use_gradient_checkpointing", True),
-                random_state=self.training_config.get("seed", 42),
-                use_rslora=False,  # Regular LoRA
-                loftq_config=None  # No LoFTQ
-            )
-        else:
             # Standard HuggingFace loading
             logger.info("Using standard HuggingFace model loading")
             model = AutoModelForCausalLM.from_pretrained(
@@ -355,6 +370,10 @@ class FlanUL2TextTrainer:
             
             # Apply LoRA
             model = get_peft_model(model, lora_config)
+        
+        except Exception as e:
+            logger.error(f"Error loading model: {str(e)}")
+            return None
         
         # Enable gradient checkpointing if requested
         if self.model_config.get("use_gradient_checkpointing", True) and not UNSLOTH_AVAILABLE:
@@ -613,11 +632,17 @@ class FlanUL2TextTrainer:
         logger.info(f"Starting training at {start_time}")
         
         try:
+            # Load model
+            model = self._load_model()
+            if model is None:
+                return {
+                    "success": False,
+                    "error": "Model loading failed",
+                    "traceback": "Model returned None - check logs for details"
+                }
+            
             # Load and prepare datasets
             datasets = self._load_and_prepare_datasets(data_dir)
-            
-            # Load and prepare the model
-            model = self._load_model()
             
             # Set up data collator for language modeling
             data_collator = DataCollatorForLanguageModeling(

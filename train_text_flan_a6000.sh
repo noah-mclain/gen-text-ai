@@ -70,6 +70,23 @@ else
   echo "HF_TOKEN is set. Will use for authentication with Hugging Face Hub."
 fi
 
+# Check Paperspace environment
+echo "===== CHECKING PAPERSPACE ENVIRONMENT ====="
+python scripts/check_paperspace_env.py
+
+# Ensure Unsloth works properly with NVIDIA GPUs on Paperspace
+echo "===== ENSURING UNSLOTH COMPATIBILITY ====="
+python -c "
+import os
+try:
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # Ensure we only use the first GPU if multiple are available
+    from unsloth import FastLanguageModel
+    print('✅ Unsloth properly imported and configured for Paperspace')
+except Exception as e:
+    print(f'⚠️ Unsloth error: {str(e)}')
+    print('Will use standard HuggingFace model loading instead')
+"
+
 # Make directories
 mkdir -p logs
 mkdir -p data/processed
@@ -259,11 +276,11 @@ if [ ! -f "$DS_CONFIG_PATH" ]; then
     "overlap_comm": true,
     "reduce_scatter": true
   },
-  "gradient_accumulation_steps": 8,
+  "gradient_accumulation_steps": 16,
   "gradient_clipping": 1.0,
   "steps_per_print": 50,
   "train_batch_size": 32,
-  "train_micro_batch_size_per_gpu": 4,
+  "train_micro_batch_size_per_gpu": 2,
   "wall_clock_breakdown": false
 }
 EOL
@@ -275,8 +292,8 @@ export ACCELERATE_DEEPSPEED_CONFIG_FILE="$DS_CONFIG_PATH"
 export ACCELERATE_DEEPSPEED_PLUGIN_TYPE=deepspeed
 # Make sure HF_DS_CONFIG is set for transformers to recognize DeepSpeed config
 export HF_DS_CONFIG="$DS_CONFIG_PATH"
-# Optional but recommended for better performance
-export TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT=1
+# Fix potential GPU device issues with CUDA
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 echo "DeepSpeed config at: $ACCELERATE_DEEPSPEED_CONFIG_FILE"
 echo "DeepSpeed plugin type: $ACCELERATE_DEEPSPEED_PLUGIN_TYPE"

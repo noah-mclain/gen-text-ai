@@ -32,11 +32,11 @@
     "stage3_max_reuse_distance": 3e9,
     "stage3_gather_16bit_weights_on_model_save": true
   },
-  "gradient_accumulation_steps": 8,
+  "gradient_accumulation_steps": 16,
   "gradient_clipping": 1.0,
   "steps_per_print": 50,
   "train_batch_size": 32,
-  "train_micro_batch_size_per_gpu": 4,
+  "train_micro_batch_size_per_gpu": 2,
   "wall_clock_breakdown": false,
   "aio": {
     "block_size": 1048576,
