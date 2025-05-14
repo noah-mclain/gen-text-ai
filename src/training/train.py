@@ -193,8 +193,8 @@ def main():
                         help="Explicitly disable DeepSpeed even if configured in the config file")
     parser.add_argument("--estimate_time", action="store_true", default=True,
                         help="Estimate and report training time (enabled by default)")
-    parser.add_argument("--disable_wandb", action="store_true", default=True,
-                        help="Disable Weights & Biases logging (enabled by default)")
+    parser.add_argument("--disable_wandb", action="store_true", default=False,
+                        help="Disable Weights & Biases logging (disabled by default)")
     
     args = parser.parse_args()
     
