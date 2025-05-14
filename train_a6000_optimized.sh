@@ -530,13 +530,18 @@ try:
                 print(f'⚠️ Dataset {dataset_dir} has no columns - skipping')
                 continue
                 
-            # Check for text column which is required (not input_ids yet - those are added during tokenization)
-            required_columns = ['text'] 
-            missing_columns = [col for col in required_columns if col not in dataset.column_names]
+            # Check for text or processed_text column - our datasets could have either format
+            required_columns = [['text', 'processed_text']] # At least one of these must be present
             
-            if missing_columns:
-                print(f'⚠️ Dataset {dataset_dir} is missing required columns: {missing_columns}')
+            # Check if EITHER text OR processed_text is present
+            has_text_column = any(col in dataset.column_names for col in required_columns[0])
+            
+            if not has_text_column:
+                print(f'⚠️ Dataset {dataset_dir} is missing required columns: Either \\'text\\' or \\'processed_text\\' must be present')
                 continue
+            
+            # Determine which column to check
+            text_column = 'text' if 'text' in dataset.column_names else 'processed_text'
             
             # Verify none of the samples have None values
             needs_filtering = False
@@ -548,7 +553,7 @@ try:
                 try:
                     sample = dataset[i]
                     # Check if text field is None
-                    if sample['text'] is None:
+                    if sample[text_column] is None:
                         needs_filtering = True
                         indices_to_filter.append(i)
                 except Exception as e:
