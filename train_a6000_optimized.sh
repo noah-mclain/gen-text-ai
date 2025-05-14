@@ -20,6 +20,16 @@ unset DS_OFFLOAD_OPTIMIZER
 unset TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT
 unset DEEPSPEED_OVERRIDE_DISABLE
 
+# Remove any existing DeepSpeed config files to prevent conflicts
+if [ -f "ds_config.json" ]; then
+    echo "Removing existing DeepSpeed config file: ds_config.json"
+    rm ds_config.json
+fi
+if [ -f "ds_config_a6000.json" ]; then
+    echo "Removing existing DeepSpeed config file: ds_config_a6000.json"
+    rm ds_config_a6000.json
+fi
+
 # Create function to calculate expected training time
 calculate_training_time() {
     # Inputs to function
@@ -302,6 +312,7 @@ echo "===== UPDATING CONFIG FOR OPTIMIZED TRAINING ====="
 python -c "
 import json
 import sys
+import os
 try:
     with open('config/training_config.json', 'r') as f:
         config = json.load(f)
@@ -316,10 +327,51 @@ try:
             del config['training'][key]
             print(f'Removed {key} from config')
     
-    # Enable optimized training
+    # Fix mixed precision settings - choose ONLY ONE precision mode
+    # BF16 is preferred for A6000 GPUs
     config['training']['bf16'] = True  # Use bfloat16 for better performance
-    config['training']['fp16'] = False  # Don't use fp16 with bf16
+    config['training']['fp16'] = False  # Disable fp16 completely
+    
+    # Make sure torch_dtype is set correctly if it exists
+    if 'torch_dtype' in config['training']:
+        config['training']['torch_dtype'] = 'bfloat16'
+        print('Set torch_dtype to bfloat16')
+    
+    # Make sure gradient checkpointing is enabled for memory efficiency
     config['training']['gradient_checkpointing'] = True  # Enable memory optimization
+    
+    # Also check for and disable deepspeed in accelerate config if it exists
+    accelerate_config_paths = [
+        './.accelerate/default_config.yaml',
+        os.path.expanduser('~/.cache/huggingface/accelerate/default_config.yaml'),
+        os.path.expanduser('~/.config/huggingface/accelerate/default_config.yaml')
+    ]
+    
+    for config_path in accelerate_config_paths:
+        if os.path.exists(config_path):
+            try:
+                import yaml
+                with open(config_path, 'r') as f:
+                    accel_config = yaml.safe_load(f)
+                
+                # Disable DeepSpeed in accelerate config
+                if 'deepspeed_plugin' in accel_config:
+                    del accel_config['deepspeed_plugin']
+                    print(f'Removed deepspeed_plugin from {config_path}')
+                
+                if 'deepspeed' in accel_config:
+                    del accel_config['deepspeed']
+                    print(f'Removed deepspeed from {config_path}')
+                
+                # Set mixed precision in accelerate config
+                accel_config['mixed_precision'] = 'bf16'
+                
+                with open(config_path, 'w') as f:
+                    yaml.safe_dump(accel_config, f)
+                    
+                print(f'Updated accelerate config at {config_path}')
+            except Exception as e:
+                print(f'Error updating accelerate config at {config_path}: {e}', file=sys.stderr)
     
     # Make sure Unsloth is configured in the config rather than command line
     # This avoids command line argument errors
@@ -414,6 +466,7 @@ echo "===== STARTING OPTIMIZED TRAINING ====="
 TRAINING_START_TIME=$(date +%s)
 
 # Train with direct module call without the problematic arguments
+# Explicitly set --mixed_precision bf16 and ensure no_deepspeed is true
 echo "Starting training with optimizations..."
 python -m src.training.train \
     --config config/training_config.json \
@@ -421,6 +474,7 @@ python -m src.training.train \
     $USE_DRIVE_FLAG \
     --push_to_hub \
     --no_deepspeed \
+    --mixed_precision bf16 \
     --estimate_time \
     2>&1 | tee logs/train_a6000_optimized_$(date +%Y%m%d_%H%M%S).log
 
