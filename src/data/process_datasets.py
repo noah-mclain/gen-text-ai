@@ -9,25 +9,54 @@ from typing import List, Dict, Optional
 import time
 import datetime
 
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Import drive utils
 import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
 sys.path.append(project_root)
-from src.utils.google_drive_manager import sync_to_drive, configure_sync_method
+
+# Try multiple import paths to handle reorganized structure
+try:
+    # First try direct import from reorganized path
+    from scripts.google_drive.google_drive_manager import sync_to_drive, configure_sync_method
+    logger.info("Successfully imported Drive manager from scripts.google_drive")
+except ImportError:
+    try:
+        # Next try the src.utils path
+        from src.utils.google_drive_manager import sync_to_drive, configure_sync_method
+        logger.info("Successfully imported Drive manager from src.utils")
+    except ImportError:
+        # Lastly try direct import from utils dir
+        try:
+            utils_path = os.path.join(project_root, 'src', 'utils')
+            if utils_path not in sys.path:
+                sys.path.append(utils_path)
+            from google_drive_manager import sync_to_drive, configure_sync_method
+            logger.info("Successfully imported Drive manager from utils path")
+        except ImportError:
+            logger.error("CRITICAL: Could not import Google Drive functions. Syncing will not work.")
+            # Provide dummy functions to prevent crashes
+            def sync_to_drive(*args, **kwargs):
+                logger.error("Drive sync function not available - no files will be synced")
+                return False
+                
+            def configure_sync_method(*args, **kwargs):
+                logger.error("Drive sync configuration not available")
+                return None
 
 # Try to set HF token from credentials
 try:
-    from scripts.set_hf_token import set_hf_token
+    from scripts.utilities.set_hf_token import set_hf_token
     logging.info("Attempting to set HF_TOKEN from credentials")
     set_hf_token()
 except ImportError:
     logging.warning("Could not import set_hf_token script. HF_TOKEN may not be set.")
 except Exception as e:
     logging.warning(f"Error setting HF_TOKEN: {e}")
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 def process_datasets(config_path: str, datasets: Optional[List[str]] = None, 
                     streaming: bool = False, no_cache: bool = False, 

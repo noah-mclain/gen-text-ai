@@ -207,12 +207,33 @@ class DataPreprocessor:
                             break
         except Exception as e:
             logger.error(f"Failed to create iterator: {str(e)}")
-            return
             yield from []
             
         # Log final stats
         logger.info(f"Processed {count} examples with {errors} errors")
         
+    def _extract_fields(self, example: Dict, field_mappings: Dict[str, List[str]]) -> Dict[str, Any]:
+        """Extract fields from an example using various possible field names.
+        
+        Args:
+            example: Dictionary containing example data
+            field_mappings: Dictionary mapping field types to potential field names
+            
+        Returns:
+            Dictionary with extracted fields
+        """
+        result = {}
+        
+        # Handle different possible field names
+        for field_type, field_names in field_mappings.items():
+            # Try each possible field name
+            for name in field_names:
+                if name in example and example[name]:
+                    result[field_type] = example[name]
+                    break
+                    
+        return result
+    
     def common_preprocessing(self, examples: Dict, prompt_field: str, completion_field: str,
                             lowercase: bool = False, streaming: bool = False) -> Dict:
         """Apply common preprocessing steps to all datasets."""
@@ -727,9 +748,11 @@ class DataPreprocessor:
         # For streaming mode, process one example at a time to avoid issues
         if streaming:
             processed_examples = []
+            total_examples = 0
             
             # Process each example individually using our safe iterator
-            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
+            for example in self._safe_dataset_iterator(dataset, max_samples=max_samples):
+                total_examples += 1
                 try:
                     # Extract fields
                     prompt = example.get("text", "")
@@ -750,20 +773,14 @@ class DataPreprocessor:
                         processed_examples.append(processed)
                         
                         # Log progress at regular intervals
-                        if (i + 1) % 1000 == 0:
-                            logger.info(f"Processed {i + 1} MBPP examples")
-                    
-                    # Check for suspiciously few examples processed
-                    if i > 10000 and len(processed_examples) < 100:
-                        logger.warning(f"Suspiciously few examples processed ({len(processed_examples)} out of {i + 1}). "
-                                     "Check if the dataset is loading correctly.")
-                        break
+                        if len(processed_examples) % 100 == 0:
+                            logger.info(f"Processed {len(processed_examples)} valid MBPP examples (from {total_examples} total)")
                 except Exception as e:
-                    logger.warning(f"Error processing example {i}: {e}")
+                    logger.warning(f"Error processing example: {str(e)}")
                     continue
                 
             # Log final stats
-            logger.info(f"Completed processing {len(processed_examples)} MBPP examples")
+            logger.info(f"Completed processing {len(processed_examples)} MBPP examples from {total_examples} total examples")
             return processed_examples
         else:
             # For non-streaming mode
@@ -796,66 +813,95 @@ class DataPreprocessor:
         """Process DS-1000 dataset."""
         logger.info("Processing DS-1000 dataset...")
         
-        # For streaming mode, process one example at a time to avoid issues
-        if streaming:
+        # DS-1000 is a benchmark dataset, not a dataset to be loaded from HF Hub
+        # It should be processed from local files
+        try:
+            # Look for DS-1000 in expected directories
+            ds1000_dirs = [
+                "./DS-1000", 
+                "../DS-1000", 
+                "./data/DS-1000", 
+                "./data/raw/DS-1000"
+            ]
+            
+            ds1000_path = None
+            for directory in ds1000_dirs:
+                if os.path.exists(directory) and os.path.isdir(directory):
+                    ds1000_path = directory
+                    break
+                    
+            if not ds1000_path:
+                logger.error("DS-1000 benchmark directory not found. Please clone the repository from GitHub.")
+                logger.error("Run: git clone https://github.com/microsoft/DS-1000.git")
+                return []
+                
+            logger.info(f"Found DS-1000 benchmark at {ds1000_path}")
+            
+            # Process the benchmark by reading problem files
             processed_examples = []
             
-            # Process each example individually using our safe iterator
-            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
-                try:
-                    # Extract fields
-                    prompt = example.get("rewritten_file", "")
-                    completion = example.get("rewritten_file", "")
+            # Iterate through library directories
+            for lib_dir in os.listdir(ds1000_path):
+                lib_path = os.path.join(ds1000_path, lib_dir)
+                
+                # Skip if not a directory or is a hidden directory
+                if not os.path.isdir(lib_path) or lib_dir.startswith('.'):
+                    continue
                     
-                    # Skip if missing required fields
-                    if not prompt or not completion:
+                logger.info(f"Processing library: {lib_dir}")
+                
+                # Iterate through problem directories
+                problem_dirs = [d for d in os.listdir(lib_path) if os.path.isdir(os.path.join(lib_path, d))]
+                
+                for problem_dir in problem_dirs:
+                    problem_path = os.path.join(lib_path, problem_dir)
+                    
+                    # Look for prompt and solution files
+                    prompt_file = os.path.join(problem_path, "prompt.txt")
+                    solution_file = os.path.join(problem_path, "solutions/reference.py")
+                    
+                    if not os.path.exists(prompt_file) or not os.path.exists(solution_file):
                         continue
                         
-                    processed = self.common_preprocessing(
-                        {"prompt": prompt, "completion": completion},
-                        "prompt", "completion",
-                        streaming=streaming
-                    )
-                    
-                    # Validate processed results
-                    if "processed_text" in processed and processed["processed_text"]:
-                        processed_examples.append(processed)
+                    # Read prompt and solution
+                    try:
+                        with open(prompt_file, 'r') as f:
+                            prompt = f.read()
+                            
+                        with open(solution_file, 'r') as f:
+                            solution = f.read()
+                            
+                        # Create formatted prompt
+                        formatted_prompt = f"# Library: {lib_dir}\n# Problem: {problem_dir}\n\n{prompt}"
                         
-                        # Log progress at regular intervals
-                        if (i + 1) % 1000 == 0:
-                            logger.info(f"Processed {i + 1} DS-1000 examples")
-                except Exception as e:
-                    logger.warning(f"Error processing example {i}: {e}")
-                    continue
-                
-            # Log final stats
+                        # Process the example
+                        processed = self.common_preprocessing(
+                            {"prompt": formatted_prompt, "completion": solution},
+                            "prompt", "completion",
+                            streaming=streaming
+                        )
+                        
+                        if processed and "processed_text" in processed and processed["processed_text"]:
+                            processed_examples.append(processed)
+                    except Exception as e:
+                        logger.warning(f"Error processing problem {lib_dir}/{problem_dir}: {e}")
+                        continue
+                        
+                    # Respect max_samples if set
+                    if max_samples and len(processed_examples) >= max_samples:
+                        logger.info(f"Reached max_samples limit of {max_samples}")
+                        break
+                        
+                if max_samples and len(processed_examples) >= max_samples:
+                    break
+                    
             logger.info(f"Completed processing {len(processed_examples)} DS-1000 examples")
             return processed_examples
-        else:
-            # For non-streaming mode
-            try:
-                return dataset.map(
-                    lambda examples: self.common_preprocessing(
-                        {"prompt": examples["rewritten_file"], "completion": examples["rewritten_file"]},
-                        "prompt", "completion",
-                        streaming=streaming
-                    ),
-                    batched=True,
-                    remove_columns=dataset.column_names if not streaming else None,
-                    batch_size=100 if streaming else None
-                )
-            except Exception as e:
-                logger.warning(f"Error in batch processing mode: {e}")
-                # Fallback to simple processing with expected field names
-                return dataset.map(
-                    lambda examples: self.common_preprocessing(
-                        {"prompt": examples.get("rewritten_file", ""), "completion": examples.get("rewritten_file", "")},
-                        "prompt", "completion",
-                        streaming=streaming
-                    ),
-                    batched=True,
-                    batch_size=100 if streaming else None
-                )
+            
+        except Exception as e:
+            logger.error(f"Error processing DS-1000 benchmark: {e}")
+            logger.error(traceback.format_exc())
+            return []
     
     def process_humaneval(self, dataset: Union[Dataset, DatasetDict],
                          streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
@@ -865,9 +911,11 @@ class DataPreprocessor:
         # For streaming mode, process one example at a time to avoid issues
         if streaming:
             processed_examples = []
+            total_examples = 0
             
             # Process each example individually using our safe iterator
-            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
+            for example in self._safe_dataset_iterator(dataset, max_samples=max_samples):
+                total_examples += 1
                 try:
                     # Extract fields
                     prompt = example.get("prompt", "")
@@ -888,14 +936,14 @@ class DataPreprocessor:
                         processed_examples.append(processed)
                         
                         # Log progress at regular intervals
-                        if (i + 1) % 1000 == 0:
-                            logger.info(f"Processed {i + 1} HumanEval examples")
+                        if len(processed_examples) % 50 == 0:
+                            logger.info(f"Processed {len(processed_examples)} valid HumanEval examples (from {total_examples} total)")
                 except Exception as e:
-                    logger.warning(f"Error processing example {i}: {e}")
+                    logger.warning(f"Error processing example: {str(e)}")
                     continue
                 
             # Log final stats
-            logger.info(f"Completed processing {len(processed_examples)} HumanEval examples")
+            logger.info(f"Completed processing {len(processed_examples)} HumanEval examples from {total_examples} total examples")
             return processed_examples
         else:
             # For non-streaming mode
@@ -994,21 +1042,59 @@ class DataPreprocessor:
         """Process CodeParrot dataset."""
         logger.info("Processing CodeParrot dataset...")
         
+        # CodeParrot structure can vary - try to detect the correct fields
+        try:
+            # Sample the first example to determine field names
+            sample = next(iter(dataset))
+            
+            # Detect available fields
+            content_field = None
+            for field_name in ["content", "code", "source", "text"]:
+                if field_name in sample and sample[field_name]:
+                    content_field = field_name
+                    break
+                    
+            if not content_field:
+                logger.warning("Could not identify content field in CodeParrot dataset")
+                logger.info(f"Available fields: {list(sample.keys())}")
+                # Try a fallback field if nothing found
+                content_field = list(sample.keys())[0] if sample else "content"
+                
+            logger.info(f"Using '{content_field}' as the content field for CodeParrot")
+        except Exception as e:
+            logger.warning(f"Error determining fields: {e}")
+            # Default to 'content' if we couldn't determine
+            content_field = "content"
+        
         # For streaming mode, process one example at a time to avoid issues
         if streaming:
             processed_examples = []
+            total_examples = 0
             
             # Process each example individually using our safe iterator
-            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=max_samples)):
+            for example in self._safe_dataset_iterator(dataset, max_samples=max_samples):
+                total_examples += 1
                 try:
-                    # Extract fields
-                    prompt = example.get("rewritten_file", "")
-                    completion = example.get("rewritten_file", "")
-                    
-                    # Skip if missing required fields
-                    if not prompt or not completion:
+                    # Check if the example is a dictionary
+                    if not isinstance(example, dict):
                         continue
                         
+                    # Extract content - try multiple field names
+                    content = None
+                    for field in [content_field, "content", "code", "source", "text"]:
+                        if field in example and example[field]:
+                            content = example[field]
+                            break
+                    
+                    # Skip if missing content
+                    if not content:
+                        continue
+                        
+                    # For CodeParrot, we use the content both as prompt and completion
+                    # This is common for language modeling datasets
+                    prompt = "# Complete the following code"
+                    completion = content
+                    
                     processed = self.common_preprocessing(
                         {"prompt": prompt, "completion": completion},
                         "prompt", "completion",
@@ -1020,41 +1106,61 @@ class DataPreprocessor:
                         processed_examples.append(processed)
                         
                         # Log progress at regular intervals
-                        if (i + 1) % 1000 == 0:
-                            logger.info(f"Processed {i + 1} CodeParrot examples")
+                        if len(processed_examples) % 1000 == 0:
+                            logger.info(f"Processed {len(processed_examples)} valid CodeParrot examples (from {total_examples} total)")
                 except Exception as e:
-                    logger.warning(f"Error processing example {i}: {e}")
+                    logger.warning(f"Error processing example: {str(e)}")
                     continue
                 
             # Log final stats
-            logger.info(f"Completed processing {len(processed_examples)} CodeParrot examples")
+            logger.info(f"Completed processing {len(processed_examples)} CodeParrot examples from {total_examples} total examples")
             return processed_examples
         else:
-            # For non-streaming mode
+            # For non-streaming mode, batch process
             try:
-                return dataset.map(
-                    lambda examples: self.common_preprocessing(
-                        {"prompt": examples["rewritten_file"], "completion": examples["rewritten_file"]},
+                def process_batch(examples):
+                    batch_size = len(next(iter(examples.values()))) if examples else 0
+                    
+                    if batch_size == 0:
+                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                        
+                    # Extract contents from the batch
+                    contents = []
+                    for i in range(batch_size):
+                        content = None
+                        for field in [content_field, "content", "code", "source", "text"]:
+                            if field in examples and i < len(examples[field]) and examples[field][i]:
+                                content = examples[field][i]
+                                break
+                                
+                        if content:
+                            contents.append(content)
+                            
+                    # Skip if no valid contents
+                    if not contents:
+                        return {"processed_text": [], "length": [], "duplicates_removed": 0}
+                        
+                    # Use content as completion with generic prompt
+                    prompts = ["# Complete the following code"] * len(contents)
+                    
+                    return self.common_preprocessing(
+                        {"prompt": prompts, "completion": contents},
                         "prompt", "completion",
                         streaming=streaming
-                    ),
+                    )
+                    
+                return dataset.map(
+                    process_batch,
                     batched=True,
                     remove_columns=dataset.column_names if not streaming else None,
-                    batch_size=100 if streaming else None
+                    batch_size=50 if streaming else None
                 )
             except Exception as e:
                 logger.warning(f"Error in batch processing mode: {e}")
-                # Fallback to simple processing with expected field names
-                return dataset.map(
-                    lambda examples: self.common_preprocessing(
-                        {"prompt": examples.get("rewritten_file", ""), "completion": examples.get("rewritten_file", "")},
-                        "prompt", "completion",
-                        streaming=streaming
-                    ),
-                    batched=True,
-                    batch_size=100 if streaming else None
-                )
-        
+                # Return empty result as fallback
+                logger.error(f"Failed to process CodeParrot: {e}")
+                return []
+    
     def process_instruct_code(self, dataset: Union[Dataset, DatasetDict],
                               streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
         """

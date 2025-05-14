@@ -137,7 +137,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     try:
         # Next try the scripts redirect
-        from scripts.google_drive_manager import (
+        from scripts.google_drive.google_drive_manager import (
             drive_manager,
             test_authentication,
             test_drive_mounting,
@@ -221,6 +221,8 @@ def main():
                         help="Disable Weights & Biases logging (disabled by default)")
     parser.add_argument("--dataloader_workers", type=int, default=1,
                         help="Number of workers for DataLoader")
+    parser.add_argument('--features_dir', type=str, default=None,
+                    help='Directory containing extracted features for training')
     
     args = parser.parse_args()
     
@@ -524,6 +526,316 @@ def main():
                 
             except Exception as e:
                 logger.warning(f"Error estimating training time: {e}")
+        
+        # Load dataset - either from processed features or from raw processed data
+        if args.features_dir and os.path.exists(args.features_dir):
+            logger.info(f"Loading pre-extracted features from: {args.features_dir}")
+            try:
+                # Check for combined features directory
+                combined_features_path = os.path.join(args.features_dir, "combined_features")
+                if os.path.exists(combined_features_path):
+                    logger.info(f"Loading combined features from {combined_features_path}")
+                    train_dataset = load_from_disk(combined_features_path)
+                    
+                    # Create validation split if not already split
+                    if "validation" not in train_dataset.keys():
+                        logger.info("Creating train/validation split from combined features")
+                        datasets = train_dataset.train_test_split(
+                            test_size=0.05, 
+                            seed=training_args.seed
+                        )
+                        train_dataset = datasets["train"]
+                        eval_dataset = datasets["test"]
+                    else:
+                        train_dataset = train_dataset["train"]
+                        eval_dataset = train_dataset["validation"]
+                    
+                    logger.info(f"Loaded {len(train_dataset)} training examples and {len(eval_dataset)} validation examples")
+                else:
+                    # Load individual feature datasets and combine them
+                    logger.info("Loading individual feature datasets")
+                    feature_dirs = [d for d in os.listdir(args.features_dir) 
+                                  if os.path.isdir(os.path.join(args.features_dir, d)) and d.endswith('_features')]
+                    
+                    if not feature_dirs:
+                        logger.warning(f"No feature directories found in {args.features_dir}")
+                        raise ValueError(f"No feature directories found in {args.features_dir}")
+                    
+                    logger.info(f"Found {len(feature_dirs)} feature directories")
+                    datasets_list = []
+                    
+                    for feature_dir in feature_dirs:
+                        feature_path = os.path.join(args.features_dir, feature_dir)
+                        logger.info(f"Loading features from {feature_path}")
+                        dataset = load_from_disk(feature_path)
+                        datasets_list.append(dataset)
+                    
+                    logger.info(f"Combining {len(datasets_list)} feature datasets")
+                    train_dataset = concatenate_datasets(datasets_list)
+                    
+                    # Create validation split
+                    logger.info("Creating train/validation split")
+                    datasets = train_dataset.train_test_split(
+                        test_size=0.05, 
+                        seed=training_args.seed
+                    )
+                    train_dataset = datasets["train"]
+                    eval_dataset = datasets["test"]
+                    
+                    logger.info(f"Combined dataset contains {len(train_dataset)} training examples and {len(eval_dataset)} validation examples")
+            except Exception as e:
+                logger.error(f"Error loading features: {str(e)}")
+                logger.warning("Falling back to standard dataset loading")
+                # Continue with standard dataset loading
+        else:
+            # Standard dataset loading code (keep the existing implementation)
+            logger.info(f"Loading datasets from {args.data_dir}")
+            
+            # First, try to load datasets from config weights if available
+            try:
+                with open(args.config, 'r') as f:
+                    config = json.load(f)
+                
+                dataset_weights = config.get('dataset_weights', {})
+                dataset_paths = config.get('dataset_paths', {})
+                
+                if dataset_weights:
+                    logger.info(f"Found {len(dataset_weights)} datasets in config")
+                    datasets_to_load = []
+                    
+                    # First try to load from dataset_paths if available
+                    if dataset_paths:
+                        for dataset_name, path in dataset_paths.items():
+                            if dataset_name in dataset_weights and os.path.exists(path):
+                                datasets_to_load.append((dataset_name, path, dataset_weights[dataset_name]))
+                                logger.info(f"Using path from config for {dataset_name}: {path}")
+                    
+                    # Then look for datasets in data_dir that match names in dataset_weights
+                    for dataset_name in dataset_weights.keys():
+                        if dataset_name not in [d[0] for d in datasets_to_load]:
+                            # Try different common naming patterns
+                            potential_paths = [
+                                os.path.join(args.data_dir, f"{dataset_name}_processed"),
+                                os.path.join(args.data_dir, f"{dataset_name}_processed_interim_final"),
+                                os.path.join(args.data_dir, dataset_name)
+                            ]
+                            
+                            # Also check language-specific variants for code datasets
+                            if "codesearchnet" in dataset_name:
+                                for lang in ["python", "java", "javascript", "php", "ruby", "go"]:
+                                    potential_paths.append(os.path.join(args.data_dir, f"codesearchnet_{lang}_processed"))
+                                    potential_paths.append(os.path.join(args.data_dir, f"codesearchnet_all_{lang}_processed"))
+                            
+                            # Use the first path that exists
+                            for path in potential_paths:
+                                if os.path.exists(path):
+                                    datasets_to_load.append((dataset_name, path, dataset_weights[dataset_name]))
+                                    logger.info(f"Found dataset directory for {dataset_name}: {path}")
+                                    break
+                    
+                    if not datasets_to_load:
+                        logger.warning("No matching dataset directories found for configured datasets")
+                else:
+                    logger.warning("No dataset_weights found in config, will search for datasets in data_dir")
+            except Exception as e:
+                logger.warning(f"Error loading dataset configuration: {e}")
+                logger.warning("Will search for datasets in data_dir")
+            
+            # If we couldn't find datasets from config, search the data directory
+            if 'datasets_to_load' not in locals() or not datasets_to_load:
+                logger.info(f"Searching for dataset directories in {args.data_dir}")
+                datasets_to_load = []
+                
+                if os.path.exists(args.data_dir):
+                    # Look for directories with _processed suffix
+                    processed_dirs = [d for d in os.listdir(args.data_dir) 
+                                     if os.path.isdir(os.path.join(args.data_dir, d)) 
+                                     and (d.endswith('_processed') or '_processed_' in d)]
+                    
+                    for dir_name in processed_dirs:
+                        path = os.path.join(args.data_dir, dir_name)
+                        # Get dataset name by removing _processed suffix
+                        dataset_name = dir_name.split('_processed')[0]
+                        # Add with default weight 1.0
+                        datasets_to_load.append((dataset_name, path, 1.0))
+                        logger.info(f"Found dataset directory: {path}")
+            
+            # Load the datasets
+            loaded_datasets = []
+            for dataset_name, path, weight in datasets_to_load:
+                try:
+                    logger.info(f"Loading dataset {dataset_name} from {path} (weight: {weight})")
+                    
+                    # Try to load the dataset
+                    from datasets import load_from_disk
+                    dataset = load_from_disk(path)
+                    
+                    # Check if this is a valid dataset with the expected format
+                    if dataset is None or len(dataset) == 0:
+                        logger.warning(f"Dataset {dataset_name} is empty or invalid, skipping")
+                        continue
+                    
+                    # Make sure we have the expected 'text' column
+                    if 'text' not in dataset.column_names and 'processed_text' not in dataset.column_names:
+                        logger.warning(f"Dataset {dataset_name} is missing 'text' or 'processed_text' column, skipping")
+                        continue
+                    
+                    # Rename 'processed_text' to 'text' if needed
+                    if 'processed_text' in dataset.column_names and 'text' not in dataset.column_names:
+                        dataset = dataset.rename_column('processed_text', 'text')
+                    
+                    # Apply tokenization if needed
+                    # Check if the dataset needs to be tokenized (doesn't have input_ids and attention_mask)
+                    needs_tokenization = ('input_ids' not in dataset.column_names or 
+                                         'attention_mask' not in dataset.column_names)
+                    
+                    if needs_tokenization:
+                        logger.info(f"Tokenizing dataset {dataset_name}")
+                        
+                        # Load tokenizer from config if available
+                        try:
+                            # Get model name from config
+                            with open(args.config, 'r') as f:
+                                config = json.load(f)
+                            
+                            model_name = (config.get('training', {}).get('model_name_or_path') or 
+                                         config.get('model', {}).get('base_model'))
+                            
+                            if model_name:
+                                logger.info(f"Loading tokenizer for {model_name}")
+                                tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+                                
+                                # Set padding token if not already set
+                                if tokenizer.pad_token is None:
+                                    if tokenizer.eos_token is not None:
+                                        tokenizer.pad_token = tokenizer.eos_token
+                                    else:
+                                        logger.warning("No padding token available, using a default")
+                                        tokenizer.pad_token = tokenizer.eos_token = "</s>"
+                                
+                                # Tokenize the dataset
+                                def tokenize_function(examples):
+                                    return tokenizer(
+                                        examples['text'],
+                                        padding='max_length',
+                                        truncation=True,
+                                        max_length=2048  # Default value, can be adjusted
+                                    )
+                                
+                                # Apply tokenization
+                                dataset = dataset.map(
+                                    tokenize_function,
+                                    batched=True,
+                                    remove_columns=dataset.column_names
+                                )
+                                
+                                logger.info(f"Tokenized dataset {dataset_name}")
+                            else:
+                                logger.warning("Model name not found in config, skipping tokenization")
+                                needs_tokenization = False
+                        except Exception as e:
+                            logger.warning(f"Error loading tokenizer or tokenizing dataset: {e}")
+                            needs_tokenization = False
+                    
+                    # Set the weight attribute for combining datasets with different weights
+                    dataset = dataset.with_format("torch")
+                    
+                    # Add to loaded datasets
+                    loaded_datasets.append({
+                        'name': dataset_name,
+                        'dataset': dataset,
+                        'weight': weight
+                    })
+                    
+                    logger.info(f"Successfully loaded dataset {dataset_name} with {len(dataset)} examples")
+                
+                except Exception as e:
+                    logger.error(f"Error loading dataset {dataset_name}: {e}")
+            
+            # Ensure we have at least one valid dataset
+            if not loaded_datasets:
+                raise ValueError(f"No valid datasets found in {args.data_dir}")
+            
+            # Combine the datasets if multiple
+            if len(loaded_datasets) > 1:
+                logger.info(f"Combining {len(loaded_datasets)} datasets")
+                
+                # Perform weighted sampling if needed
+                if any(d['weight'] != 1.0 for d in loaded_datasets):
+                    # Use dataset concatenation with sampling weights
+                    from datasets import concatenate_datasets
+                    
+                    # Extract datasets and prepare sampling weights
+                    datasets_list = [d['dataset'] for d in loaded_datasets]
+                    weights = [d['weight'] for d in loaded_datasets]
+                    
+                    # Normalize weights to sum to 1.0
+                    total_weight = sum(weights)
+                    normalized_weights = [w / total_weight for w in weights]
+                    
+                    # Calculate number of samples to take from each dataset
+                    total_samples = sum(len(d) for d in datasets_list)
+                    samples_per_dataset = [int(w * total_samples) for w in normalized_weights]
+                    
+                    # Ensure at least one sample from each dataset
+                    samples_per_dataset = [max(1, min(s, len(datasets_list[i]))) for i, s in enumerate(samples_per_dataset)]
+                    
+                    # Take samples from each dataset
+                    sampled_datasets = []
+                    for i, dataset in enumerate(datasets_list):
+                        if samples_per_dataset[i] < len(dataset):
+                            # Take a random subset
+                            indices = torch.randperm(len(dataset))[:samples_per_dataset[i]].tolist()
+                            sampled_datasets.append(dataset.select(indices))
+                        else:
+                            # Take the whole dataset
+                            sampled_datasets.append(dataset)
+                    
+                    # Concatenate all sampled datasets
+                    combined_dataset = concatenate_datasets(sampled_datasets)
+                    logger.info(f"Created weighted combined dataset with {len(combined_dataset)} examples")
+                else:
+                    # Simple concatenation
+                    from datasets import concatenate_datasets
+                    combined_dataset = concatenate_datasets([d['dataset'] for d in loaded_datasets])
+                    logger.info(f"Created combined dataset with {len(combined_dataset)} examples")
+                
+                # Shuffle the combined dataset
+                combined_dataset = combined_dataset.shuffle(seed=42)
+                
+                # Split into train/validation
+                splits = combined_dataset.train_test_split(test_size=0.05, seed=42)
+                train_dataset = splits['train']
+                eval_dataset = splits['test']
+                
+                logger.info(f"Final training dataset has {len(train_dataset)} examples")
+                logger.info(f"Final validation dataset has {len(eval_dataset)} examples")
+            else:
+                # Only one dataset, just use it directly
+                dataset = loaded_datasets[0]['dataset']
+                
+                # Split into train/validation if needed
+                if hasattr(dataset, 'train_test_split'):
+                    splits = dataset.train_test_split(test_size=0.05, seed=42)
+                    train_dataset = splits['train']
+                    eval_dataset = splits['test']
+                    
+                    logger.info(f"Split dataset into {len(train_dataset)} training and {len(eval_dataset)} validation examples")
+                else:
+                    # Use the whole dataset for training
+                    train_dataset = dataset
+                    # Create a small validation dataset
+                    eval_size = min(100, max(1, int(len(dataset) * 0.05)))
+                    
+                    # Take random samples for validation
+                    indices = torch.randperm(len(dataset))
+                    train_indices = indices[eval_size:].tolist()
+                    eval_indices = indices[:eval_size].tolist()
+                    
+                    train_dataset = dataset.select(train_indices)
+                    eval_dataset = dataset.select(eval_indices)
+                    
+                    logger.info(f"Created train/eval split with {len(train_dataset)} training and {len(eval_dataset)} validation examples")
         
         # Start training
         logger.info(f"Starting training with data from {args.data_dir}")

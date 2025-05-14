@@ -5,7 +5,7 @@ This repository contains a comprehensive pipeline for fine-tuning various AI mod
 1. DeepSeek-Coder model for code generation
 2. FLAN-UL2 model for text and story generation
 
-The pipeline includes data preprocessing, training with PEFT and optimization techniques, advanced evaluation, and results visualization.
+The pipeline includes data preprocessing, feature extraction, training with PEFT and optimization techniques, advanced evaluation, and results visualization.
 
 ## Features
 
@@ -36,6 +36,8 @@ The pipeline includes data preprocessing, training with PEFT and optimization te
   - Comprehensive evaluation metrics
   - Google Drive integration for model checkpoints
   - DeepSpeed ZeRO-3 optimization for large models
+  - **NEW: Efficient feature extraction from preprocessed datasets**
+  - **NEW: Support for both local and Google Drive datasets**
 
 ## Requirements
 
@@ -56,18 +58,26 @@ pip install -r requirements.txt
 │   └── training_config_text.json # Text training configuration
 ├── data/                         # Data directory
 │   ├── processed/                # Processed datasets
+│   │   └── features/             # Extracted features
 │   └── raw/                      # Raw datasets
 ├── models/                       # Fine-tuned models
 ├── results/                      # Evaluation results
 ├── src/                          # Source code
 │   ├── data/                     # Data processing modules
 │   │   └── processors/           # Dataset processors
-│   │       └── text_processors.py# Text dataset processors
+│   │       ├── text_processors.py# Text dataset processors
+│   │       └── feature_extractor.py # Feature extraction module
 │   ├── training/                 # Training modules
 │   │   └── text_trainer.py       # FLAN-UL2 trainer
 │   ├── evaluation/               # Evaluation modules
 │   └── utils/                    # Utility modules
+├── scripts/                      # Utility scripts
+│   ├── prepare_drive_datasets.sh # Dataset preparation script
+│   └── prepare_datasets_for_training.py # Feature extraction script
 ├── visualizations/               # Visualization outputs
+├── docs/                         # Documentation
+│   ├── FEATURE_EXTRACTION_GUIDE.md # Guide for feature extraction
+│   └── ...                       # Other documentation
 ├── main.py                       # Code generation pipeline script
 ├── train_text_flan.py            # Text generation pipeline script
 ├── train_text_flan.sh            # Text fine-tuning shell script
@@ -77,6 +87,15 @@ pip install -r requirements.txt
 ## Updates and Fixes
 
 ### Recent Improvements (2024)
+
+- **NEW: Feature Extraction Pipeline**:
+
+  - Implemented efficient feature extraction from preprocessed datasets
+  - Support for both local and Google Drive datasets
+  - Automatic handling of text columns based on dataset structure
+  - Memory-efficient processing with batching and parallelization
+  - Proper handling of both encoder-decoder and causal language models
+  - Detailed documentation in [FEATURE_EXTRACTION_GUIDE.md](docs/FEATURE_EXTRACTION_GUIDE.md)
 
 - **New: FLAN-UL2 Text Generation Fine-Tuning**:
 
@@ -132,11 +151,20 @@ pip install -r requirements.txt
   - **NEW: Memory-optimized language processing with incremental saving to prevent OOM errors**
 
 - **Memory Efficiency Improvements**:
+
   - Fixed batch processing to handle empty datasets
   - Protected against division by zero in batch size calculation
   - Added streaming mode for large datasets
   - **NEW: Implemented memory-efficient multi-language processing with incremental saving**
   - **NEW: Added language distribution tracking to monitor balance across programming languages**
+
+- **Enhanced A6000 Training Script**:
+  - Updated `train_a6000_optimized.sh` to include feature extraction before training
+  - Efficient tokenization of preprocessed datasets using the model's tokenizer
+  - Improved memory management and performance on A6000 GPUs
+  - Feature caching to disk for faster subsequent training runs
+  - Seamless integration with Google Drive for persistent storage of extracted features
+  - Command-line options to control feature extraction behavior
 
 ## Usage
 
@@ -343,6 +371,31 @@ Visualize training metrics and evaluation results:
 ```bash
 python main.py --mode visualize
 ```
+
+### Optimized Training for A6000 GPUs
+
+For training on A6000 GPUs (48GB VRAM) with all optimizations and feature extraction:
+
+```bash
+# Run with feature extraction and training
+./train_a6000_optimized.sh
+
+# Skip feature extraction (use previously extracted features)
+./train_a6000_optimized.sh --skip-features
+
+# Only extract features without training
+./train_a6000_optimized.sh --features-only
+
+# Customize feature extraction parameters
+./train_a6000_optimized.sh --max-length 4096 --text-column "processed_text"
+```
+
+This optimized script:
+
+1. Extracts features from preprocessed datasets using the model's tokenizer
+2. Caches the extracted features to disk for faster subsequent runs
+3. Applies A6000-specific optimizations for maximum performance
+4. Uses Google Drive for persistent storage of models, features, and logs
 
 ## Configuration
 

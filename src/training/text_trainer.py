@@ -116,7 +116,7 @@ try:
         
 except (ImportError, ModuleNotFoundError):
     try:
-        from scripts.google_drive_manager import drive_manager
+        from scripts.google_drive.google_drive_manager import drive_manager
         
         def save_model_to_drive(model_path, remote_dir=None):
             """Save model to Google Drive"""

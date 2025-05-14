@@ -136,7 +136,7 @@ def setup_drive_integration(credentials_path, headless=False):
                     imported_modules = set(sys.modules.keys())
                     
                     # Import the test module
-                    from tests.test_google_drive import (
+                    from tests.utils.test_google_drive import (
                         test_authentication as test_auth_func,
                         test_file_operations
                     )

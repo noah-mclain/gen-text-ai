@@ -146,7 +146,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     # Try the legacy imports
     try:
-        from scripts.google_drive_manager import drive_manager, sync_to_drive, sync_from_drive
+        from scripts.google_drive.google_drive_manager import drive_manager, sync_to_drive, sync_from_drive
         
         def save_model_to_drive(model_path, remote_dir=None):
             """Save model to Google Drive using the new utility functions"""
