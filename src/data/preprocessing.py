@@ -27,13 +27,6 @@ try:
 except ImportError:
     TEXT_PROCESSORS_AVAILABLE = False
     
-# For language detection
-try:
-    import langid
-    LANGID_AVAILABLE = True
-except ImportError:
-    LANGID_AVAILABLE = False
-    
 # For GPU memory management
 try:
     import torch
@@ -64,9 +57,6 @@ class DataPreprocessor:
         'html', 'css', 'sql', 'bash', 'shell',                # Web/scripting
     }
     
-    # Natural languages to include
-    ALLOWED_NATURAL_LANGUAGES = {'en', 'ar'}  # English and Arabic
-    
     def __init__(self, tokenizer_path: str = "deepseek-ai/deepseek-coder-6.7b-base", max_length: int = 2048):
         self.tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path,
@@ -78,78 +68,11 @@ class DataPreprocessor:
         self._last_memory_check = 0
         self._memory_check_interval = 1000  # Check memory every 1000 examples
         
-        # Try to load langid for language detection
-        if not LANGID_AVAILABLE:
-            logger.warning("langid not installed - language filtering for comments will be limited. " 
-                          "Install with: pip install langid")
-                          
         # Check if we can use GPU
         if TORCH_AVAILABLE and torch.cuda.is_available():
             logger.info(f"CUDA available: {torch.cuda.get_device_name(0)}")
             logger.info(f"Total VRAM: {torch.cuda.get_device_properties(0).total_memory / (1024 * 1024 * 1024):.2f} GB")
         
-    def detect_language(self, text):
-        """
-        Detect the language of a text.
-        
-        Args:
-            text: Text to analyze
-        
-        Returns:
-            ISO 639-1 language code (e.g., 'en', 'ar')
-        """
-        try:
-            # Try using langid for detection
-            import langid
-            lang_code, _ = langid.classify(text)
-            return lang_code
-        except (ImportError, Exception) as e:
-            logger.debug(f"langid detection failed: {str(e)}")
-            
-            try:
-                # Fallback to langdetect
-                from langdetect import detect
-                return detect(text)
-            except (ImportError, Exception) as e:
-                logger.debug(f"langdetect detection failed: {str(e)}")
-                
-                # Default to English if detection fails
-                return "en"
-    
-    def should_include_by_language(self, text, allowed_languages=None):
-        """
-        Check if text should be included based on natural language detection.
-        By default, only keep English content, but allow for specifying other languages.
-        
-        Args:
-            text: Text to check
-            allowed_languages: List of language codes to allow (e.g., ['en', 'ar']), or None for all
-            
-        Returns:
-            Boolean indicating if this text should be included
-        """
-        # If no language restrictions, include everything
-        if not allowed_languages:
-            return True
-        
-        # Skip empty text
-        if not text or len(text.strip()) < 10:
-            return False
-        
-        try:
-            # Use our own detect_language method instead of undefined 'detect' function
-            lang_code = self.detect_language(text[:1000])  # Only use first 1000 chars for speed
-            
-            # Convert allowed_languages to lowercase for case-insensitive matching
-            allowed_languages_lower = [lang.lower() for lang in allowed_languages]
-            
-            # Include if language is in allowed list
-            return lang_code.lower() in allowed_languages_lower
-        except Exception as e:
-            # In case of detection error, include by default
-            logger.debug(f"Language detection error: {str(e)}")
-            return True
-    
     def _check_resources(self, force: bool = False) -> Dict[str, float]:
         """Monitor system resources and manage memory if needed."""
         current_time = time.time()
@@ -230,11 +153,15 @@ class DataPreprocessor:
         logger.info(f"Garbage collected {collected} objects")
     
     def _safe_dataset_iterator(self, dataset: Union[Dataset, DatasetDict, List], 
-                              max_samples: int = 10000) -> Iterator[Any]:
+                              max_samples: Optional[int] = None) -> Iterator[Any]:
         """Safely iterate through a dataset with proper error handling and progress tracking."""
         count = 0
         errors = 0
         max_errors = 100  # Maximum number of errors before stopping iteration
+        
+        # Set max_samples to very high number if None to process all examples
+        if max_samples is None:
+            max_samples = 1000000  # A million examples should be enough
         
         # Create iterator with progress tracking
         try:
@@ -268,6 +195,9 @@ class DataPreprocessor:
             logger.error(f"Failed to create iterator: {str(e)}")
             return
             yield from []
+            
+        # Log final stats
+        logger.info(f"Processed {count} examples with {errors} errors")
         
     def common_preprocessing(self, examples: Dict, prompt_field: str, completion_field: str,
                             lowercase: bool = False, streaming: bool = False) -> Dict:
@@ -964,6 +894,18 @@ class DataPreprocessor:
         """Process MBPP dataset."""
         logger.info("Processing MBPP dataset...")
         
+        # Get dataset size for logging
+        try:
+            if hasattr(dataset, "__len__"):
+                dataset_size = len(dataset)
+                logger.info(f"MBPP dataset contains {dataset_size} examples")
+            else:
+                dataset_size = None
+                logger.info("MBPP dataset size unknown (streaming mode)")
+        except Exception as e:
+            logger.warning(f"Could not determine dataset size: {e}")
+            dataset_size = None
+            
         # Define field mappings for different dataset structures
         field_mappings = {
             "prompt": ["text", "prompt", "problem", "description", "task_id"],
@@ -973,9 +915,10 @@ class DataPreprocessor:
         # For streaming mode, process one example at a time to avoid issues
         if streaming:
             processed_examples = []
+            progress_interval = 100  # Log progress every 100 examples
             
             # Process each example individually using our safe iterator
-            for example in self._safe_dataset_iterator(dataset):
+            for i, example in enumerate(self._safe_dataset_iterator(dataset, max_samples=None)):  # No limit on samples
                 try:
                     # Extract fields using our utility method
                     fields = self._extract_fields(example, field_mappings)
@@ -986,7 +929,7 @@ class DataPreprocessor:
                     
                     # Skip if missing required fields
                     if "prompt" not in fields or "completion" not in fields:
-                        logger.warning(f"Skipping example, missing fields")
+                        logger.debug(f"Skipping example {i}, missing fields")
                         continue
                         
                     processed = self.common_preprocessing(
@@ -995,10 +938,15 @@ class DataPreprocessor:
                         streaming=True
                     )
                     processed_examples.append(processed)
+                    
+                    # Log progress periodically
+                    if i > 0 and i % progress_interval == 0:
+                        logger.info(f"Processed {i} MBPP examples")
                 except Exception as e:
-                    logger.warning(f"Error processing example: {e}")
+                    logger.warning(f"Error processing example {i}: {e}")
                     continue
-                
+            
+            logger.info(f"Completed processing {len(processed_examples)} MBPP examples")    
             if not processed_examples:
                 logger.warning("No valid examples processed from MBPP dataset")
                 
@@ -1047,36 +995,53 @@ class DataPreprocessor:
                 )
             
             try:
+                logger.info("Processing MBPP dataset in batch mode")
                 # Try to get column names from dataset if available
                 column_names = dataset.column_names if hasattr(dataset, "column_names") else None
                 
-                return dataset.map(
+                processed_dataset = dataset.map(
                     process_sample,
                     batched=True,
                     remove_columns=column_names if not streaming else None,
-                    batch_size=100 if streaming else None
+                    batch_size=100 if streaming else None,
+                    desc="Processing MBPP examples"
                 )
+                
+                # Verify results
+                if hasattr(processed_dataset, "__len__"):
+                    result_size = len(processed_dataset)
+                    logger.info(f"Processed MBPP dataset contains {result_size} examples")
+                    if dataset_size and result_size < dataset_size * 0.5:
+                        logger.warning(f"Warning: Only processed {result_size}/{dataset_size} examples!")
+                
+                return processed_dataset
             except Exception as e:
                 logger.warning(f"Error in batch processing mode: {e}")
                 logger.error(traceback.format_exc())
-                # Try with smaller batch size
-                return dataset.map(
-                    process_sample,
-                    batched=True,
-                    batch_size=20  # Smaller batch size
-                )
-            except Exception as e:
-                logger.error(f"Error processing MBPP dataset: {e}")
-                logger.error(traceback.format_exc())
-                # Return a simple fallback processing
-                return dataset.map(
-                    lambda examples: self.common_preprocessing(
-                        {"prompt": "Write Python code", "completion": str(examples)},
-                        "prompt", "completion", 
-                        streaming=streaming
-                    ),
-                    batched=True
-                )
+                
+                try:
+                    logger.info("Trying with smaller batch size...")
+                    # Try with smaller batch size
+                    processed_dataset = dataset.map(
+                        process_sample,
+                        batched=True,
+                        batch_size=20,  # Smaller batch size
+                        desc="Processing MBPP examples (smaller batches)"
+                    )
+                    
+                    # Verify results
+                    if hasattr(processed_dataset, "__len__"):
+                        result_size = len(processed_dataset)
+                        logger.info(f"Processed MBPP dataset contains {result_size} examples (with smaller batches)")
+                    
+                    return processed_dataset
+                except Exception as backup_error:
+                    logger.error(f"Backup processing also failed: {backup_error}")
+                    logger.error(traceback.format_exc())
+                    
+                    # Return a simple fallback processing
+                    logger.info("Falling back to item-by-item processing...")
+                    return self.process_mbpp(dataset, streaming=True)  # Force streaming mode as fallback
     
     def process_ds1000(self, dataset: Union[Dataset, DatasetDict, str] = None,
                       streaming: bool = False) -> Union[Dataset, DatasetDict]:
