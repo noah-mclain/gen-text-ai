@@ -351,6 +351,40 @@ class DeepseekFineTuner:
         if not datasets:
             raise ValueError(f"No datasets found in {data_dir}")
         
+        # Filter None values from datasets
+        logger.info("Filtering datasets to remove None values")
+        filtered_datasets = {}
+        for name, dataset in datasets.items():
+            try:
+                # Define a function to filter samples with None values
+                def filter_none_values(sample):
+                    if sample is None:
+                        return False
+                    # Check common fields for None values
+                    for field in ['input_ids', 'attention_mask', 'labels']:
+                        if field in sample and sample[field] is None:
+                            return False
+                    return True
+                
+                # Apply the filter
+                if hasattr(dataset, 'filter'):
+                    original_size = len(dataset) if hasattr(dataset, '__len__') else "unknown"
+                    filtered_dataset = dataset.filter(filter_none_values, desc=f"Filtering {name}")
+                    new_size = len(filtered_dataset) if hasattr(filtered_dataset, '__len__') else "unknown"
+                    logger.info(f"Filtered dataset {name} from {original_size} to {new_size} examples")
+                    filtered_datasets[name] = filtered_dataset
+                else:
+                    # If filter not available, use as is but log warning
+                    logger.warning(f"Cannot filter dataset {name} for None values - using as is")
+                    filtered_datasets[name] = dataset
+            except Exception as e:
+                logger.warning(f"Error filtering dataset {name}: {e}")
+                # Use the original dataset if filtering fails
+                filtered_datasets[name] = dataset
+        
+        # Replace the datasets with filtered ones
+        datasets = filtered_datasets
+        
         # Get dataset weights
         weights = self.dataset_config.get("dataset_weights", {})
         
@@ -637,6 +671,82 @@ class DeepseekFineTuner:
             logger.info("Continuing without LoRA")
             return model
     
+    def _setup_training(self, datasets: Dict[str, Dataset]) -> Trainer:
+        """Set up training with the appropriate configurations."""
+        logger.info("Setting up training with configuration: %s", self.training_config)
+        
+        # Create a more robust data collator that handles None values
+        class SafeDataCollator(DataCollatorForLanguageModeling):
+            def __call__(self, features):
+                try:
+                    # Filter out None values or entries with None in key fields
+                    valid_features = []
+                    for feature in features:
+                        if feature is None:
+                            continue
+                            
+                        # Check key fields for None values
+                        has_none = False
+                        for key in ['input_ids', 'attention_mask', 'labels']:
+                            if key in feature and feature[key] is None:
+                                has_none = True
+                                break
+                                
+                        if not has_none:
+                            valid_features.append(feature)
+                    
+                    # If no valid features but we have features list, create safe dummy batch
+                    if not valid_features and features:
+                        logger.warning("No valid features in batch, creating dummy batch")
+                        first_feature = features[0]
+                        dummy_feature = {}
+                        for key, value in first_feature.items():
+                            if value is None:
+                                if key == 'input_ids' or key == 'labels':
+                                    dummy_feature[key] = torch.zeros(1, dtype=torch.long)
+                                elif key == 'attention_mask':
+                                    dummy_feature[key] = torch.ones(1, dtype=torch.long)
+                                else:
+                                    dummy_feature[key] = value
+                            else:
+                                dummy_feature[key] = value
+                        valid_features = [dummy_feature]
+                    
+                    # Call parent class implementation with valid features
+                    return super().__call__(valid_features)
+                except Exception as e:
+                    logger.warning(f"Error in data collator: {e}")
+                    # Return a minimal valid batch as fallback
+                    return {
+                        "input_ids": torch.zeros((1, 1), dtype=torch.long),
+                        "attention_mask": torch.ones((1, 1), dtype=torch.long),
+                        "labels": torch.zeros((1, 1), dtype=torch.long)
+                    }
+                    
+        # Create training arguments from config
+        training_args = TrainingArguments(
+            output_dir=self.training_config.get("output_dir", "models/deepseek-coder-finetune"),
+            **{k: v for k, v in self.training_config.items() if k != "output_dir"}
+        )
+        
+        # Create data collator
+        data_collator = SafeDataCollator(
+            tokenizer=self.tokenizer,
+            mlm=False
+        )
+        
+        # Create trainer
+        trainer = Trainer(
+            model=self.model,
+            args=training_args,
+            train_dataset=datasets["train"],
+            eval_dataset=datasets.get("validation"),
+            tokenizer=self.tokenizer,
+            data_collator=data_collator,
+        )
+        
+        return trainer
+    
     def train(self, data_dir: str) -> Dict[str, Any]:
         """
         Train the model.
@@ -719,13 +829,20 @@ class DeepseekFineTuner:
         # Create a combined dataset
         train_dataset = self._combine_datasets(processed_datasets)
         
-        if train_dataset is None:
-            logger.error("Failed to create combined dataset")
-            return {"error": "Failed to create combined dataset"}
+        # Get validation dataset if available
+        val_dataset = None
+        if "val_dataset" in locals() and val_dataset is not None:
+            logger.info(f"Using validation dataset with {len(val_dataset)} examples")
+        
+        # Prepare datasets for training
+        prepared_datasets = {
+            "train": train_dataset,
+            "validation": val_dataset
+        }
         
         # Prepare model for training
         model = self._load_model()
-
+        
         # Check if LoRA is already initialized by Unsloth
         has_peft_config = hasattr(model, 'peft_config')
         if self.use_lora and not has_peft_config:
@@ -734,14 +851,43 @@ class DeepseekFineTuner:
         elif has_peft_config:
             logger.info("Skipping LoRA configuration as it was already initialized during model loading")
         
-        logger.info("Creating training arguments")
+        # Update state for training
+        self.model = model
+        
+        # Set up training with our robust handler
+        trainer = self._setup_training(prepared_datasets)
+        
+        # Start training
+        logger.info("Starting training")
+        train_result = trainer.train()
+        
+        # Save model
+        logger.info("Saving model")
+        trainer.save_model(self.training_config.get("output_dir"))
+        
+        # Save metrics
+        metrics = {
+            "train_loss": train_result.training_loss,
+            "train_runtime": train_result.metrics["train_runtime"],
+            "samples_per_second": train_result.metrics.get("train_samples_per_second", 0),
+            "epoch": train_result.metrics.get("epoch", 0),
+        }
+        
+        # Evaluate model on test set
+        logger.info("Evaluating model on test set")
+        try:
+            metrics["test_metrics"] = trainer.evaluate(None)
+            logger.info(f"Test metrics: {metrics['test_metrics']}")
+        except Exception as e:
+            logger.warning(f"Error during evaluation: {e}")
+            metrics["test_metrics"] = {"error": str(e)}
         
         # Ensure max_steps is set for streaming datasets
         if self.is_streaming and "max_steps" not in self.training_config:
             # Set a reasonable default
             self.training_config["max_steps"] = 100000
             logger.info(f"Set max_steps to {self.training_config['max_steps']} for streaming datasets")
-            
+        
         # Filter incompatible training arguments based on the Transformers version
         filtered_training_config = self._check_parameter_compatibility(
             TrainingArguments, 

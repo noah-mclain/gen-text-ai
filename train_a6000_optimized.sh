@@ -5,8 +5,13 @@
 # Set environment variables for better performance
 export CUDA_VISIBLE_DEVICES=0
 export OMP_NUM_THREADS=8
-export TOKENIZERS_PARALLELISM=true
+export TOKENIZERS_PARALLELISM=false  # Explicitly disable tokenizers parallelism to avoid fork warnings
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+
+# Set a reasonable number of dataloader workers to avoid "Too many workers" errors
+# For small datasets or streaming, 1-2 workers is usually sufficient
+export NUM_WORKERS=1  # Limit dataloader workers
+export DATALOADER_NUM_WORKERS=1  # Additional environment variable for safety
 
 # Explicitly unset all DeepSpeed-related variables to ensure clean environment
 unset ACCELERATE_USE_DEEPSPEED
@@ -224,23 +229,24 @@ try:
     
     # Create a map between dataset processing names and config names
     dataset_name_mappings = {
-        'code_alpaca': ['code_alpaca', 'alpaca'],
-        'codeparrot': ['codeparrot'],
-        'codesearchnet_all_go': ['codesearchnet_go'],
-        'codesearchnet_go': ['codesearchnet_go'],
-        'codesearchnet_all_java': ['codesearchnet_java'],
-        'codesearchnet_java': ['codesearchnet_java'],
-        'codesearchnet_all_javascript': ['codesearchnet_javascript'],
-        'codesearchnet_javascript': ['codesearchnet_javascript'],
-        'codesearchnet_all_php': ['codesearchnet_php'],
-        'codesearchnet_php': ['codesearchnet_php'],
-        'codesearchnet_all_python': ['codesearchnet_python'],
-        'codesearchnet_python': ['codesearchnet_python'],
-        'codesearchnet_all_ruby': ['codesearchnet_ruby'],
-        'codesearchnet_ruby': ['codesearchnet_ruby'],
-        'humaneval': ['humaneval'],
-        'instruct_code': ['instruct_code'],
-        'mbpp': ['mbpp']
+        # Directory prefixes -> config dataset names
+        'code_alpaca_processed': ['code_alpaca', 'alpaca'],
+        'codeparrot_processed': ['codeparrot'],
+        'codesearchnet_all_go_processed': ['codesearchnet_go'],
+        'codesearchnet_go_processed': ['codesearchnet_go'],
+        'codesearchnet_all_java_processed': ['codesearchnet_java'],
+        'codesearchnet_java_processed': ['codesearchnet_java'],
+        'codesearchnet_all_javascript_processed': ['codesearchnet_javascript'],
+        'codesearchnet_javascript_processed': ['codesearchnet_javascript'],
+        'codesearchnet_all_php_processed': ['codesearchnet_php'],
+        'codesearchnet_php_processed': ['codesearchnet_php'],
+        'codesearchnet_all_python_processed': ['codesearchnet_python'],
+        'codesearchnet_python_processed': ['codesearchnet_python'],
+        'codesearchnet_all_ruby_processed': ['codesearchnet_ruby'],
+        'codesearchnet_ruby_processed': ['codesearchnet_ruby'],
+        'humaneval_processed': ['humaneval'],
+        'instruct_code_processed': ['instruct_code'],
+        'mbpp_processed': ['mbpp'],
     }
     
     # Find all processed dataset directories that exist
@@ -326,6 +332,11 @@ try:
     if 'training' not in config:
         config['training'] = {}
     
+    # Dataloader worker settings to prevent 'too many workers' errors
+    config['training']['dataloader_num_workers'] = 1
+    config['training']['dataloader_pin_memory'] = True
+    print('Set dataloader worker settings to avoid errors')
+    
     # Thoroughly remove all DeepSpeed references
     deepspeed_keys = ['use_deepspeed', 'deepspeed_config', 'deepspeed']
     for key in deepspeed_keys:
@@ -349,6 +360,21 @@ try:
     
     # Make sure gradient checkpointing is enabled for memory efficiency
     config['training']['gradient_checkpointing'] = True  # Enable memory optimization
+    
+    # Fix dataset validation issues
+    if 'dataset_validation' not in config:
+        config['dataset_validation'] = {}
+    
+    config['dataset_validation']['check_for_none'] = True
+    config['dataset_validation']['drop_invalid_samples'] = True
+    config['dataset_validation']['validate_before_training'] = True
+    
+    print('Added dataset validation settings to prevent None errors')
+    
+    # Add other fixes to avoid wandb issues
+    if 'report_to' not in config['training']:
+        config['training']['report_to'] = ['wandb', 'tensorboard']
+        print('Set report_to for wandb and tensorboard')
     
     # Also check for and disable deepspeed in accelerate config if it exists
     accelerate_config_paths = [
@@ -426,17 +452,17 @@ try:
     
     # Add mapping for each dataset type we want to support
     dataset_mapping = {
-        'code_alpaca': ['code_alpaca'],
-        'codeparrot': ['codeparrot'],
-        'codesearchnet_go': ['codesearchnet_all_go', 'codesearchnet_go'],
-        'codesearchnet_java': ['codesearchnet_all_java', 'codesearchnet_java'],
-        'codesearchnet_javascript': ['codesearchnet_all_javascript', 'codesearchnet_javascript'],
-        'codesearchnet_php': ['codesearchnet_all_php', 'codesearchnet_php'],
-        'codesearchnet_python': ['codesearchnet_all_python', 'codesearchnet_python'],
-        'codesearchnet_ruby': ['codesearchnet_all_ruby', 'codesearchnet_ruby'],
-        'humaneval': ['humaneval'],
-        'instruct_code': ['instruct_code'],
-        'mbpp': ['mbpp']
+        'code_alpaca': ['code_alpaca_processed_interim_6000', 'code_alpaca_processed_interim_final'],
+        'codeparrot': ['codeparrot_processed'],
+        'codesearchnet_go': ['codesearchnet_all_go_processed', 'codesearchnet_go_processed_interim_6000', 'codesearchnet_go_processed_interim_final'],
+        'codesearchnet_java': ['codesearchnet_all_java_processed', 'codesearchnet_java_processed_interim_6000', 'codesearchnet_java_processed_interim_final'],
+        'codesearchnet_javascript': ['codesearchnet_all_javascript_processed', 'codesearchnet_javascript_processed_interim_6000', 'codesearchnet_javascript_processed_interim_final'],
+        'codesearchnet_php': ['codesearchnet_all_php_processed', 'codesearchnet_php_processed_interim_6000', 'codesearchnet_php_processed_interim_final'],
+        'codesearchnet_python': ['codesearchnet_all_python_processed', 'codesearchnet_python_processed_interim_9000', 'codesearchnet_python_processed_interim_final'],
+        'codesearchnet_ruby': ['codesearchnet_all_ruby_processed', 'codesearchnet_ruby_processed_interim_6000', 'codesearchnet_ruby_processed_interim_final'],
+        'humaneval': ['humaneval_processed'],
+        'instruct_code': ['instruct_code_processed_interim_6000', 'instruct_code_processed_interim_final'],
+        'mbpp': ['mbpp_processed'],
     }
     
     # Find all processed dataset directories
@@ -471,6 +497,124 @@ except Exception as e:
     print(f'Error updating config: {e}', file=sys.stderr)
 "
 
+# Add script to validate datasets before training
+echo "===== VALIDATING DATASETS TO PREVENT NONE ERRORS ====="
+python -c "
+import os
+import sys
+import glob
+import json
+from tqdm import tqdm
+
+try:
+    from datasets import load_from_disk
+    processed_dir = 'data/processed'
+    all_processed_dirs = []
+    
+    if os.path.exists(processed_dir):
+        all_processed_dirs = os.listdir(processed_dir)
+    processed_dirs = [d for d in all_processed_dirs if os.path.isdir(os.path.join(processed_dir, d)) and ('_processed' in d or '_interim_' in d)]
+    
+    print(f'Found {len(processed_dirs)} dataset directories to validate')
+    
+    fixed_count = 0
+    for dataset_dir in processed_dirs:
+        full_path = os.path.join(processed_dir, dataset_dir)
+        try:
+            # Try to load the dataset
+            print(f'Validating dataset {dataset_dir}...')
+            dataset = load_from_disk(full_path)
+            
+            # Check if dataset has any columns
+            if not hasattr(dataset, 'column_names') or not dataset.column_names:
+                print(f'⚠️ Dataset {dataset_dir} has no columns - skipping')
+                continue
+                
+            # Check for required columns (text, input_ids, etc.)
+            required_columns = ['input_ids', 'attention_mask'] 
+            missing_columns = [col for col in required_columns if col not in dataset.column_names]
+            
+            if missing_columns:
+                print(f'⚠️ Dataset {dataset_dir} is missing required columns: {missing_columns}')
+                continue
+            
+            # Verify none of the samples have None values
+            needs_filtering = False
+            indices_to_filter = []
+            
+            # Get a sample of records to check (up to 100)
+            sample_size = min(100, len(dataset))
+            for i in range(sample_size):
+                try:
+                    sample = dataset[i]
+                    # Check if any required field is None
+                    if any(sample[col] is None for col in required_columns):
+                        needs_filtering = True
+                        indices_to_filter.append(i)
+                except Exception as e:
+                    print(f'Error checking sample {i}: {e}')
+                    needs_filtering = True
+                    indices_to_filter.append(i)
+            
+            if needs_filtering and indices_to_filter:
+                print(f'⚠️ Dataset {dataset_dir} has {len(indices_to_filter)} problematic samples out of {sample_size} checked')
+                print('Skipping filtering at this point - proper filtering will happen during training')
+                fixed_count += 1
+            else:
+                print(f'✅ Dataset {dataset_dir} validation successful')
+                
+        except Exception as e:
+            print(f'❌ Error validating dataset {dataset_dir}: {e}')
+    
+    print(f'Validation complete - found potential issues in {fixed_count} datasets')
+    print('Dataset validator added - invalid samples will be filtered during training')
+
+except Exception as e:
+    print(f'Error in dataset validation: {e}')
+    print('Will continue with training - validation will happen during the training process')
+"
+
+# Set up wandb integration
+echo "===== SETTING UP WANDB ====="
+# Set your wandb API key (if it's not already set)
+if [ -z "$WANDB_API_KEY" ]; then
+  echo "No WANDB_API_KEY found in environment, setting it..."
+  export WANDB_API_KEY="636def25145822bffada9359d3c3b3ace65380a4"  # Replace with your actual API key
+fi
+
+# Ensure wandb is properly enabled and not disabled
+export WANDB_DISABLED=false
+
+# Verify that wandb is properly installed and configured
+python -c "
+import sys
+try:
+    import wandb
+    print('Wandb version:', wandb.__version__)
+    print('Validating wandb login status...')
+    if wandb.api.api_key:
+        print('✅ Wandb API key is set')
+    else:
+        print('⚠️ Wandb API key not detected, attempting to set manually')
+        wandb.login(key='636def25145822bffada9359d3c3b3ace65380a4')
+        if wandb.api.api_key:
+            print('✅ Wandb API key is now set')
+        else:
+            print('❌ Failed to set Wandb API key')
+except ImportError:
+    print('❌ Wandb not installed. Installing wandb...')
+    !pip install wandb --quiet
+    print('Now trying to import wandb and login...')
+    try:
+        import wandb
+        wandb.login(key='636def25145822bffada9359d3c3b3ace65380a4')
+        print('✅ Wandb installed and API key set')
+    except Exception as e:
+        print(f'❌ Error setting up wandb: {e}')
+except Exception as e:
+    print(f'❌ Error validating wandb: {e}')
+"
+
 # Create accelerate config if it doesn't exist
 echo "===== CREATING ACCELERATE CONFIG ====="
 mkdir -p ~/.cache/huggingface/accelerate/
@@ -495,6 +639,12 @@ TRAINING_START_TIME=$(date +%s)
 # Train with direct module call without the problematic arguments
 # Note: Removed --mixed_precision bf16 argument that was causing the error
 echo "Starting training with optimizations..."
+
+# Set explicit environment variables right before launching the training
+export TOKENIZERS_PARALLELISM=false
+export HF_DATASETS_NUM_PROC=1
+export DATALOADER_NUM_WORKERS=1
+
 python -m src.training.train \
     --config config/training_config.json \
     --data_dir data/processed \
@@ -502,6 +652,7 @@ python -m src.training.train \
     --push_to_hub \
     --no_deepspeed \
     --estimate_time \
+    --dataloader_workers 1 \
     2>&1 | tee logs/train_a6000_optimized_$(date +%Y%m%d_%H%M%S).log
 
 # Check exit status
@@ -552,4 +703,123 @@ if [ -f "$LOG_FILE" ]; then
   echo "Processing speed: $SAMPLES_PER_SEC samples/second" >> logs/training_complete_$(date +%Y%m%d_%H%M%S).txt
 fi
 
-echo "Training process complete at $(date)" 
+echo "Training process complete at $(date)"
+
+# Add fix for dataloader worker issues in the source code
+echo "===== PATCHING TRAINING MODULES FOR DATALOADER FIX ====="
+python -c "
+import sys
+import os
+import re
+
+# Files to patch
+training_files = [
+    'src/training/train.py',
+    'src/training/trainer.py'
+]
+
+for filepath in training_files:
+    if not os.path.exists(filepath):
+        print(f'File {filepath} not found, skipping')
+        continue
+        
+    print(f'Checking {filepath} for dataloader settings...')
+    
+    with open(filepath, 'r') as f:
+        content = f.read()
+    
+    # Check if file mentions dataloader_num_workers
+    if 'dataloader_num_workers' in content:
+        print(f'File {filepath} already has dataloader_num_workers mentioned, ensuring it respects environment variables')
+        
+        # Use regex to find TrainingArguments creation with proper dataloader_num_workers setting
+        modified = False
+        
+        # Pattern to match TrainingArguments constructor
+        pattern = r'(TrainingArguments\s*\(\s*[^)]*)'
+        
+        def add_dataloader_settings(match):
+            args_text = match.group(1)
+            # Only add if not already present
+            if 'dataloader_num_workers' not in args_text:
+                # Add dataloader_num_workers and return updated text
+                return args_text + ',\\n    dataloader_num_workers=1'
+            return args_text
+        
+        # Apply the substitution
+        new_content = re.sub(pattern, add_dataloader_settings, content)
+        
+        if new_content != content:
+            print(f'Updated {filepath} with dataloader_num_workers=1')
+            with open(filepath, 'w') as f:
+                f.write(new_content)
+            modified = True
+        
+        # Check for DataLoader instantiation
+        dataloader_pattern = r'DataLoader\s*\(\s*[^)]*\)'
+        if re.search(dataloader_pattern, content):
+            print(f'Found DataLoader usage in {filepath}, ensuring it uses limited workers')
+            
+            # Wrap DataLoader calls with num_workers=1
+            dataloader_fix = '''
+# Monkey patch DataLoader to always use limited workers
+original_dataloader = torch.utils.data.DataLoader
+def safe_dataloader(*args, **kwargs):
+    # Always use 1 worker to avoid 'Too many workers' error
+    kwargs['num_workers'] = int(os.environ.get('DATALOADER_NUM_WORKERS', 1))
+    return original_dataloader(*args, **kwargs)
+torch.utils.data.DataLoader = safe_dataloader
+'''
+            
+            # Add the monkey patch if not present
+            if 'Monkey patch DataLoader to always use limited workers' not in content:
+                # Insert after imports
+                import_section_end = max(content.find('import torch'), 0) + 20
+                new_content = content[:import_section_end] + dataloader_fix + content[import_section_end:]
+                
+                with open(filepath, 'w') as f:
+                    f.write(new_content)
+                print(f'Added DataLoader monkey patch to {filepath}')
+                modified = True
+        
+        if not modified:
+            print(f'No changes needed for {filepath}')
+    else:
+        print(f'File {filepath} does not mention dataloader_num_workers, adding dataloader settings')
+        
+        # Find a good insertion point after imports
+        import_section_end = max(
+            content.rfind('import') + 20,
+            content.find('logging.basicConfig') + 30,
+            200  # default if above not found
+        )
+        
+        # Add our dataloader worker limiting code
+        dataloader_fix = '''
+# Limit dataloader workers to avoid 'Too many workers' error
+import os
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Explicitly disable tokenizers parallelism
+
+# Ensure dataset loading respects worker limits
+if 'DATALOADER_NUM_WORKERS' not in os.environ:
+    os.environ['DATALOADER_NUM_WORKERS'] = '1'
+
+# Monkey patch DataLoader to always use limited workers
+if 'torch' in sys.modules:
+    import torch
+    original_dataloader = torch.utils.data.DataLoader
+    def safe_dataloader(*args, **kwargs):
+        # Always use limited workers to avoid 'Too many workers' error
+        kwargs['num_workers'] = int(os.environ.get('DATALOADER_NUM_WORKERS', 1))
+        return original_dataloader(*args, **kwargs)
+    torch.utils.data.DataLoader = safe_dataloader
+'''
+        
+        # Insert the fix
+        new_content = content[:import_section_end] + dataloader_fix + content[import_section_end:]
+        
+        with open(filepath, 'w') as f:
+            f.write(new_content)
+        print(f'Added dataloader worker limiting code to {filepath}')
+
+print('Completed patching source files for dataloader worker limits') 

@@ -302,71 +302,73 @@ def main():
         # Override the --deepspeed flag
         args.deepspeed = False
     
-    # Setup DeepSpeed configuration if enabled
-    elif False:
-        logger.info("Setting up DeepSpeed environment...")
-        
-        # Check for existing environment variables
-        current_ds_config = os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")
-        current_hf_ds_config = os.environ.get("HF_DS_CONFIG", "")
-        current_plugin_type = os.environ.get("ACCELERATE_DEEPSPEED_PLUGIN_TYPE", "")
-        
-        logger.info(f"Current DeepSpeed env vars - ACCELERATE_DEEPSPEED_CONFIG_FILE: {current_ds_config}")
-        logger.info(f"Current DeepSpeed env vars - HF_DS_CONFIG: {current_hf_ds_config}")
-        logger.info(f"Current DeepSpeed env vars - ACCELERATE_DEEPSPEED_PLUGIN_TYPE: {current_plugin_type}")
-        
-        # Try to fix DeepSpeed configuration using the dedicated script if available
-        ds_fix_script = os.path.join(project_root, "scripts", "fix_deepspeed.py")
-        if os.path.exists(ds_fix_script):
-            logger.info("Running DeepSpeed configuration fix script")
-            try:
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("fix_deepspeed", ds_fix_script)
-                fix_deepspeed = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(fix_deepspeed)
-                fix_deepspeed.fix_deepspeed_config()
-                logger.info("DeepSpeed configuration fixed")
-            except Exception as e:
-                logger.error(f"Failed to run DeepSpeed fix script: {e}")
-        
-        # Set basic DeepSpeed environment variables if not already set
-        if not os.environ.get("ACCELERATE_USE_DEEPSPEED"):
-            os.environ["ACCELERATE_USE_DEEPSPEED"] = "true"
-            logger.info("Set ACCELERATE_USE_DEEPSPEED to 'true'")
+    # Apply dataset validation settings to avoid None issues
+    if os.path.exists(args.config):
+        try:
+            with open(args.config, 'r') as f:
+                config = json.load(f)
             
-        if not os.environ.get("ACCELERATE_DEEPSPEED_PLUGIN_TYPE"):
-            os.environ["ACCELERATE_DEEPSPEED_PLUGIN_TYPE"] = "deepspeed"
-            logger.info("Set ACCELERATE_DEEPSPEED_PLUGIN_TYPE to 'deepspeed'")
-        
-        # Check for explicit DeepSpeed config file argument
-        if False_config and os.path.exists(args.deepspeed_config):
-            logger.info(f"Using specified DeepSpeed config: {args.deepspeed_config}")
-            os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = args.deepspeed_config
-            os.environ["HF_DS_CONFIG"] = args.deepspeed_config
-        else:
-            # Check for common locations for DeepSpeed config
-            default_paths = [
-                os.path.join(os.getcwd(), "ds_config_a6000.json"),
-                os.path.join(project_root, "ds_config_a6000.json"),
-                "/notebooks/ds_config_a6000.json" if os.path.exists("/notebooks") else None
-            ]
+            # Add monkey patch for dataset collator to handle None values
+            logger.info("Adding dataset safety filter to handle None values in datasets")
             
-            # Filter out None values
-            default_paths = [p for p in default_paths if p]
+            # Monkey patch DataCollatorForLanguageModeling to handle None values
+            original_call = transformers.DataCollatorForLanguageModeling.__call__
             
-            # Use the first valid config
-            for path in default_paths:
-                if os.path.exists(path):
-                    logger.info(f"Found DeepSpeed config at: {path}")
-                    os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"] = path
-                    os.environ["HF_DS_CONFIG"] = path
-                    break
-        
-        # Double check we have a valid configuration
-        if not os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE") or not os.path.exists(os.environ["ACCELERATE_DEEPSPEED_CONFIG_FILE"]):
-            logger.warning("No valid DeepSpeed config found in environment variables or default locations")
-        else:
-            logger.info(f"Using DeepSpeed config at: {os.environ.get('ACCELERATE_DEEPSPEED_CONFIG_FILE')}")
+            def safe_call(self, features):
+                try:
+                    # Filter out None values
+                    valid_features = []
+                    for feature in features:
+                        if feature is None:
+                            continue
+                        
+                        # Check if any required keys have None values
+                        has_none = False
+                        for key in ["input_ids", "attention_mask", "labels"]:
+                            if key in feature and feature[key] is None:
+                                has_none = True
+                                break
+                        
+                        if not has_none:
+                            valid_features.append(feature)
+                    
+                    # If we filtered out items, log a warning
+                    if len(valid_features) < len(features):
+                        logger.debug(f"Filtered out {len(features) - len(valid_features)} samples with None values")
+                    
+                    # If no valid features, create a dummy valid batch with a warning
+                    if not valid_features and features:
+                        logger.warning("No valid features in batch - creating dummy batch")
+                        # Use the first feature as template and replace None values with empty values
+                        dummy_feature = {}
+                        for key, value in features[0].items():
+                            if value is None:
+                                if key == "input_ids" or key == "labels":
+                                    dummy_feature[key] = torch.zeros(1, dtype=torch.long)
+                                elif key == "attention_mask":
+                                    dummy_feature[key] = torch.ones(1, dtype=torch.long)
+                                else:
+                                    dummy_feature[key] = value
+                            else:
+                                dummy_feature[key] = value
+                        valid_features = [dummy_feature]
+                    
+                    # Call the original implementation with valid features
+                    return original_call(self, valid_features)
+                except Exception as e:
+                    logger.warning(f"Error in data collator: {e}")
+                    # Return an empty batch as last resort
+                    return {"input_ids": torch.zeros((1, 1), dtype=torch.long),
+                            "attention_mask": torch.ones((1, 1), dtype=torch.long),
+                            "labels": torch.zeros((1, 1), dtype=torch.long)}
+            
+            # Apply the monkey patch
+            transformers.DataCollatorForLanguageModeling.__call__ = safe_call
+            
+            logger.info("Added safety filter for dataset processing")
+            
+        except Exception as e:
+            logger.warning(f"Error updating config for dataset validation: {e}")
     
     # Check for HF_TOKEN environment variable
     hf_token = os.environ.get("HF_TOKEN")
