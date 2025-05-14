@@ -62,6 +62,29 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Explicitly unset all DeepSpeed-related variables to ensure clean environment
+echo "===== DISABLING DEEPSPEED ====="
+unset ACCELERATE_USE_DEEPSPEED
+unset ACCELERATE_DEEPSPEED_CONFIG_FILE
+unset ACCELERATE_DEEPSPEED_PLUGIN_TYPE
+unset HF_DS_CONFIG
+unset DEEPSPEED_CONFIG_FILE
+unset DS_ACCELERATOR
+unset DS_OFFLOAD_PARAM
+unset DS_OFFLOAD_OPTIMIZER
+unset TRANSFORMERS_ZeRO_2_FORCE_INVALIDATE_CHECKPOINT
+unset DEEPSPEED_OVERRIDE_DISABLE
+
+# Remove any existing DeepSpeed config files to prevent conflicts
+if [ -f "ds_config.json" ]; then
+    echo "Removing existing DeepSpeed config file: ds_config.json"
+    rm ds_config.json
+fi
+if [ -f "ds_config_a6000.json" ]; then
+    echo "Removing existing DeepSpeed config file: ds_config_a6000.json"
+    rm ds_config_a6000.json
+fi
+
 # Function to calculate expected training time for seq2seq models
 calculate_training_time_seq2seq() {
     # Input parameters
@@ -280,12 +303,20 @@ echo "===== UPDATING CONFIG FOR OPTIMIZED TRAINING ====="
 python -c "
 import json
 import sys
+import os
 try:
     with open('config/training_config_text.json', 'r') as f:
         config = json.load(f)
     
     if 'training' not in config:
         config['training'] = {}
+    
+    # Thoroughly remove all DeepSpeed references
+    deepspeed_keys = ['use_deepspeed', 'deepspeed_config', 'deepspeed']
+    for key in deepspeed_keys:
+        if key in config['training']:
+            del config['training'][key]
+            print(f'Removed {key} from config')
     
     # Set model architecture type - this is used by train_text_flan.py
     # Use proper Python booleans (True/False, not true/false)
@@ -306,6 +337,11 @@ try:
         # These settings improve T5/UL2 training
         config['training']['gradient_checkpointing'] = True
         config['training']['use_cache'] = False
+        
+        # Make sure torch_dtype is set correctly if it exists
+        if 'torch_dtype' in config['training']:
+            config['training']['torch_dtype'] = 'bfloat16'
+            print('Set torch_dtype to bfloat16')
     else:
         print('Configuring for causal language model')
         # For causal LMs, we can use Unsloth
@@ -313,6 +349,11 @@ try:
         config['training']['bf16'] = True
         config['training']['fp16'] = False
         config['training']['task_type'] = 'CAUSAL_LM'
+        
+        # Make sure torch_dtype is set correctly if it exists
+        if 'torch_dtype' in config['training']:
+            config['training']['torch_dtype'] = 'bfloat16'
+            print('Set torch_dtype to bfloat16')
     
     # Add memory optimizations
     config['training']['gradient_checkpointing'] = True
@@ -329,6 +370,39 @@ try:
     if use_drive:
         config['training']['drive_base_dir'] = '$DRIVE_BASE_DIR'
         print(f'Configured Drive integration with base dir: {config.get(\"training\", {}).get(\"drive_base_dir\")}')
+    
+    # Also check for and disable deepspeed in accelerate config if it exists
+    accelerate_config_paths = [
+        './.accelerate/default_config.yaml',
+        os.path.expanduser('~/.cache/huggingface/accelerate/default_config.yaml'),
+        os.path.expanduser('~/.config/huggingface/accelerate/default_config.yaml')
+    ]
+    
+    for config_path in accelerate_config_paths:
+        if os.path.exists(config_path):
+            try:
+                import yaml
+                with open(config_path, 'r') as f:
+                    accel_config = yaml.safe_load(f)
+                
+                # Disable DeepSpeed in accelerate config
+                if 'deepspeed_plugin' in accel_config:
+                    del accel_config['deepspeed_plugin']
+                    print(f'Removed deepspeed_plugin from {config_path}')
+                
+                if 'deepspeed' in accel_config:
+                    del accel_config['deepspeed']
+                    print(f'Removed deepspeed from {config_path}')
+                
+                # Set mixed precision in accelerate config
+                accel_config['mixed_precision'] = 'bf16'
+                
+                with open(config_path, 'w') as f:
+                    yaml.safe_dump(accel_config, f)
+                    
+                print(f'Updated accelerate config at {config_path}')
+            except Exception as e:
+                print(f'Error updating accelerate config at {config_path}: {e}', file=sys.stderr)
     
     # Update training configuration settings
     with open('config/training_config_text.json', 'w') as f:
@@ -452,13 +526,15 @@ fi
 
 TRAINING_START_TIME=$(date +%s)
 
-# Start training
+# Start training with explicit mixed precision setting
 python train_text_flan.py \
   --config config/training_config_text.json \
   --data_dir data/processed \
   --push_to_hub \
   $DRIVE_OPTS \
   --debug \
+  --mixed_precision bf16 \
+  --no_deepspeed \
   2>&1 | tee logs/train_flan_ul2_a6000_$(date +%Y%m%d_%H%M%S).log
 
 # Calculate actual training time
