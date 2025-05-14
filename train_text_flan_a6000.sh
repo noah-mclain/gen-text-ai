@@ -298,6 +298,80 @@ else:
     print('false')
 ")
 
+# Create a model testing script to verify FLAN-UL2 can be loaded properly
+echo "===== CHECKING MODEL LOADING ====="
+TEMP_TEST_SCRIPT="temp_model_test.py"
+cat > $TEMP_TEST_SCRIPT << 'EOF'
+import os
+import torch
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, T5ForConditionalGeneration
+
+def test_model(model_name):
+    print(f"Testing model loading for: {model_name}")
+    try:
+        # Try loading with AutoModelForSeq2SeqLM
+        print("Loading with AutoModelForSeq2SeqLM...")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        print(f"✅ Successfully loaded model with AutoModelForSeq2SeqLM: {type(model).__name__}")
+        
+        # Check for special handling needed with this model
+        if "t5" in model_name.lower() or "flan" in model_name.lower():
+            print("Checking if model is T5 type...")
+            if isinstance(model, T5ForConditionalGeneration):
+                print("✅ Model is T5ForConditionalGeneration - correct task type is 'text2text-generation'")
+            else:
+                print("⚠️ Model is not T5ForConditionalGeneration, but should be loaded as text2text-generation")
+        
+        return "AutoModelForSeq2SeqLM"
+    except Exception as e:
+        print(f"Error with AutoModelForSeq2SeqLM: {str(e)}")
+        try:
+            # Try direct class instantiation as fallback
+            from transformers import T5ForConditionalGeneration
+            print("Loading as T5ForConditionalGeneration directly...")
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            model = T5ForConditionalGeneration.from_pretrained(model_name)
+            print(f"✅ Successfully loaded with direct T5ForConditionalGeneration: {type(model).__name__}")
+            return "T5ForConditionalGeneration"
+        except Exception as e2:
+            print(f"Error with T5ForConditionalGeneration: {str(e2)}")
+            return None
+
+if __name__ == "__main__":
+    # Try to load the model with different approaches
+    import sys
+    if len(sys.argv) > 1:
+        model_name = sys.argv[1]
+    else:
+        model_name = "google/flan-ul2"
+    
+    result = test_model(model_name)
+    print(f"Recommended loading method: {result}")
+    
+    # If successful, write result to file for the script to use
+    if result:
+        with open("model_loading_result.txt", "w") as f:
+            f.write(result)
+        print("Test successful, results saved")
+    else:
+        print("Model loading test failed")
+        sys.exit(1)
+EOF
+
+# Run the model test script to determine the correct way to load the model
+python $TEMP_TEST_SCRIPT $MODEL_NAME
+if [ $? -ne 0 ]; then
+  echo "⚠️ Model loading test failed. Will proceed with normal training anyway."
+  MODEL_LOADING_METHOD="AutoModelForSeq2SeqLM"
+else
+  MODEL_LOADING_METHOD=$(cat model_loading_result.txt)
+  echo "✅ Model loading test successful. Will use method: $MODEL_LOADING_METHOD"
+fi
+
+# Clean up temporary files
+rm -f $TEMP_TEST_SCRIPT model_loading_result.txt
+
 # Update config to use optimized training settings
 echo "===== UPDATING CONFIG FOR OPTIMIZED TRAINING ====="
 python -c "
@@ -331,8 +405,17 @@ try:
         config['training']['fp16'] = False          # Don't use fp16 with bf16
         config['training']['optim'] = 'adamw_torch' # Best optimizer for T5
         
-        # Ensure task_type is correct for seq2seq
-        config['training']['task_type'] = 'SEQ_TO_SEQ_LM'
+        # FIX FOR MODEL LOADING ERROR: Use text2text-generation instead of SEQ_TO_SEQ_LM
+        # T5/FLAN models use text2text-generation as task_type
+        # Explicitly set the proper task type for T5-based models
+        config['training']['task_type'] = 'text2text-generation'
+        
+        # Add model_class configuration if not present
+        config['training']['model_class'] = '$MODEL_LOADING_METHOD'
+        print(f'Set model_class to {config[\"training\"][\"model_class\"]}')
+        
+        # Also add model_type configuration
+        config['training']['model_type'] = 't5'
         
         # These settings improve T5/UL2 training
         config['training']['gradient_checkpointing'] = True
@@ -526,7 +609,10 @@ fi
 
 TRAINING_START_TIME=$(date +%s)
 
-# Start training with explicit mixed precision setting
+# Create a simple environment variable for direct task_type passing
+export HF_TASK_TYPE="text2text-generation"
+
+# Start training with explicit mixed precision setting and text2text task type
 python train_text_flan.py \
   --config config/training_config_text.json \
   --data_dir data/processed \
@@ -535,7 +621,23 @@ python train_text_flan.py \
   --debug \
   --mixed_precision bf16 \
   --no_deepspeed \
+  --model_task text2text-generation \
   2>&1 | tee logs/train_flan_ul2_a6000_$(date +%Y%m%d_%H%M%S).log
+
+# If the first attempt failed, try with a different task type
+if [ $? -ne 0 ]; then
+  echo "⚠️ First training attempt failed. Trying with alternative task type..."
+  python train_text_flan.py \
+    --config config/training_config_text.json \
+    --data_dir data/processed \
+    --push_to_hub \
+    $DRIVE_OPTS \
+    --debug \
+    --mixed_precision bf16 \
+    --no_deepspeed \
+    --model_task seq2seq_lm \
+    2>&1 | tee logs/train_flan_ul2_a6000_retry_$(date +%Y%m%d_%H%M%S).log
+fi
 
 # Calculate actual training time
 TRAINING_END_TIME=$(date +%s)
