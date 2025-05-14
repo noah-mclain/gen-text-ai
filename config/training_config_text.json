@@ -1,7 +1,7 @@
 {
   "model": {
     "base_model": "google/flan-ul2",
-    "use_unsloth": true,
+    "use_unsloth": false,
     "use_4bit": true,
     "use_nested_quant": true,
     "bnb_4bit_compute_dtype": "float16",
@@ -13,16 +13,8 @@
     "lora_dropout": 0.05,
     "r": 32,
     "bias": "none",
-    "task_type": "CAUSAL_LM",
-    "target_modules": [
-      "q_proj",
-      "k_proj",
-      "v_proj",
-      "o_proj",
-      "gate_proj",
-      "up_proj",
-      "down_proj"
-    ]
+    "task_type": "SEQ_TO_SEQ_LM",
+    "target_modules": ["q", "k", "v", "o", "wi", "wo"]
   },
   "training": {
     "output_dir": "models/flan-ul2-finetune",

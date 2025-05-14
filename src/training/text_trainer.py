@@ -26,7 +26,7 @@ import transformers
 from transformers import (
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling,
+    DataCollatorForSeq2Seq,
     AutoTokenizer,
     AutoModelForSeq2SeqLM,
     BitsAndBytesConfig,
@@ -309,44 +309,11 @@ class FlanUL2TextTrainer:
         
         # Add robust error handling around model loading
         try:
-            # Use Unsloth for faster training if available
-            if UNSLOTH_AVAILABLE and self.model_config.get("use_unsloth", True):
-                logger.info("Using Unsloth for optimized training")
-                try:
-                    model, tokenizer = FastLanguageModel.from_pretrained(
-                        model_name=self.model_config["base_model"],
-                        max_seq_length=self.dataset_config.get("max_length", 1024),
-                        dtype=getattr(torch, self.model_config.get("bnb_4bit_compute_dtype", "float16")),
-                        load_in_4bit=self.model_config.get("use_4bit", True),
-                        token=os.environ.get("HF_TOKEN"),
-                        trust_remote_code=True
-                    )
-                    
-                    # Keep tokenizer from previous initialization to ensure consistency
-                    self.tokenizer.padding_side = "right"
-                    
-                    # Apply LoRA using Unsloth's method
-                    model = FastLanguageModel.get_peft_model(
-                        model,
-                        r=self.peft_config.get("r", 32),
-                        lora_alpha=self.peft_config.get("lora_alpha", 16),
-                        lora_dropout=self.peft_config.get("lora_dropout", 0.05),
-                        target_modules=self.peft_config.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
-                        bias=self.peft_config.get("bias", "none"),
-                        use_gradient_checkpointing=self.model_config.get("use_gradient_checkpointing", True),
-                        random_state=self.training_config.get("seed", 42),
-                        use_rslora=False,  # Regular LoRA
-                        loftq_config=None  # No LoFTQ
-                    )
-                    logger.info("Successfully loaded and configured model with Unsloth")
-                    return model
-                except Exception as e:
-                    logger.warning(f"Failed to load model with Unsloth: {str(e)}. Falling back to standard loading.")
-                    # Will continue to standard loading below
+            # Unsloth doesn't support T5/FLAN model which are encoder-decoder
+            logger.info("Using standard HuggingFace model loading (Unsloth doesn't support T5/FLAN models)")
             
             # Standard HuggingFace loading
-            logger.info("Using standard HuggingFace model loading")
-            model = AutoModelForCausalLM.from_pretrained(
+            model = AutoModelForSeq2SeqLM.from_pretrained(
                 self.model_config["base_model"],
                 quantization_config=quantization_config,
                 device_map="auto",
@@ -362,10 +329,10 @@ class FlanUL2TextTrainer:
             lora_config = LoraConfig(
                 r=self.peft_config.get("r", 32),
                 lora_alpha=self.peft_config.get("lora_alpha", 16),
-                target_modules=self.peft_config.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
+                target_modules=self.peft_config.get("target_modules", ["q", "k", "v", "o", "wi", "wo"]),
                 lora_dropout=self.peft_config.get("lora_dropout", 0.05),
                 bias=self.peft_config.get("bias", "none"),
-                task_type=TaskType.CAUSAL_LM
+                task_type=TaskType.SEQ_TO_SEQ_LM
             )
             
             # Apply LoRA
@@ -399,27 +366,64 @@ class FlanUL2TextTrainer:
     
     def _tokenize_datasets(self, datasets: Dict[str, Dataset]) -> Dict[str, Dataset]:
         """Tokenize datasets for training."""
-        logger.info("Tokenizing datasets")
+        logger.info("Tokenizing datasets for sequence-to-sequence training")
         
         max_length = self.dataset_config.get("max_length", 1024)
         
         def tokenize_function(examples):
-            # Use the text field which should contain the combined instruction and response
-            texts = examples["text"]
+            # Extract instructions and responses if available
+            instructions = examples.get("instruction", [None] * len(examples["text"]))
+            responses = examples.get("response", [None] * len(examples["text"]))
             
-            # Tokenize the texts
-            tokenized = self.tokenizer(
-                texts, 
-                truncation=True,
-                max_length=max_length,
+            # If instruction/response format is available, use it
+            if instructions[0] is not None and responses[0] is not None:
+                inputs = instructions
+                targets = responses
+            else:
+                # Otherwise, split the text around a separator or use the full text as input
+                # For T5/FLAN models, we need an input and a target
+                texts = examples["text"]
+                # Try to split by common separators like "\n\n", "###", etc.
+                inputs = []
+                targets = []
+                
+                for text in texts:
+                    if "\n\n" in text:
+                        parts = text.split("\n\n", 1)
+                        inputs.append(parts[0])
+                        targets.append(parts[1])
+                    elif "###" in text:
+                        parts = text.split("###", 1)
+                        inputs.append(parts[0])
+                        targets.append(parts[1])
+                    else:
+                        # No clear separator, use the first half as input
+                        mid = len(text) // 2
+                        inputs.append(text[:mid])
+                        targets.append(text[mid:])
+            
+            # Tokenize inputs and targets
+            model_inputs = self.tokenizer(
+                inputs,
+                max_length=max_length // 2,  # Allow space for target
                 padding="max_length",
+                truncation=True,
                 return_tensors="pt"
             )
             
-            # Create labels identical to input_ids for causal language modeling
-            tokenized["labels"] = tokenized["input_ids"].clone()
+            # Tokenize targets
+            labels = self.tokenizer(
+                targets,
+                max_length=max_length // 2,
+                padding="max_length", 
+                truncation=True,
+                return_tensors="pt"
+            )
             
-            return tokenized
+            # Set the labels in the model inputs
+            model_inputs["labels"] = labels["input_ids"]
+            
+            return model_inputs
         
         # Tokenize each split
         tokenized_datasets = {}
@@ -645,9 +649,9 @@ class FlanUL2TextTrainer:
             datasets = self._load_and_prepare_datasets(data_dir)
             
             # Set up data collator for language modeling
-            data_collator = DataCollatorForLanguageModeling(
+            data_collator = DataCollatorForSeq2Seq(
                 tokenizer=self.tokenizer,
-                mlm=False
+                model=model
             )
             
             # Tokenize datasets
