@@ -442,6 +442,10 @@ class DataPreprocessor:
                     if not doc or not code:
                         continue
                     
+                    # Skip if language doesn't match requested language (when specified)
+                    if language and lang.lower() != language.lower():
+                        continue
+                    
                     # Create a prompt with language information if available
                     if lang:
                         prompt = f"'''{doc}'''\n# Write a {lang} function"
@@ -516,16 +520,33 @@ class DataPreprocessor:
                 docstrings = docstrings[:min_len]
                 code_snippets = code_snippets[:min_len]
                 
-                # Create language-specific prompts if language information is available
-                if len(languages) >= min_len:
+                # Additional filtering if a specific language is requested
+                if language and len(languages) >= min_len:
+                    # Create masks for examples that match the requested language
+                    valid_indices = [i for i, lang in enumerate(languages[:min_len]) 
+                                   if lang.lower() == language.lower()]
+                    
+                    # Filter based on language
+                    if valid_indices:
+                        docstrings = [docstrings[i] for i in valid_indices]
+                        code_snippets = [code_snippets[i] for i in valid_indices]
+                        languages = [languages[i] for i in valid_indices]
+                    else:
+                        # No matching languages in this batch
+                        return {"processed_text": [], "length": [], "duplicates_removed": 0, "language": []}
+                else:
+                    # No specific language requested, just truncate languages list
                     languages = languages[:min_len]
+                
+                # Create language-specific prompts if language information is available
+                if len(languages) >= len(docstrings):
                     prompts = [f"'''{doc}'''\n# Write a {lang} function" 
                               for doc, lang in zip(docstrings, languages)]
                 else:
                     # Default to generic prompt if no language info
                     prompts = [f"'''{doc}'''\n# Write a function" for doc in docstrings]
                     # Fill in languages with empty values if needed
-                    languages = languages + [""] * (min_len - len(languages))
+                    languages = languages + [""] * (len(docstrings) - len(languages))
                 
                 # Process the examples
                 result = self.common_preprocessing(
@@ -619,6 +640,10 @@ class DataPreprocessor:
                             
                             # Skip if missing required fields
                             if not doc or not code:
+                                continue
+                            
+                            # Skip if language doesn't match the requested language
+                            if language and lang.lower() != language.lower():
                                 continue
                             
                             # Create a prompt with language information if available
