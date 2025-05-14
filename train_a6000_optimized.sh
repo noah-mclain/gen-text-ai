@@ -156,6 +156,117 @@ else
     SKIP_DRIVE=""
 fi
 
+# If running on Paperspace, make sure the notebooks directory exists and create dataset directory
+if [ -d "/notebooks" ]; then
+    echo "===== DETECTED PAPERSPACE ENVIRONMENT ====="
+    echo "Creating datasets directory in /notebooks/data/processed"
+    mkdir -p /notebooks/data/processed
+    
+    # If Google Drive is authenticated, sync all datasets from Drive to notebooks directory
+    if [ -z "$SKIP_DRIVE" ]; then
+        echo "===== SYNCING DATASETS FROM GOOGLE DRIVE TO PAPERSPACE ====="
+        # Run a Python script to sync all datasets from Drive to notebooks directory
+        python -c "
+import os
+import sys
+from pathlib import Path
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Add project root to path for imports
+project_root = Path(__file__).parent
+sys.path.append(str(project_root))
+
+# Import Google Drive manager
+try:
+    from src.utils.google_drive_manager import (
+        drive_manager,
+        sync_from_drive,
+        test_authentication
+    )
+    
+    # Test authentication
+    if not drive_manager.authenticated:
+        if not test_authentication():
+            logger.error('Google Drive authentication failed')
+            sys.exit(1)
+    
+    # Get all available datasets
+    logger.info('Checking for datasets on Google Drive')
+    drive_folder = 'preprocessed'
+    
+    # Find the drive folder
+    folder_id = drive_manager.folder_ids.get(drive_folder)
+    if not folder_id:
+        folder_id = drive_manager.find_file_id(drive_folder)
+        if not folder_id:
+            logger.error(f'Drive folder \"{drive_folder}\" not found')
+            sys.exit(1)
+    
+    # List all folders in the preprocessed directory
+    try:
+        results = drive_manager.service.files().list(
+            q=f\"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder'\",
+            fields='files(id, name)'
+        ).execute()
+        
+        dataset_folders = results.get('files', [])
+        
+        if not dataset_folders:
+            logger.warning('No dataset folders found on Google Drive')
+            sys.exit(0)
+        
+        logger.info(f'Found {len(dataset_folders)} dataset folders on Google Drive')
+        
+        # Download each dataset folder to the notebooks directory
+        notebooks_dir = '/notebooks/data/processed'
+        os.makedirs(notebooks_dir, exist_ok=True)
+        
+        # Check what's already in the local notebooks directory
+        existing_datasets = set(os.listdir(notebooks_dir)) if os.path.exists(notebooks_dir) else set()
+        
+        # First download the dataset_info.json files to check sizes
+        for folder in dataset_folders:
+            folder_name = folder['name']
+            folder_id = folder['id']
+            
+            # Skip if already exists (to avoid redownloading large datasets)
+            local_folder_path = os.path.join(notebooks_dir, folder_name)
+            if os.path.exists(local_folder_path):
+                logger.info(f'Dataset {folder_name} already exists in {notebooks_dir}, skipping download')
+                continue
+            
+            logger.info(f'Downloading dataset {folder_name} from Google Drive to {notebooks_dir}')
+            
+            # Download the folder
+            if sync_from_drive(f'{drive_folder}/{folder_name}', local_folder_path):
+                logger.info(f'Successfully downloaded dataset {folder_name}')
+            else:
+                logger.error(f'Failed to download dataset {folder_name}')
+        
+        logger.info('Completed syncing datasets from Google Drive to notebooks directory')
+        
+    except Exception as e:
+        logger.error(f'Error listing dataset folders: {e}')
+        sys.exit(1)
+        
+except ImportError as e:
+    logger.error(f'Failed to import Drive manager: {e}')
+    sys.exit(1)
+        "
+        
+        # Check if the sync was successful
+        if [ $? -ne 0 ]; then
+            echo "⚠️ Failed to sync datasets from Google Drive. Will use local datasets if available."
+        else
+            echo "✅ Successfully synced datasets from Google Drive to /notebooks/data/processed"
+            echo "Using datasets from /notebooks/data/processed for training"
+        fi
+    fi
+fi
+
 # Clean any cached files for better memory management
 echo "Cleaning cache directories..."
 rm -rf ~/.cache/huggingface/datasets/downloads/completed.lock
@@ -447,47 +558,67 @@ try:
     import glob
     import os
     
-    processed_dir = 'data/processed'
-    dataset_paths = {}
+    # Function to check both local and notebooks directories
+    def find_dataset_paths(search_prefixes, local_only=False):
+        dataset_paths = {}
+        
+        # Check both potential dataset directories
+        data_dirs = ['data/processed']
+        if not local_only and os.path.exists('/notebooks/data/processed'):
+            data_dirs.append('/notebooks/data/processed')
+        
+        for data_dir in data_dirs:
+            if not os.path.exists(data_dir):
+                continue
+                
+            # Get all directories in this data directory
+            all_dirs = [d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))]
+            
+            # Check for each prefix
+            for prefix in search_prefixes:
+                matches = [d for d in all_dirs if d.startswith(prefix)]
+                if matches:
+                    # Sort to prioritize final over interim when multiple exist
+                    matches.sort(key=lambda x: 0 if 'final' in x else 1)
+                    dataset_paths[data_dir] = os.path.join(data_dir, matches[0])
+                    print(f'Found dataset in {data_dir} with prefix {prefix}')
+                    # Return once found in any directory
+                    return dataset_paths[data_dir]
+        
+        # If nothing found, return None
+        return None
     
-    # Add mapping for each dataset type we want to support
+    # Define dataset mapping structure
     dataset_mapping = {
-        'code_alpaca': ['code_alpaca_processed_interim_6000', 'code_alpaca_processed_interim_final'],
+        'code_alpaca': ['code_alpaca_processed_interim_6000', 'code_alpaca_processed_interim_final', 'code_alpaca_processed'],
         'codeparrot': ['codeparrot_processed'],
-        'codesearchnet_go': ['codesearchnet_all_go_processed', 'codesearchnet_go_processed_interim_6000', 'codesearchnet_go_processed_interim_final'],
-        'codesearchnet_java': ['codesearchnet_all_java_processed', 'codesearchnet_java_processed_interim_6000', 'codesearchnet_java_processed_interim_final'],
-        'codesearchnet_javascript': ['codesearchnet_all_javascript_processed', 'codesearchnet_javascript_processed_interim_6000', 'codesearchnet_javascript_processed_interim_final'],
-        'codesearchnet_php': ['codesearchnet_all_php_processed', 'codesearchnet_php_processed_interim_6000', 'codesearchnet_php_processed_interim_final'],
-        'codesearchnet_python': ['codesearchnet_all_python_processed', 'codesearchnet_python_processed_interim_9000', 'codesearchnet_python_processed_interim_final'],
-        'codesearchnet_ruby': ['codesearchnet_all_ruby_processed', 'codesearchnet_ruby_processed_interim_6000', 'codesearchnet_ruby_processed_interim_final'],
+        'codesearchnet_go': ['codesearchnet_all_go_processed', 'codesearchnet_go_processed_interim_6000', 'codesearchnet_go_processed_interim_final', 'codesearchnet_go_processed'],
+        'codesearchnet_java': ['codesearchnet_all_java_processed', 'codesearchnet_java_processed_interim_6000', 'codesearchnet_java_processed_interim_final', 'codesearchnet_java_processed'],
+        'codesearchnet_javascript': ['codesearchnet_all_javascript_processed', 'codesearchnet_javascript_processed_interim_6000', 'codesearchnet_javascript_processed_interim_final', 'codesearchnet_javascript_processed'],
+        'codesearchnet_php': ['codesearchnet_all_php_processed', 'codesearchnet_php_processed_interim_6000', 'codesearchnet_php_processed_interim_final', 'codesearchnet_php_processed'],
+        'codesearchnet_python': ['codesearchnet_all_python_processed', 'codesearchnet_python_processed_interim_9000', 'codesearchnet_python_processed_interim_final', 'codesearchnet_python_processed'],
+        'codesearchnet_ruby': ['codesearchnet_all_ruby_processed', 'codesearchnet_ruby_processed_interim_6000', 'codesearchnet_ruby_processed_interim_final', 'codesearchnet_ruby_processed'],
+        'codesearchnet_all': ['codesearchnet_all_processed'],
         'humaneval': ['humaneval_processed'],
-        'instruct_code': ['instruct_code_processed_interim_6000', 'instruct_code_processed_interim_final'],
+        'instruct_code': ['instruct_code_processed_interim_6000', 'instruct_code_processed_interim_final', 'instruct_code_processed'],
         'mbpp': ['mbpp_processed'],
     }
     
-    # Find all processed dataset directories
-    all_processed_dirs = []
-    if os.path.exists(processed_dir):
-        all_processed_dirs = os.listdir(processed_dir)
-    processed_dirs = [d for d in all_processed_dirs if os.path.isdir(os.path.join(processed_dir, d)) and ('_processed' in d or '_interim_' in d)]
+    # Create a new dataset paths dictionary
+    new_dataset_paths = {}
     
-    # For each config dataset name, find matching processed directory
+    # Look for each dataset
     for config_name, search_prefixes in dataset_mapping.items():
-        if not isinstance(search_prefixes, list):
-            search_prefixes = [search_prefixes]
-            
-        # Look for matching directories
-        for prefix in search_prefixes:
-            matches = [d for d in processed_dirs if d.startswith(prefix)]
-            if matches:
-                # Sort to prioritize final over interim when multiple exist
-                matches.sort(key=lambda x: 0 if 'final' in x else 1)
-                dataset_paths[config_name] = os.path.join(processed_dir, matches[0])
-                print(f'Mapped dataset {config_name} to {matches[0]}')
-                break
+        path = find_dataset_paths(search_prefixes)
+        if path:
+            new_dataset_paths[config_name] = path
+            print(f'Mapped dataset {config_name} to {path}')
     
-    # Update the config
-    config['dataset_paths'] = dataset_paths
+    # Update the config with the new paths
+    config['dataset_paths'] = new_dataset_paths
+    
+    # Add a comment about notebook environment detection for dataset loading
+    config['use_notebook_paths'] = os.path.exists('/notebooks')
     
     with open('config/training_config.json', 'w') as f:
         json.dump(config, f, indent=2)
@@ -651,10 +782,19 @@ export TOKENIZERS_PARALLELISM=false
 export HF_DATASETS_NUM_PROC=1
 export DATALOADER_NUM_WORKERS=1
 
+# Determine which data directory to use based on environment
+if [ -d "/notebooks" ] && [ -d "/notebooks/data/processed" ]; then
+    echo "Using Paperspace /notebooks/data/processed directory for datasets"
+    DATA_DIR="/notebooks/data/processed"
+else
+    echo "Using local data/processed directory for datasets"
+    DATA_DIR="data/processed"
+fi
+
 # Run training with the argument (it's added to train.py by our script above)
 python -m src.training.train \
     --config config/training_config.json \
-    --data_dir data/processed \
+    --data_dir $DATA_DIR \
     $USE_DRIVE_FLAG \
     --push_to_hub \
     --no_deepspeed \

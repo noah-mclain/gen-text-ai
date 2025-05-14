@@ -283,9 +283,9 @@ class DeepseekFineTuner:
         # Define version-specific parameter mappings
         renames = {
             # Parameters that changed names across transformers versions
-            "evaluation_strategy": ["eval_strategy"],
-            "save_strategy": ["save_steps_strategy"],
-            "logging_strategy": ["log_strategy"]
+            "evaluation_strategy": ["eval_strategy", "evaluation_strategy"],
+            "save_strategy": ["save_steps_strategy", "save_steps"],
+            "logging_strategy": ["log_strategy", "logging_steps_strategy"]
         }
         
         # List of custom parameters that should be excluded
@@ -294,7 +294,8 @@ class DeepseekFineTuner:
             "shuffle_dataset",
             "max_train_time_hours",
             "resume_from_checkpoint",
-            "save_safetensors"
+            "save_safetensors",
+            "torch_compile"  # Add this parameter to be excluded
         ]
         
         # Handle base_model_prefix differently based on version
@@ -722,11 +723,17 @@ class DeepseekFineTuner:
                         "attention_mask": torch.ones((1, 1), dtype=torch.long),
                         "labels": torch.zeros((1, 1), dtype=torch.long)
                     }
+        
+        # Filter incompatible parameters first
+        filtered_args = self._check_parameter_compatibility(
+            TrainingArguments,
+            {k: v for k, v in self.training_config.items() if k != "output_dir"}
+        )
                     
         # Create training arguments from config
         training_args = TrainingArguments(
             output_dir=self.training_config.get("output_dir", "models/deepseek-coder-finetune"),
-            **{k: v for k, v in self.training_config.items() if k != "output_dir"}
+            **filtered_args
         )
         
         # Create data collator
