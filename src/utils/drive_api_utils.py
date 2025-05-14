@@ -65,6 +65,7 @@ for attempt in import_attempts:
             configure_sync_method = getattr(module, "configure_sync_method", None)
             test_authentication = getattr(module, "test_authentication", None)
             test_drive_mounting = getattr(module, "test_drive_mounting", None)
+            setup_drive_directories = getattr(module, "setup_drive_directories", None)
             DRIVE_FOLDERS = getattr(module, "DRIVE_FOLDERS", {})
             SCOPES = getattr(module, "SCOPES", [])
             GOOGLE_API_AVAILABLE = getattr(module, "GOOGLE_API_AVAILABLE", True)
@@ -355,6 +356,7 @@ __all__ = [
     'DriveManager',
     'drive_manager',
     'initialize_drive_api',
+    'setup_drive_directories',
     'DRIVE_API_AVAILABLE',
     'DRIVE_FOLDERS',
     'SCOPES'

@@ -6,6 +6,10 @@ import logging
 import time  # Added for time tracking
 from pathlib import Path
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # Add the project root to the Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
@@ -14,19 +18,27 @@ sys.path.append(os.path.dirname(project_root))  # In case notebook is one level 
 
 # Fix import order to ensure Unsloth optimizations are applied correctly
 try:
-    from unsloth import FastLanguageModel
+    # Only import unsloth if CUDA is available
+    cuda_available = False
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+    except:
+        pass
+    
+    if cuda_available:
+        from unsloth import FastLanguageModel
+        logger.info("Unsloth imported successfully with CUDA support")
+    else:
+        logger.warning("CUDA not available, skipping Unsloth import")
 except ImportError:
-    print("Unsloth not installed. Install with: pip install unsloth")
+    logger.warning("Unsloth not installed. Install with: pip install unsloth")
 
 # Standard imports
 import json
 import torch
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 # Import other libraries after unsloth
 import transformers
@@ -537,12 +549,22 @@ def main():
                     logger.info(f"Loading combined features from {combined_features_path}")
                     train_dataset = load_from_disk(combined_features_path)
                     
+                    # Define seed from config or use default
+                    seed = 42  # Default seed
+                    try:
+                        with open(args.config, 'r') as f:
+                            config_data = json.load(f)
+                            # Try to get seed from training section
+                            seed = config_data.get('training', {}).get('seed', 42)
+                    except Exception as e:
+                        logger.warning(f"Could not load seed from config, using default: {e}")
+                    
                     # Create validation split if not already split
                     if "validation" not in train_dataset.keys():
                         logger.info("Creating train/validation split from combined features")
                         datasets = train_dataset.train_test_split(
                             test_size=0.05, 
-                            seed=training_args.seed
+                            seed=seed
                         )
                         train_dataset = datasets["train"]
                         eval_dataset = datasets["test"]
@@ -575,9 +597,19 @@ def main():
                     
                     # Create validation split
                     logger.info("Creating train/validation split")
+                    # Define seed from config or use default
+                    seed = 42  # Default seed
+                    try:
+                        with open(args.config, 'r') as f:
+                            config_data = json.load(f)
+                            # Try to get seed from training section
+                            seed = config_data.get('training', {}).get('seed', 42)
+                    except Exception as e:
+                        logger.warning(f"Could not load seed from config, using default: {e}")
+                    
                     datasets = train_dataset.train_test_split(
                         test_size=0.05, 
-                        seed=training_args.seed
+                        seed=seed
                     )
                     train_dataset = datasets["train"]
                     eval_dataset = datasets["test"]

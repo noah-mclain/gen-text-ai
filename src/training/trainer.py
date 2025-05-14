@@ -1,15 +1,25 @@
 # Fix import order to ensure Unsloth optimizations are applied correctly
 try:
-    from unsloth import FastLanguageModel
-    UNSLOTH_AVAILABLE = True
+    # Check if CUDA is available before importing unsloth
+    import torch
+    CUDA_AVAILABLE = torch.cuda.is_available()
+    
+    if CUDA_AVAILABLE:
+        from unsloth import FastLanguageModel
+        UNSLOTH_AVAILABLE = True
+    else:
+        print("CUDA not available, skipping Unsloth import")
+        UNSLOTH_AVAILABLE = False
 except ImportError:
     print("Unsloth not installed. Install with: pip install unsloth")
+    UNSLOTH_AVAILABLE = False
+except Exception as e:
+    print(f"Error importing Unsloth: {e}")
     UNSLOTH_AVAILABLE = False
 
 import os
 import json
 import logging
-import torch
 import sys
 from typing import Dict, List, Union, Optional, Any, Tuple
 from datasets import Dataset, DatasetDict, concatenate_datasets, IterableDataset

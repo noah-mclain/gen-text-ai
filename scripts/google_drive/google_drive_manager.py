@@ -24,81 +24,39 @@ scripts_dir = os.path.dirname(current_dir)
 project_root = os.path.dirname(scripts_dir)
 sys.path.append(str(project_root))
 
-# Define possible paths to the actual implementation
-possible_paths = [
-    # Standard path in regular project structure
-    os.path.join(project_root, 'src', 'utils', 'google_drive_manager.py'),
-    
-    # Paperspace might have a different structure
-    os.path.join('/notebooks', 'src', 'utils', 'google_drive_manager.py'),
-    
-    # Handle case where scripts is the root on Paperspace
-    os.path.join(scripts_dir, 'src', 'utils', 'google_drive_manager.py'),
-    
-    # Try relative path for nested imports
-    os.path.join(os.path.dirname(current_dir), '..', 'src', 'utils', 'google_drive_manager.py'),
-]
+# Add the src directory to sys.path
+src_path = os.path.join(project_root, 'src')
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+    logger.info(f"Added src directory to Python path: {src_path}")
 
-# Try to find an existing implementation
-implementation_path = None
-for path in possible_paths:
-    if os.path.exists(path):
-        implementation_path = path
-        logger.info(f"Found implementation at {implementation_path}")
-        break
-
-# If no implementation is found, copy it from the current directory if available
-if not implementation_path:
-    # Check if we have the implementation in this directory
-    local_copy = os.path.join(current_dir, 'google_drive_manager_impl.py')
-    if os.path.exists(local_copy):
-        # Create the target directory if needed
-        target_dir = os.path.join(project_root, 'src', 'utils')
-        os.makedirs(target_dir, exist_ok=True)
-        
-        # Copy the implementation to the target location
-        target_path = os.path.join(target_dir, 'google_drive_manager.py')
-        shutil.copy(local_copy, target_path)
-        logger.info(f"Copied implementation from {local_copy} to {target_path}")
-        implementation_path = target_path
-    else:
-        logger.error("No implementation file found and no local copy available")
-        logger.error("Please ensure src/utils/google_drive_manager.py exists in your project")
-        raise ImportError("google_drive_manager.py implementation not found")
-
-# Add the directory of the implementation to sys.path
-sys.path.append(os.path.dirname(os.path.dirname(implementation_path)))
-
-# Try to import from the implementation
+# Import directly from src.utils.google_drive_manager
 try:
-    # Import relative to root
-    import_path = "src.utils.google_drive_manager"
-    try:
-        # Try importing using absolute import
-        module = __import__(import_path, fromlist=['*'])
-        # Get all attributes from the module
-        globals().update({name: getattr(module, name) for name in dir(module) 
-                          if not name.startswith('_') or name == '__all__'})
-        logger.debug(f"Successfully imported using absolute import from {import_path}")
-    except ImportError:
-        # Try direct import as fallback
-        implementation_dir = os.path.dirname(implementation_path)
-        if implementation_dir not in sys.path:
-            sys.path.append(implementation_dir)
-        
-        module_name = os.path.splitext(os.path.basename(implementation_path))[0]
-        module = __import__(module_name, fromlist=['*'])
-        globals().update({name: getattr(module, name) for name in dir(module) 
-                        if not name.startswith('_') or name == '__all__'})
-        logger.debug(f"Successfully imported using direct import from {module_name}")
-        
+    from src.utils.google_drive_manager import (
+        DriveManager, test_authentication, sync_to_drive, sync_from_drive,
+        configure_sync_method, test_drive_mounting, _drive_manager,
+        DRIVE_FOLDERS, SCOPES, GOOGLE_API_AVAILABLE, setup_drive_directories
+    )
+    
+    logger.info("Successfully imported from src.utils.google_drive_manager")
 except ImportError as e:
-    logger.error(f"Failed to import from {implementation_path}: {e}")
-    logger.error("Make sure the python path includes the project root directory")
-    raise
+    logger.error(f"Failed to import from src.utils.google_drive_manager: {e}")
+    sys.exit(1)
 
-# Inform users about the redirect
-logger.debug(f"google_drive_manager redirected to {implementation_path}")
+# Make all imported components available at the module level
+__all__ = [
+    'DriveManager',
+    'test_authentication',
+    'sync_to_drive',
+    'sync_from_drive',
+    'configure_sync_method', 
+    'test_drive_mounting',
+    '_drive_manager',
+    'DRIVE_FOLDERS',
+    'SCOPES',
+    'GOOGLE_API_AVAILABLE',
+    'setup_drive_directories'
+]
 
 # Define functions to ensure they're available directly from this module
 def test_authentication():
