@@ -167,14 +167,42 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
                     drive_base_dir=None, headless=False, skip_local_storage=False):
     """Process datasets for fine-tuning."""
     
+    # Verify config path exists or try alternative locations
+    config_paths_to_try = [
+        config_path,  # Try the provided path first
+        os.path.join(project_root, config_path),  # Try with project root  
+        os.path.join(os.getcwd(), config_path),  # Try with current working directory
+        os.path.abspath(config_path),  # Try absolute path
+        os.path.join('/notebooks', config_path)  # Try Paperspace notebooks directory
+    ]
+    
+    found_config = None
+    for path in config_paths_to_try:
+        if os.path.exists(path):
+            logger.info(f"Found configuration file at: {path}")
+            found_config = path
+            break
+    
+    if not found_config:
+        # If still not found, try to search for the file
+        logger.error(f"Could not find configuration file at any of these locations: {config_paths_to_try}")
+        import glob
+        possible_configs = glob.glob(os.path.join(project_root, "**", os.path.basename(config_path)), recursive=True)
+        if possible_configs:
+            logger.info(f"Found possible configuration files: {possible_configs}")
+            found_config = possible_configs[0]
+        else:
+            logger.error(f"Error: No configuration file found matching {config_path}")
+            return False
+    
     # Check if we need to use absolute path or relative path based on environment
     if os.path.exists("src/data/process_datasets.py"):
-        cmd = f"python -m src.data.process_datasets --config {config_path}"
+        cmd = f"python -m src.data.process_datasets --config {found_config}"
     elif os.path.exists("data/process_datasets.py"):
-        cmd = f"python -m data.process_datasets --config {config_path}"
+        cmd = f"python -m data.process_datasets --config {found_config}"
     else:
         # Fallback to direct script execution
-        cmd = f"python src/data/process_datasets.py --config {config_path}"
+        cmd = f"python src/data/process_datasets.py --config {found_config}"
     
     if datasets:
         cmd += f" --datasets {' '.join(datasets)}"
@@ -210,14 +238,63 @@ def train_model(config_path, data_dir, use_drive_api=False, use_drive=False,
     # Always include the project root in PYTHONPATH
     pythonpath_cmd = f"PYTHONPATH={os.getcwd()}:$PYTHONPATH "
     
+    # Verify config path exists or try alternative locations
+    config_paths_to_try = [
+        config_path,  # Try the provided path first
+        os.path.join(project_root, config_path),  # Try with project root
+        os.path.join(os.getcwd(), config_path),  # Try with current working directory
+        os.path.abspath(config_path),  # Try absolute path
+        os.path.join('/notebooks', config_path)  # Try Paperspace notebooks directory
+    ]
+    
+    found_config = None
+    for path in config_paths_to_try:
+        if os.path.exists(path):
+            logger.info(f"Found training configuration file at: {path}")
+            found_config = path
+            break
+    
+    if not found_config:
+        # If still not found, try to search for the file
+        logger.error(f"Could not find training configuration file at any of these locations: {config_paths_to_try}")
+        import glob
+        possible_configs = glob.glob(os.path.join(project_root, "**", os.path.basename(config_path)), recursive=True)
+        if possible_configs:
+            logger.info(f"Found possible training configuration files: {possible_configs}")
+            found_config = possible_configs[0]
+        else:
+            logger.error(f"Error: No training configuration file found matching {config_path}")
+            return False
+            
+    # Verify data directory exists or try alternative locations
+    data_dirs_to_try = [
+        data_dir,  # Try the provided path first
+        os.path.join(project_root, data_dir),  # Try with project root
+        os.path.join(os.getcwd(), data_dir),  # Try with current working directory
+        os.path.abspath(data_dir),  # Try absolute path
+        os.path.join('/notebooks', data_dir)  # Try Paperspace notebooks directory
+    ]
+    
+    found_data_dir = None
+    for path in data_dirs_to_try:
+        if os.path.exists(path):
+            logger.info(f"Found data directory at: {path}")
+            found_data_dir = path
+            break
+    
+    if not found_data_dir:
+        logger.error(f"Could not find data directory at any of these locations: {data_dirs_to_try}")
+        logger.warning(f"Will attempt to continue with the provided path: {data_dir}")
+        found_data_dir = data_dir
+    
     # Check if we need to use absolute path or relative path based on environment
     if os.path.exists("src/training/train.py"):
-        cmd = f"python -m src.training.train --config {config_path} --data_dir {data_dir}"
+        cmd = f"python -m src.training.train --config {found_config} --data_dir {found_data_dir}"
     elif os.path.exists("training/train.py"):
-        cmd = f"python -m training.train --config {config_path} --data_dir {data_dir}"
+        cmd = f"python -m training.train --config {found_config} --data_dir {found_data_dir}"
     else:
         # Fallback to direct script execution
-        cmd = f"python src/training/train.py --config {config_path} --data_dir {data_dir}"
+        cmd = f"python src/training/train.py --config {found_config} --data_dir {found_data_dir}"
     
     if use_drive_api:
         cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"

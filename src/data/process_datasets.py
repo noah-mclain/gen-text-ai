@@ -156,14 +156,45 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         except Exception as e:
             logger.error(f"Error loading credentials: {str(e)}")
 
-    # Load dataset configuration
-    try:
-        with open(config_path, 'r') as f:
-            dataset_config = json.load(f)
-            logger.info(f"Loaded dataset configuration with {len(dataset_config)} datasets")
-    except Exception as e:
-        logger.error(f"Error loading dataset configuration: {str(e)}")
-        return
+    # Try to load dataset configuration from multiple possible locations
+    dataset_config = None
+    config_paths_to_try = [
+        config_path,  # Try the provided path first
+        os.path.join(project_root, config_path),  # Try with project root
+        os.path.join(os.getcwd(), config_path),  # Try with current working directory
+        os.path.abspath(config_path),  # Try absolute path
+        os.path.join('/notebooks', config_path)  # Try Paperspace notebooks directory
+    ]
+    
+    for path in config_paths_to_try:
+        try:
+            if os.path.exists(path):
+                logger.info(f"Found configuration file at: {path}")
+                with open(path, 'r') as f:
+                    dataset_config = json.load(f)
+                logger.info(f"Loaded dataset configuration with {len(dataset_config)} datasets")
+                break
+        except Exception as e:
+            logger.debug(f"Failed to load configuration from {path}: {e}")
+    
+    if dataset_config is None:
+        # If still not found, try to search for the file
+        logger.error(f"Could not find configuration file at any of these locations: {config_paths_to_try}")
+        # Try to find any dataset_config.json files in the project
+        import glob
+        possible_configs = glob.glob(os.path.join(project_root, "**", "dataset_config.json"), recursive=True)
+        if possible_configs:
+            logger.info(f"Found possible configuration files: {possible_configs}")
+            try:
+                with open(possible_configs[0], 'r') as f:
+                    dataset_config = json.load(f)
+                logger.info(f"Loaded dataset configuration from {possible_configs[0]} with {len(dataset_config)} datasets")
+            except Exception as e:
+                logger.error(f"Error loading dataset configuration: {str(e)}")
+                return
+        else:
+            logger.error(f"Error loading dataset configuration: No configuration file found")
+            return
 
     # Filter out explicitly disabled datasets
     filtered_config = {}

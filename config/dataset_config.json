@@ -1,0 +1,178 @@
+{
+  "codesearchnet_python": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "python"
+  },
+  "codesearchnet_java": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "java"
+  },
+  "codesearchnet_javascript": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "javascript"
+  },
+  "codesearchnet_php": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "php"
+  },
+  "codesearchnet_ruby": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "ruby"
+  },
+  "codesearchnet_go": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "language": "go"
+  },
+  "codesearchnet_all": {
+    "path": "code-search-net/code_search_net",
+    "processor": "codesearchnet",
+    "split": "train",
+    "languages": ["python", "java", "javascript", "php", "ruby", "go"],
+    "enabled": true
+  },
+  "code_alpaca": {
+    "path": "sahil2801/CodeAlpaca-20k",
+    "processor": "code_alpaca",
+    "split": "train"
+  },
+  "instruct_code": {
+    "path": "ise-uiuc/Magicoder-OSS-Instruct-75K",
+    "processor": "instruct_code",
+    "split": "train",
+    "enabled": true
+  },
+  "mbpp": {
+    "path": "mbpp",
+    "processor": "mbpp",
+    "split": "train"
+  },
+  "ds1000": {
+    "path": "Salesforce/DS-1000",
+    "processor": "ds1000",
+    "enabled": false
+  },
+  "codeparrot": {
+    "path": "codeparrot/codeparrot-clean",
+    "processor": "codeparrot",
+    "split": "train"
+  },
+  "the_stack_python": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/python",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "python",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_java": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/java",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "java",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_javascript": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/javascript",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "javascript",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_php": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/php",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "php",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_ruby": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/ruby",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "ruby",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_go": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/go",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "go",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_c": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/c",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "c",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_cpp": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/cpp",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "cpp",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_csharp": {
+    "path": "bigcode/the-stack",
+    "data_dir": "data/csharp",
+    "processor": "the_stack",
+    "split": "train",
+    "language": "csharp",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_all": {
+    "path": "bigcode/the-stack",
+    "processor": "the_stack",
+    "split": "train",
+    "enabled": false,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "the_stack_filtered": {
+    "path": "bigcode/the-stack",
+    "processor": "the_stack",
+    "split": "train",
+    "data_dir": "data",
+    "languages": ["python", "java", "javascript"],
+    "natural_languages": ["en", "ar"],
+    "sampling_ratio": 0.1,
+    "max_samples": 30000,
+    "max_processing_time": 300,
+    "enabled": false,
+    "debug": true,
+    "comment": "Disabled due to dataset processing issues"
+  },
+  "humaneval": {
+    "path": "openai/openai_humaneval",
+    "processor": "humaneval",
+    "split": "test"
+  }
+}

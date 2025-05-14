@@ -9,21 +9,18 @@ In Paperspace, Python can't find modules because:
 1. The `src` module isn't in the Python path
 2. The Google Drive manager implementation isn't where the code expects it
 3. The imports use absolute paths (`from src.utils...`) which don't work when the project structure is different
+4. Configuration files may not be found in the expected locations
 
 ## Quick Solution
 
-Add this code at the beginning of any script you need to run in Paperspace:
+The simplest solution is to run the paperspace_install.sh script when you first start:
 
-```python
-import os
-import sys
+```bash
+# Run the installation script
+bash paperspace_install.sh
 
-# Add project root to Python path
-current_file = os.path.abspath(__file__)
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-    print(f"Added project root to Python path: {project_root}")
+# Verify everything is set up correctly
+python scripts/utilities/verify_paths.py
 ```
 
 ## Step-by-Step Setup for Paperspace
@@ -40,24 +37,16 @@ cd /notebooks
 git pull
 ```
 
-3. Create the necessary directory structure:
+3. Run the paperspace_install.sh script:
 
 ```bash
-mkdir -p src/utils
-mkdir -p scripts/google_drive
-mkdir -p scripts/src/utils
+bash paperspace_install.sh
 ```
 
-4. Copy the Google Drive manager implementation to all necessary locations:
+4. Verify the setup:
 
 ```bash
-# Identify where the implementation file is
-find . -name "google_drive_manager.py" -o -name "google_drive_manager_impl.py"
-
-# Copy the implementation to all required locations
-cp [found_path] src/utils/google_drive_manager.py
-cp [found_path] scripts/src/utils/google_drive_manager.py
-cp [found_path] scripts/google_drive/google_drive_manager_impl.py
+python scripts/utilities/verify_paths.py --fix
 ```
 
 5. Set the PYTHONPATH environment variable:
@@ -74,12 +63,14 @@ python src/main_api.py --mode process --streaming --no_cache --dataset_config co
 
 ## Permanent Solution
 
-For a more permanent solution, we've updated these files:
+For a more permanent solution, we've added several improvements:
 
-1. `src/main_api.py` - Now tries multiple import paths
-2. `src/data/process_datasets.py` - Handles imports more robustly
-3. `src/utils/drive_api_utils.py` - Tries different import paths
-4. Added `scripts/fix_paperspace_imports.py` - Run this script at the start of your session
+1. `src/main_api.py` - Now tries multiple import paths and checks for config files in multiple locations
+2. `src/data/process_datasets.py` - Handles imports more robustly and searches for config files
+3. `src/utils/drive_api_utils.py` - Tries different import paths for Drive integration
+4. `paperspace_install.sh` - Comprehensive setup script for Paperspace
+5. `scripts/fix_paperspace_imports.py` - More advanced setup for complex cases
+6. `scripts/utilities/verify_paths.py` - Verifies all paths are set up correctly
 
 The fixes use a combination of:
 
@@ -87,11 +78,21 @@ The fixes use a combination of:
 2. Trying multiple import paths (direct, relative, absolute)
 3. Copying essential files to expected locations
 4. Creating symbolic links for compatibility
+5. Checking for configuration files in multiple locations
+6. Providing appropriate fallbacks when files aren't found
 
-Run the fix script at the beginning of your session:
+## Using the Verification Tool
+
+The verification tool will check that everything is set up correctly:
 
 ```bash
-python scripts/fix_paperspace_imports.py
+python scripts/utilities/verify_paths.py
+```
+
+If issues are found, you can try to fix them automatically:
+
+```bash
+python scripts/utilities/verify_paths.py --fix
 ```
 
 ## Testing the Fix
@@ -102,6 +103,18 @@ After applying the fixes, test with:
 # Test importing the Drive manager directly
 python -c "from scripts.google_drive.google_drive_manager import test_authentication; print('Import successful')"
 
+# Test checking paths
+python scripts/utilities/verify_paths.py
+
 # Run the process datasets command
 python src/main_api.py --mode process --streaming --no_cache --dataset_config config/dataset_config.json --use_drive --drive_base_dir DeepseekCoder
 ```
+
+## Troubleshooting
+
+If you still encounter issues:
+
+1. Check if the PYTHONPATH includes the project root: `echo $PYTHONPATH`
+2. Verify the directory structure: `find . -type d -not -path "*/\.*" | sort`
+3. Check if the config files exist: `find . -name "dataset_config.json"`
+4. Try running with verbose logging: `python src/main_api.py --mode process --verbose ...`

@@ -1,0 +1,114 @@
+{
+  "model": {
+    "base_model": "deepseek-ai/deepseek-coder-6.7b-base",
+    "use_unsloth": true,
+    "use_4bit": true,
+    "use_nested_quant": true,
+    "bnb_4bit_compute_dtype": "float16",
+    "use_gradient_checkpointing": true,
+    "xformers_attention": true
+  },
+  "peft": {
+    "lora_alpha": 16,
+    "lora_dropout": 0.0,
+    "r": 32,
+    "bias": "none",
+    "task_type": "CAUSAL_LM",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "training": {
+    "output_dir": "models/deepseek-coder-finetune",
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 4,
+    "per_device_eval_batch_size": 4,
+    "gradient_accumulation_steps": 8,
+    "evaluation_strategy": "no",
+    "save_strategy": "steps",
+    "save_steps": 500,
+    "save_total_limit": 3,
+    "save_safetensors": true,
+    "resume_from_checkpoint": true,
+    "auto_find_batch_size": true,
+    "learning_rate": 2e-4,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.03,
+    "lr_scheduler_type": "cosine",
+    "logging_steps": 50,
+    "report_to": ["wandb", "tensorboard"],
+    "seed": 42,
+    "fp16": true,
+    "bf16": false,
+    "push_to_hub": false,
+    "use_deepspeed": true,
+    "deepspeed": {
+      "zero_stage": 2,
+      "offload_optimizer": {
+        "device": "cpu"
+      },
+      "gradient_clipping": 1.0
+    },
+    "max_grad_norm": 1.0,
+    "dataloader_num_workers": 8,
+    "group_by_length": false,
+    "optim": "adamw_torch",
+    "shuffle_dataset": true,
+    "max_steps": 30000,
+    "ddp_find_unused_parameters": false,
+    "torch_compile": true
+  },
+  "dataset": {
+    "max_length": 2048,
+    "dataset_weights": {
+      "codesearchnet_all": 3.0,
+      "codesearchnet_python": 1.5,
+      "codesearchnet_java": 0.8,
+      "codesearchnet_javascript": 0.8,
+      "codesearchnet_go": 0.8,
+      "codesearchnet_php": 0.6,
+      "codesearchnet_ruby": 0.6,
+      "code_alpaca": 3.0,
+      "instruct_code": 3.0,
+      "mbpp": 2.5,
+      "codeparrot": 2.0,
+      "humaneval": 3.0
+    },
+    "train_size": 0.95,
+    "val_size": 0.025,
+    "test_size": 0.025,
+    "streaming": true,
+    "use_cache": false,
+    "interleave_prob": 0.5,
+    "max_samples": {
+      "codesearchnet_all": 40000,
+      "codesearchnet_python": 20000,
+      "codesearchnet_java": 10000,
+      "codesearchnet_javascript": 10000,
+      "codesearchnet_go": 10000,
+      "codesearchnet_php": 5000,
+      "codesearchnet_ruby": 5000,
+      "code_alpaca": 20000,
+      "instruct_code": 25000,
+      "mbpp": 15000,
+      "codeparrot": 30000,
+      "humaneval": 800
+    }
+  },
+  "hardware": {
+    "gpu": "A6000",
+    "vram_gb": 48,
+    "ram_gb": 45,
+    "cpu_cores": 8
+  },
+  "google_drive": {
+    "use_drive": true,
+    "base_dir": "DeepseekCoder"
+  }
+}
