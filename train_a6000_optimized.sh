@@ -1027,7 +1027,13 @@ else:
 
 # Thoroughly validate local datasets and fix dataset directories using symbolic links
 echo "===== FIXING DATASET MAPPING ISSUES ====="
-python -c "
+# Apply our comprehensive dataset fixes
+if [ -f "fix_dataset_features.sh" ]; then
+    echo "Running comprehensive dataset fix script..."
+    bash fix_dataset_features.sh
+else
+    # If the specific script doesn't exist, use the inline version
+    python -c "
 import os
 import sys
 import glob
@@ -1121,4 +1127,5 @@ for data_dir in ['data/processed', '/notebooks/data/processed']:
                 logger.warning(f'⚠️ Failed to create symlink for {expected_name}: {e}')
         else:
             logger.info(f'❌ No matching directory found for {expected_name}')
-" 
+"
+fi 

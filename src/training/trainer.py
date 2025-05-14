@@ -592,6 +592,40 @@ class DeepseekFineTuner:
         
         logger.info(f"Combining {len(datasets)} datasets with weights: {normalized_weights}")
         
+        # Check that all datasets have the expected common features
+        required_features = ['input_ids', 'attention_mask', 'labels']
+        
+        # Verify that all datasets have the required features
+        valid_datasets = []
+        valid_weights = []
+        
+        for i, (ds, weight) in enumerate(zip(datasets, normalized_weights)):
+            try:
+                features = ds.features if hasattr(ds, 'features') else None
+                if features is None:
+                    # Try to get column names for streaming datasets
+                    features = ds.column_names if hasattr(ds, 'column_names') else None
+                
+                # Check if dataset has the required features
+                if all(feature in features for feature in required_features):
+                    valid_datasets.append(ds)
+                    valid_weights.append(weight)
+                else:
+                    # Dataset is missing required features
+                    missing_features = [f for f in required_features if f not in features]
+                    logger.warning(f"Dataset {i} missing required features: {missing_features}. Will be skipped.")
+            except Exception as e:
+                logger.warning(f"Error checking dataset {i} features: {e}. Will be skipped.")
+        
+        # Recalculate normalized weights after filtering
+        if valid_datasets:
+            total_weight = sum(valid_weights)
+            normalized_weights = [w / total_weight for w in valid_weights]
+            datasets = valid_datasets
+        else:
+            logger.error("No valid datasets with required features found!")
+            return None
+        
         # For streaming datasets, we need to interleave them
         is_streaming = any(isinstance(ds, IterableDataset) for ds in datasets)
         
@@ -600,16 +634,70 @@ class DeepseekFineTuner:
             from datasets import interleave_datasets
             
             try:
+                # Ensure all datasets have exactly the same schema
+                logger.info("Ensuring all streaming datasets have consistent schemas")
+                
+                try:
+                    # Get schema info from first dataset if possible
+                    first_features = datasets[0].features if hasattr(datasets[0], 'features') else None
+                    if first_features is None:
+                        # If features not accessible, use fixed set of required features
+                        logger.info("Using fixed schema with required features for interleaving")
+                except Exception:
+                    logger.warning("Could not get features from first dataset")
+                    
                 combined = interleave_datasets(
                     datasets, 
                     probabilities=normalized_weights,
-                    seed=self.training_config.get("seed", 42)
+                    seed=self.training_config.get("seed", 42),
+                    stopping_strategy='first_exhausted'
                 )
                 return combined
             except Exception as e:
                 logger.error(f"Error combining streaming datasets: {e}")
-                # Fallback to first dataset
-                return datasets[0]
+                # If first approach fails, try to convert datasets to have matching features
+                try:
+                    logger.info("Attempting to fix dataset features before interleaving")
+                    
+                    # Define schema aligner function
+                    def ensure_schema(example, features=required_features):
+                        result = {}
+                        for feature in features:
+                            if feature in example:
+                                result[feature] = example[feature]
+                            else:
+                                # Add default value based on feature type
+                                if feature == 'input_ids' or feature == 'labels':
+                                    result[feature] = [0]  # Default token ID
+                                elif feature == 'attention_mask':
+                                    result[feature] = [1]  # Default attention mask
+                                else:
+                                    result[feature] = None
+                        return result
+                    
+                    # Map schema aligner over each dataset
+                    aligned_datasets = []
+                    for ds in datasets:
+                        # Ensure dataset has required features
+                        aligned_ds = ds.map(
+                            ensure_schema,
+                            remove_columns=[col for col in ds.column_names if col not in required_features]
+                        )
+                        aligned_datasets.append(aligned_ds)
+                    
+                    # Try interleaving again with aligned datasets
+                    combined = interleave_datasets(
+                        aligned_datasets,
+                        probabilities=normalized_weights,
+                        seed=self.training_config.get("seed", 42),
+                        stopping_strategy='first_exhausted'
+                    )
+                    return combined
+                except Exception as align_error:
+                    logger.error(f"Error aligning dataset features: {align_error}")
+                    # Last resort: return first dataset
+                    logger.warning("Falling back to first dataset only")
+                    return datasets[0]
         else:
             # For regular datasets, we sample and concatenate
             try:
@@ -629,11 +717,55 @@ class DeepseekFineTuner:
                     sampled = ds.shuffle(seed=self.training_config.get("seed", 42)).select(range(min(len(ds), size)))
                     sampled_datasets.append(sampled)
                 
-                # Concatenate all sampled datasets
-                combined = concatenate_datasets(sampled_datasets)
-                combined = combined.shuffle(seed=self.training_config.get("seed", 42))
+                # Ensure all datasets have the same schema before concatenating
+                try:
+                    # Get columns from first dataset
+                    common_columns = set(sampled_datasets[0].column_names)
+                    
+                    # Find common columns across all datasets
+                    for ds in sampled_datasets[1:]:
+                        common_columns &= set(ds.column_names)
+                    
+                    # If no common columns include the required ones, use only required columns
+                    if not all(col in common_columns for col in required_features):
+                        common_columns = set(required_features)
+                    
+                    # Select only common columns from each dataset
+                    filtered_datasets = []
+                    for ds in sampled_datasets:
+                        # If dataset doesn't have all common columns, map a function to add them
+                        if not all(col in ds.column_names for col in common_columns):
+                            def add_missing_columns(example):
+                                for col in common_columns:
+                                    if col not in example:
+                                        if col == 'input_ids' or col == 'labels':
+                                            example[col] = [0]  # Default token ID
+                                        elif col == 'attention_mask':
+                                            example[col] = [1]  # Default attention mask
+                                        else:
+                                            example[col] = None
+                                return example
+                            
+                            # Add missing columns then select only common columns
+                            ds = ds.map(add_missing_columns).select_columns(list(common_columns))
+                        else:
+                            # Just select common columns
+                            ds = ds.select_columns(list(common_columns))
+                        
+                        filtered_datasets.append(ds)
+                    
+                    # Concatenate with filtered datasets
+                    combined = concatenate_datasets(filtered_datasets)
+                    combined = combined.shuffle(seed=self.training_config.get("seed", 42))
+                    
+                    return combined
+                except Exception as e:
+                    logger.error(f"Error filtering common columns: {e}")
+                    # Try simple concatenation as fallback
+                    combined = concatenate_datasets(sampled_datasets)
+                    combined = combined.shuffle(seed=self.training_config.get("seed", 42))
+                    return combined
                 
-                return combined
             except Exception as e:
                 logger.error(f"Error combining datasets: {e}")
                 # Fallback to first dataset

@@ -72,6 +72,9 @@ def load_streaming_dataset(
                     logger.info(f"Converting local dataset {dataset_name} to streaming format")
                     dataset = dataset.to_iterable_dataset(num_shards=num_workers)
                 
+                # Standardize dataset schema to ensure compatibility with other datasets
+                dataset = standardize_dataset_features(dataset, tokenizer, config)
+                
                 logger.info(f"✅ Successfully loaded dataset {dataset_name} from local storage")
                 return dataset
             except Exception as local_err:
@@ -111,6 +114,10 @@ def load_streaming_dataset(
                 token=os.environ.get("HF_TOKEN") if "HF_TOKEN" in os.environ else None
             )
             logger.info(f"✅ Successfully loaded {dataset_name} from Hugging Face Hub")
+            
+            # Standardize dataset schema to ensure compatibility
+            dataset = standardize_dataset_features(dataset, tokenizer, config)
+            
         except Exception as e:
             logger.error(f"Error loading streaming dataset {dataset_name} from Hugging Face: {e}")
             # Return empty dataset as fallback
@@ -120,79 +127,7 @@ def load_streaming_dataset(
                 "attention_mask": []
             }).to_iterable_dataset()
         
-        # Apply tokenization function
-        def tokenize_function(examples):
-            # Get the column names from the first example
-            example_keys = list(examples.keys())
-            if not example_keys:
-                logger.warning(f"Empty examples for dataset {dataset_name}")
-                return {"input_ids": [], "attention_mask": []}
-                
-            # Determine the text column based on common field names
-            potential_text_columns = ["text", "content", "code", "source", "input", "prompt", "instruction"]
-            text_column = None
-            
-            for col in potential_text_columns:
-                if col in example_keys:
-                    text_column = col
-                    break
-            
-            if text_column is None:
-                # Use the first column as fallback
-                text_column = example_keys[0]
-                
-            # Extract the text, ensuring it's in the right format
-            texts = examples[text_column]
-            
-            # Handle different input formats
-            if not texts:
-                logger.warning(f"Empty texts for dataset {dataset_name}")
-                return {"input_ids": [], "attention_mask": []}
-                
-            # Convert to list of strings if needed
-            if isinstance(texts, dict) and "text" in texts:
-                # Some datasets nest text in a dict
-                texts = texts["text"]
-            
-            # Ensure we have a list of strings
-            if not isinstance(texts, list):
-                texts = [texts]
-                
-            # Ensure each item is a string
-            texts = [str(item) if item is not None else "" for item in texts]
-            
-            # Tokenize the texts
-            try:
-                tokenized = tokenizer(
-                    texts,
-                    padding="max_length",
-                    truncation=True,
-                    max_length=config.get("max_length", 2048),
-                    return_tensors="np"  # Use numpy instead of torch tensors
-                )
-                
-                # Convert to lists for Arrow compatibility
-                return {
-                    "input_ids": tokenized["input_ids"].tolist(),
-                    "attention_mask": tokenized["attention_mask"].tolist()
-                }
-            except Exception as e:
-                logger.error(f"Tokenization error for dataset {dataset_name}: {e}")
-                # Return empty tensors as fallback
-                return {
-                    "input_ids": [[]],
-                    "attention_mask": [[]]
-                }
-        
-        # Map tokenization to the dataset
-        tokenized_dataset = dataset.map(
-            tokenize_function,
-            batched=True,
-            batch_size=streaming_config["batch_size"],
-            remove_columns=dataset.column_names  # Remove original columns to avoid conflicts
-        )
-        
-        return tokenized_dataset
+        return dataset
         
     except Exception as e:
         logger.error(f"Error loading streaming dataset {dataset_name}: {e}")
@@ -201,4 +136,89 @@ def load_streaming_dataset(
         return Dataset.from_dict({
             "input_ids": [],
             "attention_mask": []
-        }).to_iterable_dataset() 
+        }).to_iterable_dataset()
+
+def standardize_dataset_features(dataset, tokenizer, config):
+    """
+    Standardize dataset features to ensure compatibility when combining datasets.
+    
+    Args:
+        dataset: Dataset to standardize
+        tokenizer: Tokenizer to use for tokenization
+        config: Configuration settings
+        
+    Returns:
+        Standardized dataset with consistent features
+    """
+    logger.info(f"Standardizing dataset features to ensure compatibility")
+    
+    max_length = config.get("max_length", 2048)
+    
+    # Function to process and tokenize a single example
+    def process_example(example):
+        # Determine the text field in the example
+        text_field = None
+        
+        # Check if processed_text exists
+        if "processed_text" in example:
+            text_field = "processed_text"
+        # Check if text exists
+        elif "text" in example:
+            text_field = "text"
+        # Fall back to checking common alternatives
+        else:
+            for field in ["content", "code", "source", "input", "prompt", "instruction"]:
+                if field in example:
+                    text_field = field
+                    break
+        
+        # If we couldn't find a text field, generate an empty example
+        if text_field is None or example[text_field] is None:
+            # Return a minimal valid example with empty content
+            return {
+                "input_ids": [tokenizer.pad_token_id],
+                "attention_mask": [1],
+                "labels": [tokenizer.pad_token_id],
+            }
+        
+        # Get the text and ensure it's a string
+        text = example[text_field]
+        if not isinstance(text, str):
+            # If it's not a string, try to convert it
+            if isinstance(text, (list, tuple)) and len(text) > 0:
+                # If it's a list/tuple, join with newlines
+                text = "\n".join(str(item) for item in text if item is not None)
+            else:
+                # Otherwise just convert to string
+                text = str(text) if text is not None else ""
+        
+        # Tokenize the text
+        try:
+            tokenized = tokenizer(
+                text,
+                truncation=True,
+                max_length=max_length,
+                padding="max_length",
+                return_tensors="np"
+            )
+            
+            # Convert to lists for Arrow compatibility
+            return {
+                "input_ids": tokenized["input_ids"][0].tolist(),
+                "attention_mask": tokenized["attention_mask"][0].tolist(),
+                "labels": tokenized["input_ids"][0].tolist(),  # For causal language modeling, labels = input_ids
+            }
+        except Exception as e:
+            logger.warning(f"Error tokenizing text: {e}")
+            # Return a minimal valid example with pad tokens
+            return {
+                "input_ids": [tokenizer.pad_token_id],
+                "attention_mask": [1],
+                "labels": [tokenizer.pad_token_id],
+            }
+    
+    # Map the processing function over the dataset
+    return dataset.map(
+        process_example,
+        remove_columns=dataset.column_names  # Remove original columns to avoid conflicts
+    ) 
