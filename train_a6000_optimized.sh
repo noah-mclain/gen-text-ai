@@ -282,6 +282,42 @@ python -m src.training.train \
 # Check exit status
 EXIT_STATUS=$?
 
+# Check for DeepSpeed-related errors in the log
+LATEST_LOG=$(find logs -name "train_a6000_optimized_*.log" -type f -exec ls -t {} \; | head -1)
+if [ -f "$LATEST_LOG" ]; then
+    # Check for common DeepSpeed errors
+    if grep -q "NoneType.* has no attribute 'hf_ds_config'" "$LATEST_LOG" || \
+       grep -q "DeepSpeed configuration issue" "$LATEST_LOG" || \
+       grep -q "DeepSpeedPlugin" "$LATEST_LOG" && grep -q "Error" "$LATEST_LOG"; then
+        
+        echo "===== DEEPSPEED ERROR DETECTED ====="
+        echo "Running diagnostics script..."
+        bash scripts/diagnose_deepspeed.sh 2>&1 | tee logs/deepspeed_error_$(date +%Y%m%d_%H%M%S).log
+        
+        echo "Attempting to fix DeepSpeed configuration and retry training..."
+        # Fix DeepSpeed configuration
+        python scripts/fix_deepspeed.py
+        
+        # Save the original log
+        cp "$LATEST_LOG" "${LATEST_LOG%.log}_failed.log"
+        
+        echo "Retrying training with fixed configuration..."
+        verify_deepspeed_setup
+        python -m src.training.train \
+            --config config/training_config.json \
+            --data_dir data/processed \
+            $USE_DRIVE_FLAG \
+            --push_to_hub \
+            --deepspeed \
+            --deepspeed_config "$DS_CONFIG_PATH" \
+            --debug \
+            2>&1 | tee logs/train_a6000_optimized_retry_$(date +%Y%m%d_%H%M%S).log
+            
+        # Update exit status based on retry
+        EXIT_STATUS=$?
+    fi
+fi
+
 # Report completion
 if [ $EXIT_STATUS -eq 0 ]; then
   echo "Training completed successfully!"
