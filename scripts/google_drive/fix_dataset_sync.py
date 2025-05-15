@@ -75,9 +75,16 @@ def find_processed_datasets(paths_to_check):
             
         logger.info(f"Searching for datasets in: {base_path}")
         
-        # Look for directories with the "_processed" suffix
+        # Log directory contents for debugging
+        try:
+            contents = os.listdir(base_path)
+            logger.info(f"Directory contents of {base_path}: {contents}")
+        except Exception as e:
+            logger.warning(f"Could not list directory contents: {e}")
+        
+        # Look for directories with the "_processed" suffix (first pattern)
         processed_dirs = glob.glob(os.path.join(base_path, "*_processed"))
-        logger.debug(f"Found {len(processed_dirs)} processed directories")
+        logger.info(f"Found {len(processed_dirs)} *_processed directories")
         
         # Also look for dataset directories with known names
         # Check using dataset_config.json to find dataset names
@@ -92,11 +99,57 @@ def find_processed_datasets(paths_to_check):
             except Exception as e:
                 logger.warning(f"Error loading dataset config: {e}")
         
-        # Look for directories matching dataset names
+        # Look for directories matching dataset names directly
+        dataset_dirs_found = 0
         for name in dataset_names:
             dataset_dir = os.path.join(base_path, name)
             if os.path.isdir(dataset_dir) and dataset_dir not in processed_dirs:
                 processed_dirs.append(dataset_dir)
+                dataset_dirs_found += 1
+                
+        logger.info(f"Found {dataset_dirs_found} additional directories matching dataset names")
+        
+        # Check one level deeper for processed directories (e.g. temp_dir/processed/dataset)
+        subdirs = []
+        try:
+            for item in os.listdir(base_path):
+                full_path = os.path.join(base_path, item)
+                if os.path.isdir(full_path):
+                    subdirs.append(full_path)
+        except Exception as e:
+            logger.warning(f"Error listing subdirectories: {e}")
+            
+        # Look in subdirectories
+        for subdir in subdirs:
+            try:
+                logger.info(f"Checking subdirectory: {subdir}")
+                subdir_contents = os.listdir(subdir)
+                logger.info(f"Subdirectory contents: {subdir_contents}")
+                
+                # Check for dataset directories
+                for name in dataset_names:
+                    dataset_dir = os.path.join(subdir, name)
+                    if os.path.isdir(dataset_dir) and dataset_dir not in processed_dirs:
+                        processed_dirs.append(dataset_dir)
+                        logger.info(f"Found dataset {name} in subdirectory {subdir}")
+            except Exception as e:
+                logger.warning(f"Error checking subdirectory {subdir}: {e}")
+                
+        # Even more aggressive search - look for any files that look like they might be dataset files
+        # This might find false positives but better to find too many than miss real datasets
+        if not processed_dirs:
+            logger.info("No datasets found yet, trying more aggressive search...")
+            try:
+                for root, dirs, files in os.walk(base_path):
+                    for d in dirs:
+                        # Check if directory name contains dataset name
+                        for dataset_name in dataset_names:
+                            if dataset_name.lower() in d.lower():
+                                full_path = os.path.join(root, d)
+                                logger.info(f"Found potential dataset directory: {full_path}")
+                                processed_dirs.append(full_path)
+            except Exception as e:
+                logger.warning(f"Error during aggressive search: {e}")
         
         # Add them to the dataset_dirs dictionary
         for dir_path in processed_dirs:
@@ -104,7 +157,9 @@ def find_processed_datasets(paths_to_check):
             if name.endswith("_processed"):
                 name = name[:-10]  # Remove "_processed" suffix
             dataset_dirs[name] = dir_path
+            logger.info(f"Added dataset: {name} at {dir_path}")
     
+    logger.info(f"Total datasets found: {len(dataset_dirs)}")
     return dataset_dirs
 
 def sync_datasets_to_drive(dataset_dirs, drive_folder, delete_source=False):
@@ -156,13 +211,25 @@ def find_temp_directories():
     temp_dirs = []
     
     # Check common temp directories for dataset_processing folders
-    temp_base_dirs = [tempfile.gettempdir(), "/tmp"]
+    temp_base_dirs = [tempfile.gettempdir(), "/tmp", "/var/tmp", "/notebooks/tmp"]
     for base_dir in temp_base_dirs:
         if not os.path.exists(base_dir):
             continue
             
         # Find directories with dataset_processing prefix
         temp_dirs.extend(glob.glob(os.path.join(base_dir, "dataset_processing*")))
+        
+        # Also look for temp_datasets directories
+        temp_dirs.extend(glob.glob(os.path.join(base_dir, "temp_dataset*")))
+    
+    # Also check for temp directories in the project root
+    project_temp_dirs = glob.glob(os.path.join(project_root, "temp_dataset*"))
+    temp_dirs.extend(project_temp_dirs)
+    
+    # Add current and parent directories of /tmp/dataset_processing* (sometimes datasets end up here)
+    for base_dir in ["/tmp", tempfile.gettempdir()]:
+        if os.path.exists(base_dir):
+            temp_dirs.append(base_dir)
     
     return temp_dirs
 
@@ -190,8 +257,17 @@ def main():
         "--use_rclone", action="store_true",
         help="Use rclone for syncing (if available)"
     )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Enable verbose logging"
+    )
     
     args = parser.parse_args()
+    
+    # Set logging level based on verbosity
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("Verbose logging enabled")
     
     # Configure sync method
     configure_sync_method(
