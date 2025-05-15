@@ -31,6 +31,8 @@ zstandard
 textblob
 spacy
 pygments
+language-tool-python
+gingerit
 # Google Drive API dependencies (for Paperspace)
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.1.0

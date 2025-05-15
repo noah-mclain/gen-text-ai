@@ -363,6 +363,40 @@ class DataPreprocessor:
                 # Return with dummy length values as fallback
                 return {"processed_text": deduplicated_texts, "length": [0] * len(deduplicated_texts), "duplicates_removed": duplicates_removed}
     
+    def _convert_streaming_to_regular(self, dataset, max_samples=5000):
+        """
+        Convert a streaming dataset to a regular dataset that can be saved to disk.
+        
+        Args:
+            dataset: A streaming dataset
+            max_samples: Maximum number of samples to include
+            
+        Returns:
+            A Dataset that can be saved to disk
+        """
+        from datasets import Dataset
+        
+        if not hasattr(dataset, 'iter') and not hasattr(dataset, '__iter__'):
+            # Not a streaming dataset, return as is
+            return dataset
+            
+        logger.info(f"Converting streaming dataset to regular dataset (max_samples={max_samples})")
+        
+        # Collect samples from streaming dataset
+        samples = []
+        count = 0
+        
+        for sample in self._safe_dataset_iterator(dataset, max_samples):
+            samples.append(sample)
+            count += 1
+            if count >= max_samples:
+                break
+                
+        logger.info(f"Collected {len(samples)} samples from streaming dataset")
+        
+        # Convert to regular dataset
+        return Dataset.from_list(samples)
+
     def process_codesearchnet(self, dataset: Union[Dataset, DatasetDict], 
                              streaming: bool = False, language: str = None, 
                              max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
@@ -1509,7 +1543,14 @@ class DataPreprocessor:
                                     else:
                                         # Standard save behavior
                                         logger.info(f"Saving processed dataset to {output_path}")
-                                        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+                                        if streaming and hasattr(processed_dataset, 'iter'):
+                                            # For streaming datasets, convert to regular dataset first
+                                            logger.info(f"Converting streaming dataset to regular dataset for {dataset_name}")
+                                            regular_dataset = self._convert_streaming_to_regular(processed_dataset, max_samples=max_samples)
+                                            regular_dataset.save_to_disk(output_path)
+                                            # Replace streaming dataset with regular dataset for further use
+                                            processed_dataset = regular_dataset
+                                        elif hasattr(processed_dataset, 'save_to_disk'):
                                             processed_dataset.save_to_disk(output_path)
                                         
                                         # Important: Store the processed dataset and increment success count
@@ -1585,7 +1626,14 @@ class DataPreprocessor:
                                     else:
                                         # Standard save behavior
                                         logger.info(f"Saving processed dataset to {output_path}")
-                                        if not streaming and hasattr(processed_dataset, 'save_to_disk'):
+                                        if streaming and hasattr(processed_dataset, 'iter'):
+                                            # For streaming datasets, convert to regular dataset first
+                                            logger.info(f"Converting streaming dataset to regular dataset for {dataset_name}")
+                                            regular_dataset = self._convert_streaming_to_regular(processed_dataset, max_samples=max_samples)
+                                            regular_dataset.save_to_disk(output_path)
+                                            # Replace streaming dataset with regular dataset for further use
+                                            processed_dataset = regular_dataset
+                                        elif hasattr(processed_dataset, 'save_to_disk'):
                                             processed_dataset.save_to_disk(output_path)
                                         
                                         # Important: Store the processed dataset and increment success count
@@ -1618,11 +1666,19 @@ class DataPreprocessor:
         if successful_count == 0:
             logger.warning("No datasets were processed successfully")
         
-        # Save to Google Drive
+        # Save to local storage
         for dataset_name, processed_dataset in processed_datasets.items():
-            if hasattr(processed_dataset, 'save_to_disk'):
-                gdrive_path = f"/content/drive/MyDrive/datasets/{dataset_name}_processed"
-                processed_dataset.save_to_disk(gdrive_path)
-                print(f"Saved {dataset_name} to Google Drive")
+            output_path = os.path.join(save_path, f"{dataset_name}_processed")
+            logger.info(f"Saving dataset {dataset_name} to {output_path}")
+            
+            if hasattr(processed_dataset, 'iter') and not hasattr(processed_dataset, 'save_to_disk'):
+                # For streaming datasets, convert to regular dataset first
+                logger.info(f"Converting streaming dataset to regular dataset for final save of {dataset_name}")
+                regular_dataset = self._convert_streaming_to_regular(processed_dataset)
+                regular_dataset.save_to_disk(output_path)
+            elif hasattr(processed_dataset, 'save_to_disk'):
+                processed_dataset.save_to_disk(output_path)
+            
+            logger.info(f"Successfully saved {dataset_name} to local storage")
         
         return processed_datasets

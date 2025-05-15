@@ -167,6 +167,12 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
                     drive_base_dir=None, headless=False, skip_local_storage=False):
     """Process datasets for fine-tuning."""
     
+    # Log memory-saving options
+    if skip_local_storage and (use_drive_api or use_drive):
+        logger.info("Running in memory-efficient mode: datasets will be processed, synced to Google Drive and removed from local storage")
+    elif streaming:
+        logger.info("Running in streaming mode: datasets will be loaded and processed in chunks to save memory")
+    
     # Verify config path exists or try alternative locations
     config_paths_to_try = [
         config_path,  # Try the provided path first
@@ -273,7 +279,14 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
                     item.startswith("code_alpaca_") or
                     item.startswith("instruct_code_") or
                     item.startswith("mbpp_") or
-                    item.startswith("humaneval_")
+                    item.startswith("humaneval_") or
+                    "codesearchnet" in item or 
+                    "code_alpaca" in item or
+                    "mbpp" in item or 
+                    "humaneval" in item or
+                    "instruct_code" in item or
+                    "codeparrot" in item or
+                    "_processed" in item
                 ):
                     processed_folders.append(item_path)
             
@@ -307,9 +320,12 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
                 logger.info(f"Syncing {folder_name} to Google Drive...")
                 
                 try:
-                    # Sync to the processed_data folder on Google Drive
-                    if sync_to_drive(folder, "data/processed"):
+                    # Sync to the specified folder on Google Drive
+                    drive_folder = os.path.join(drive_base_dir, "data/processed") if drive_base_dir else "data/processed"
+                    if sync_to_drive(folder, drive_folder, delete_source=skip_local_storage):
                         logger.info(f"Successfully synced {folder_name} to Google Drive")
+                        if skip_local_storage:
+                            logger.info(f"Deleted local copy of {folder_name} to save disk space")
                         sync_success_count += 1
                     else:
                         logger.warning(f"Failed to sync {folder_name} to Google Drive")
