@@ -1,4 +1,4 @@
 {
-  "workbench.colorTheme": "Bearded Theme Aquarelle Lilac",
+  "workbench.colorTheme": "PinkBlue",
   "python.analysis.extraPaths": ["./scripts/src/utils", "./scripts/utilities"]
 }

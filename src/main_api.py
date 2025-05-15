@@ -164,7 +164,8 @@ def run_command(command, description=None):
 
 def process_datasets(config_path, datasets=None, streaming=False, no_cache=False, 
                     use_drive_api=False, use_drive=False, credentials_path=None, 
-                    drive_base_dir=None, headless=False, skip_local_storage=False):
+                    drive_base_dir=None, headless=False, skip_local_storage=False,
+                    temp_dir=None):
     """Process datasets for fine-tuning."""
     
     # Log memory-saving options
@@ -234,6 +235,10 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
     # Add skip_local_storage option if specified
     if skip_local_storage:
         cmd += " --skip_local_storage"
+    
+    # Add custom temp directory if specified
+    if temp_dir:
+        cmd += f" --temp_dir {temp_dir}"
         
     # Add Google Drive options if specified
     if use_drive_api:
@@ -492,6 +497,8 @@ def main():
                         help="Load datasets in streaming mode to save memory")
     parser.add_argument("--no_cache", action="store_true",
                         help="Disable caching for datasets to save disk space")
+    parser.add_argument("--temp_dir", type=str, default=None,
+                        help="Custom temporary directory for dataset processing")
     
     # Google Drive API options (for Paperspace)
     parser.add_argument("--use_drive_api", action="store_true",
@@ -567,7 +574,8 @@ def main():
                 credentials_path=args.credentials_path, 
                 drive_base_dir=args.drive_base_dir,
                 headless=args.headless,
-                skip_local_storage=args.skip_local_storage
+                skip_local_storage=args.skip_local_storage,
+                temp_dir=args.temp_dir
             ):
                 logger.error("Dataset processing failed")
                 return 1
@@ -634,7 +642,8 @@ def main():
             credentials_path=args.credentials_path, 
             drive_base_dir=args.drive_base_dir,
             headless=args.headless,
-            skip_local_storage=args.skip_local_storage
+            skip_local_storage=args.skip_local_storage,
+            temp_dir=args.temp_dir
         ):
             logger.error("Dataset processing failed")
             return 1

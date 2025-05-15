@@ -126,7 +126,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                     use_drive_api: bool = False, credentials_path: Optional[str] = None,
                     drive_base_dir: Optional[str] = None, headless: bool = False,
                     skip_local_storage: bool = False, verbose: bool = False,
-                    use_preprocessed_folder: bool = False):
+                    use_preprocessed_folder: bool = False, temp_dir: Optional[str] = None):
     """Process datasets according to the configuration."""
     
     # Set logging level
@@ -284,11 +284,18 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
 
     # If skipping local storage, create a temporary directory for processing
     if skip_local_storage and (use_drive_api or drive_utils_imported):
-        import tempfile
-        temp_dir = tempfile.mkdtemp(prefix="dataset_processing_")
-        logger.info(f"Using temporary directory for processing: {temp_dir}")
-        output_dir = os.path.join(temp_dir, "processed")
-        os.makedirs(output_dir, exist_ok=True)
+        if temp_dir:
+            # Use the provided visible temporary directory
+            logger.info(f"Using provided temporary directory: {temp_dir}")
+            os.makedirs(temp_dir, exist_ok=True)
+            output_dir = os.path.join(temp_dir, "processed")
+            os.makedirs(output_dir, exist_ok=True)
+        else:
+            import tempfile
+            temp_dir = tempfile.mkdtemp(prefix="dataset_processing_")
+            logger.info(f"Using temporary directory for processing: {temp_dir}")
+            output_dir = os.path.join(temp_dir, "processed")
+            os.makedirs(output_dir, exist_ok=True)
     
     # Process the datasets - measure time for logging
     start_time = time.time()
@@ -312,7 +319,11 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         try:
             # Sync the processed datasets to Drive
             # Determine which folder to use based on the use_preprocessed_folder flag
-            drive_folder = "preprocessed" if use_preprocessed_folder else "data/processed"
+            drive_folder = "preprocessed" if use_preprocessed_folder else "datasets"
+            if drive_base_dir:
+                if drive_base_dir != "datasets" and drive_base_dir != "preprocessed":
+                    drive_folder = drive_base_dir
+            
             logger.info(f"Using Google Drive folder: {drive_folder}")
             
             # Track sync successes to know when it's safe to delete temp directory
@@ -323,7 +334,8 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                 # Check both possible naming patterns for dataset directories
                 dataset_paths = [
                     os.path.join(output_dir, f"{dataset_name}_processed"),
-                    os.path.join(output_dir, dataset_name)
+                    os.path.join(output_dir, dataset_name),
+                    os.path.join(output_dir, f"{dataset_name}")
                 ]
                 
                 # Find the actual path that exists
@@ -335,9 +347,13 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                 
                 if dataset_path:
                     # Log directory details
-                    num_files = sum([len(files) for _, _, files in os.walk(dataset_path)])
-                    size_mb = sum(os.path.getsize(os.path.join(root, file)) for root, _, files in os.walk(dataset_path) for file in files) / (1024 * 1024)
-                    logger.info(f"Syncing dataset {dataset_name} ({num_files} files, {size_mb:.2f} MB) to Drive folder {drive_folder}")
+                    try:
+                        num_files = sum([len(files) for _, _, files in os.walk(dataset_path)])
+                        size_mb = sum(os.path.getsize(os.path.join(root, file)) for root, _, files in os.walk(dataset_path) for file in files) / (1024 * 1024)
+                        logger.info(f"Syncing dataset {dataset_name} ({num_files} files, {size_mb:.2f} MB) to Drive folder {drive_folder}")
+                    except Exception as e:
+                        logger.warning(f"Error calculating directory stats: {e}")
+                        logger.info(f"Syncing dataset {dataset_name} to Drive folder {drive_folder}")
                     
                     # Do not delete source yet - we'll delete everything at once at the end if skip_local_storage is True
                     success = sync_to_drive(
@@ -355,9 +371,13 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                         sync_failures += 1
                 else:
                     logger.warning(f"Could not find directory for dataset {dataset_name}")
+                    # Detailed debug info to help locate the issue
+                    logger.debug(f"Tried paths: {dataset_paths}")
+                    logger.debug(f"Current output_dir: {output_dir}")
+                    logger.debug(f"Directory contents: {os.listdir(output_dir) if os.path.exists(output_dir) else 'directory does not exist'}")
             
             # Now it's safe to delete the temp directory if all syncs were successful
-            if skip_local_storage and 'temp_dir' in locals():
+            if skip_local_storage and 'temp_dir' in locals() and temp_dir:
                 if sync_failures == 0 and sync_successes > 0:
                     import shutil
                     try:
@@ -370,7 +390,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                     logger.info(f"Temporary directory location: {temp_dir}")
         except Exception as e:
             logger.error(f"Error syncing datasets to Google Drive: {str(e)}")
-            if 'temp_dir' in locals():
+            if 'temp_dir' in locals() and temp_dir:
                 logger.info(f"Not cleaning temporary directory due to error: {temp_dir}")
 
     logger.info(f"Processed {len(processed_datasets)} datasets")
@@ -410,6 +430,8 @@ def main():
                         help="Disable caching for datasets to save disk space")
     parser.add_argument("--skip_local_storage", action="store_true",
                         help="Skip storing datasets locally, sync directly to Drive")
+    parser.add_argument("--temp_dir", type=str, default=None,
+                        help="Custom visible temporary directory for processing")
     
     args = parser.parse_args()
     
@@ -430,7 +452,8 @@ def main():
         args.headless,
         args.skip_local_storage,
         verbose=False,
-        use_preprocessed_folder=args.use_preprocessed_folder
+        use_preprocessed_folder=args.use_preprocessed_folder,
+        temp_dir=args.temp_dir
     )
 
 if __name__ == "__main__":
