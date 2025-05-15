@@ -573,33 +573,127 @@ def setup_drive_directories(manager=None, base_dir=None):
 
 def sync_to_drive(local_path, drive_folder_key, delete_source=False, update_only=False):
     """
-    Sync files to Google Drive.
+    Sync a local file or folder to Google Drive.
     
     Args:
         local_path: Path to local file or folder
-        drive_folder_key: Key for destination folder
-        delete_source: Whether to delete the source after upload
-        update_only: Whether to only upload files that don't exist on Drive
+        drive_folder_key: Key for the drive folder to sync to
+        delete_source: Whether to delete the source file/folder after syncing
+        update_only: Whether to only update existing files
         
     Returns:
         True if successful, False otherwise
     """
-    global _drive_manager
+    global drive_manager
+    logger.info(f"Syncing {local_path} to Google Drive folder '{drive_folder_key}'")
     
-    if not GOOGLE_API_AVAILABLE:
-        logger.error("Google API not available")
+    # Make sure local path exists
+    if not os.path.exists(local_path):
+        logger.error(f"Local path {local_path} does not exist")
         return False
     
-    # Authenticate if needed
-    if not _drive_manager.service:
-        if not _drive_manager.authenticate():
+    # Initialize drive manager if needed
+    if drive_manager is None or not drive_manager.authenticated:
+        logger.info("Drive manager not initialized, initializing now...")
+        drive_manager = get_drive_manager()
+        if not drive_manager.authenticated:
+            logger.error("Failed to initialize drive manager")
             return False
     
-    # Upload file or folder
-    if os.path.isdir(local_path):
-        return _drive_manager.upload_folder(local_path, drive_folder_key, delete_source)
-    else:
-        return _drive_manager.upload_file(local_path, drive_folder_key, delete_source)
+    # Check and validate drive folder key
+    if drive_folder_key not in drive_manager.folder_ids:
+        logger.warning(f"Drive folder key '{drive_folder_key}' not found in folder_ids")
+        # Try to find the folder by path
+        logger.info(f"Trying to find or create folder: {drive_folder_key}")
+        create_path_success = create_folder_path(drive_folder_key)
+        if not create_path_success:
+            logger.error(f"Could not create folder path for '{drive_folder_key}'")
+            return False
+    
+    logger.info(f"Starting sync: {local_path} -> {drive_folder_key}")
+    
+    try:
+        if os.path.isdir(local_path):
+            # Log directory info
+            num_files = sum(len(files) for _, _, files in os.walk(local_path))
+            logger.info(f"Syncing directory with {num_files} files")
+            
+            # Sync directory
+            success = drive_manager.upload_folder(local_path, drive_folder_key, delete_source)
+            
+            if success:
+                logger.info(f"Successfully synced directory {local_path} to Google Drive")
+            else:
+                logger.error(f"Failed to sync directory {local_path} to Google Drive")
+            
+            return success
+        else:
+            # Sync file
+            logger.info(f"Syncing file: {os.path.basename(local_path)} ({os.path.getsize(local_path)} bytes)")
+            success = drive_manager.upload_file(local_path, drive_folder_key, delete_source)
+            
+            if success:
+                logger.info(f"Successfully synced file {local_path} to Google Drive")
+            else:
+                logger.error(f"Failed to sync file {local_path} to Google Drive")
+            
+            return success
+    except Exception as e:
+        logger.error(f"Error syncing to drive: {e}")
+        return False
+
+def create_folder_path(folder_path):
+    """
+    Create a folder path on Google Drive.
+    
+    Args:
+        folder_path: Path to create (e.g. 'data/processed')
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    global drive_manager
+    try:
+        # Split path into parts
+        parts = folder_path.split('/')
+        
+        # Start from base folder
+        parent_id = drive_manager.folder_ids.get('base')
+        if parent_id is None:
+            logger.error("Base folder ID not found")
+            return False
+        
+        current_path = ""
+        
+        # Create each part of the path
+        for part in parts:
+            if not part:  # Skip empty parts
+                continue
+                
+            current_path += "/" + part if current_path else part
+            
+            # Check if this part exists
+            folder_id = drive_manager.find_file_id(part, parent_id, is_folder=True)
+            
+            if not folder_id:
+                # Create folder
+                logger.info(f"Creating folder '{part}' in path '{current_path}'")
+                folder_id = drive_manager._find_or_create_folder(part, parent_id)
+                
+                if not folder_id:
+                    logger.error(f"Failed to create folder '{part}' in path '{current_path}'")
+                    return False
+            
+            # Update parent ID for next iteration
+            parent_id = folder_id
+        
+        # Store the final ID
+        drive_manager.folder_ids[folder_path] = parent_id
+        logger.info(f"Successfully created/found folder path '{folder_path}' with ID {parent_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error creating folder path: {e}")
+        return False
 
 def sync_from_drive(drive_folder_key, local_path):
     """

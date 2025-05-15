@@ -1,0 +1,36 @@
+Model should perform following a tasks 
+
+ 1. Take an user input as a string 
+ 2. Preprocess input by removing duplicate words 
+ 3. Convert all text to lowercase 
+ 4. Run a spellcheck on the inst 
+
+ ```python
+def preprocess_text(input_text):
+# remove dublicate words
+words = input_text.split()
+unique_words = []
+for word in words:
+if word not in unique_words:
+    unique_words.append(word)
+
+    # join words back into text
+    cleaned_text = " ".join(unique_words)
+
+    # convert to lowercase
+    cleaned_text = cleaned_text.lower()
+
+    return cleaned_text
+
+    def runspellcheck(text):
+        # TODO: implement spell checking
+        pass
+
+        # Example usage
+        if __name__ == "__main__":
+        user_input = input("Enter text to process")
+        cleaned = preprocess_text(user_input)
+        print("Processed text:", cleaned)
+``` 
+
+ The models should also add an ability to handle special characters and numerous in the input.

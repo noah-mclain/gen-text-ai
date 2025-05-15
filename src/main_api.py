@@ -260,14 +260,42 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
             logger.info("Synchronizing processed datasets to Google Drive...")
             processed_data_dir = os.path.join(project_root, "data", "processed")
             
-            # Create list of processed datasets to sync
+            # Create list of processed datasets to sync - expand detection patterns
             processed_folders = []
             for item in os.listdir(processed_data_dir):
                 item_path = os.path.join(processed_data_dir, item)
-                if os.path.isdir(item_path) and item.endswith("_processed"):
+                # Match various naming patterns for processed datasets
+                if os.path.isdir(item_path) and (
+                    item.endswith("_processed") or 
+                    "_processed_" in item or
+                    "processed_interim" in item or
+                    item.startswith("codesearchnet_") or
+                    item.startswith("code_alpaca_") or
+                    item.startswith("instruct_code_") or
+                    item.startswith("mbpp_") or
+                    item.startswith("humaneval_")
+                ):
                     processed_folders.append(item_path)
             
             logger.info(f"Found {len(processed_folders)} processed datasets to sync")
+            
+            # If no datasets found with standard patterns, log a detailed directory listing
+            if len(processed_folders) == 0:
+                logger.info("No datasets matched standard patterns. Directory contents:")
+                for item in os.listdir(processed_data_dir):
+                    item_path = os.path.join(processed_data_dir, item)
+                    if os.path.isdir(item_path):
+                        logger.info(f"Directory: {item}")
+                    else:
+                        logger.info(f"File: {item}")
+                
+                # As a fallback, include all directories
+                logger.info("Trying fallback: including all directories in processed folder")
+                for item in os.listdir(processed_data_dir):
+                    item_path = os.path.join(processed_data_dir, item)
+                    if os.path.isdir(item_path):
+                        processed_folders.append(item_path)
+                logger.info(f"Fallback found {len(processed_folders)} potential datasets")
             
             # Configure Google Drive sync method with the base directory
             configure_sync_method(base_dir=drive_base_dir)
