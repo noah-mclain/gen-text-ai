@@ -740,7 +740,10 @@ def configure_sync_method(use_rclone=False, base_dir="DeepseekCoder"):
     global _drive_manager
     
     if use_rclone:
-        logger.warning("rclone sync method not implemented yet")
+        # We don't support rclone yet, but we'll use the API instead
+        logger.info("Using Google Drive API for synchronization (rclone support not implemented)")
+    else:
+        logger.info("Using Google Drive API for synchronization")
     
     # Reconfigure drive manager
     if _drive_manager.base_dir != base_dir:
