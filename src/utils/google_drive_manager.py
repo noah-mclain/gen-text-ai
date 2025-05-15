@@ -123,6 +123,10 @@ class DriveManager:
         try:
             # Find root folder
             root_id = self._find_or_create_folder(self.base_dir, None)
+            if root_id is None:
+                logger.error(f"Failed to create root folder '{self.base_dir}'")
+                return False
+                
             self.folder_ids['base'] = root_id
             
             # Create folder structure
@@ -134,6 +138,10 @@ class DriveManager:
                 for i, part in enumerate(parts):
                     # Create or find folder
                     folder_id = self._find_or_create_folder(part, parent_id)
+                    if folder_id is None:
+                        logger.error(f"Failed to create folder '{part}' in path '{path}'")
+                        continue
+                        
                     parent_id = folder_id
                     
                     # Save the ID for the full path
@@ -157,6 +165,11 @@ class DriveManager:
         Returns:
             ID of the folder
         """
+        # Check if service is available
+        if self.service is None:
+            logger.error("Google Drive service not initialized. Call authenticate() first.")
+            return None
+            
         # Check if folder exists
         folder_id = self.find_file_id(folder_name, parent_id, is_folder=True)
         
@@ -164,21 +177,25 @@ class DriveManager:
             return folder_id
         
         # Create folder if it doesn't exist
-        folder_metadata = {
-            'name': folder_name,
-            'mimeType': 'application/vnd.google-apps.folder'
-        }
-        
-        if parent_id:
-            folder_metadata['parents'] = [parent_id]
-        
-        folder = self.service.files().create(
-            body=folder_metadata,
-            fields='id'
-        ).execute()
-        
-        logger.info(f"Created folder '{folder_name}' with ID: {folder.get('id')}")
-        return folder.get('id')
+        try:
+            folder_metadata = {
+                'name': folder_name,
+                'mimeType': 'application/vnd.google-apps.folder'
+            }
+            
+            if parent_id:
+                folder_metadata['parents'] = [parent_id]
+            
+            folder = self.service.files().create(
+                body=folder_metadata,
+                fields='id'
+            ).execute()
+            
+            logger.info(f"Created folder '{folder_name}' with ID: {folder.get('id')}")
+            return folder.get('id')
+        except Exception as e:
+            logger.error(f"Error creating folder '{folder_name}': {e}")
+            return None
     
     def find_file_id(self, file_name, parent_id=None, is_folder=False):
         """
@@ -192,6 +209,11 @@ class DriveManager:
         Returns:
             ID of the file or folder, or None if not found
         """
+        # Check if service is available
+        if self.service is None:
+            logger.error("Google Drive service not initialized. Call authenticate() first.")
+            return None
+            
         query = f"name = '{file_name}'"
         
         if is_folder:
@@ -475,8 +497,11 @@ def setup_drive_directories(manager=None, base_dir=None):
     # Set base directory if provided
     if base_dir and mgr.base_dir != base_dir:
         mgr = DriveManager(base_dir=base_dir)
-        if not mgr.authenticate():
-            return {}
+    
+    # Ensure authentication is complete
+    if not mgr.authenticate():
+        logger.error("Failed to authenticate with Google Drive")
+        return {}
     
     # Set up drive structure
     if mgr._setup_drive_structure():
