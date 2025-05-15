@@ -2,8 +2,8 @@
 """
 Sync Processed Datasets to Google Drive
 
-This script finds all processed datasets in the local data directory
-and syncs them to the Google Drive DeepseekCoder/data/processed/ folder.
+This script finds all processed datasets in the local data directory (in Arrow format 
+with dataset_info.json files) and syncs them to the Google Drive DeepseekCoder/data/processed/ folder.
 """
 
 import os
@@ -97,27 +97,56 @@ def find_processed_datasets(data_dir="data/processed", notebooks_dir="/notebooks
                     entry.startswith("mbpp_") or
                     entry.startswith("humaneval_")):
                     
+                    # Check if the directory has Arrow files or dataset_info.json
+                    has_dataset_info = os.path.exists(os.path.join(full_path, "dataset_info.json"))
+                    has_arrow_files = any(f.endswith('.arrow') for f in os.listdir(full_path) 
+                                         if os.path.isfile(os.path.join(full_path, f)))
+                    
                     # Make sure we don't add duplicates (same folder name from different locations)
                     if entry not in [os.path.basename(p) for p in processed_dirs]:
                         processed_dirs.append(full_path)
                         if verbose:
                             logger.debug(f"Found dataset: {entry} at {full_path}")
+                            if has_dataset_info:
+                                logger.debug(f"  - Has dataset_info.json")
+                            if has_arrow_files:
+                                arrow_files = [f for f in os.listdir(full_path) 
+                                             if os.path.isfile(os.path.join(full_path, f)) 
+                                             and f.endswith('.arrow')]
+                                logger.debug(f"  - Has {len(arrow_files)} arrow files")
         except Exception as e:
             logger.error(f"Error reading directory {search_dir}: {e}")
     
     # If no specific datasets found, include all directories as fallback
     if not processed_dirs:
-        logger.warning("No datasets matched specific patterns. Checking for any directories...")
+        logger.warning("No datasets matched specific patterns. Checking for any directories with Arrow files...")
         
         for search_dir in search_dirs:
             try:
                 for entry in os.listdir(search_dir):
                     full_path = os.path.join(search_dir, entry)
                     if os.path.isdir(full_path):
-                        # Make sure we don't add duplicates
-                        if entry not in [os.path.basename(p) for p in processed_dirs]:
-                            processed_dirs.append(full_path)
-                            logger.info(f"Found directory: {entry}")
+                        # Check if this directory has arrow files or dataset_info.json
+                        has_arrow_files = False
+                        has_dataset_info = False
+                        
+                        try:
+                            has_dataset_info = os.path.exists(os.path.join(full_path, "dataset_info.json"))
+                            has_arrow_files = any(f.endswith('.arrow') for f in os.listdir(full_path) 
+                                                if os.path.isfile(os.path.join(full_path, f)))
+                        except Exception:
+                            pass
+                            
+                        # Include directories with Arrow files or dataset_info.json
+                        if has_arrow_files or has_dataset_info:
+                            # Make sure we don't add duplicates
+                            if entry not in [os.path.basename(p) for p in processed_dirs]:
+                                processed_dirs.append(full_path)
+                                logger.info(f"Found dataset directory: {entry}")
+                                if has_dataset_info:
+                                    logger.info(f"  - Has dataset_info.json")
+                                if has_arrow_files:
+                                    logger.info(f"  - Has Arrow files")
             except Exception as e:
                 logger.error(f"Error reading directory {search_dir}: {e}")
     
@@ -169,7 +198,21 @@ def sync_processed_datasets(data_dir="data/processed", notebooks_dir="/notebooks
     if processed_dirs:
         logger.info(f"Found {len(processed_dirs)} datasets to sync:")
         for i, path in enumerate(processed_dirs, 1):
+            # Get counts of arrow files for logging
+            arrow_count = 0
+            has_dataset_info = False
+            try:
+                has_dataset_info = os.path.exists(os.path.join(path, "dataset_info.json"))
+                arrow_count = sum(1 for f in os.listdir(path) 
+                               if os.path.isfile(os.path.join(path, f)) and f.endswith('.arrow'))
+            except Exception:
+                pass
+                
             logger.info(f"{i}. {os.path.basename(path)} ({path})")
+            if has_dataset_info:
+                logger.info(f"   - Has dataset_info.json")
+            if arrow_count > 0:
+                logger.info(f"   - Contains {arrow_count} Arrow files")
     else:
         logger.error("No datasets found to sync. Check that your datasets exist in the specified directories.")
         return 0
@@ -193,6 +236,25 @@ def sync_processed_datasets(data_dir="data/processed", notebooks_dir="/notebooks
             
             # Record start time for performance tracking
             start_time = time.time()
+            
+            # Calculate stats for better logging
+            total_files = 0
+            arrow_files = 0
+            size_mb = 0
+            try:
+                for root, _, files in os.walk(dataset_path):
+                    for file in files:
+                        total_files += 1
+                        full_path = os.path.join(root, file)
+                        if file.endswith('.arrow'):
+                            arrow_files += 1
+                        try:
+                            size_mb += os.path.getsize(full_path) / (1024 * 1024)
+                        except Exception:
+                            pass
+                logger.info(f"Syncing {total_files} files ({arrow_files} arrow files, {size_mb:.2f} MB)")
+            except Exception as e:
+                logger.warning(f"Error calculating stats: {e}")
             
             success = sync_to_drive(
                 dataset_path,

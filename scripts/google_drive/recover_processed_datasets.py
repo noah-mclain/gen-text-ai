@@ -3,8 +3,9 @@
 Recover Processed Datasets Script
 
 This script helps recover processed datasets that might be lost in temporary directories
-by directly searching for .jsonl files that match dataset patterns and copying them
-to a recovery directory, then syncing them to Google Drive.
+by directly searching for arrow files and dataset_info.json files that indicate HuggingFace
+datasets saved with save_to_disk(), then copying them to a recovery directory and 
+syncing them to Google Drive.
 """
 
 import os
@@ -102,93 +103,126 @@ def find_dataset_files():
         os.path.join(project_root, "data", "processed")
     ]
     
-    # Find all jsonl files
-    dataset_files = {}
+    # Find all processed dataset directories and arrow files
+    dataset_dirs = {}
     
-    # Add dataset names to search patterns
-    patterns = []
-    for name in dataset_names:
-        patterns.append(f"{name}*.jsonl")
-        patterns.append(f"*/{name}*.jsonl")
-        patterns.append(f"*/{name}_processed/*.jsonl")
-        patterns.append(f"*/{name}/*.jsonl")
-        patterns.append(f"*/processed/{name}*.jsonl")
-    
-    # Search for dataset files
+    # Look for processed dataset directories
     for temp_dir in temp_dirs:
         if "*" in temp_dir:
             # Handle glob patterns
             matching_dirs = glob.glob(temp_dir)
             for match_dir in matching_dirs:
-                if os.path.exists(match_dir):
-                    for pattern in patterns:
-                        files = glob.glob(os.path.join(match_dir, pattern), recursive=True)
-                        for file in files:
-                            # Try to determine dataset name from file path
-                            dataset_name = None
-                            for name in dataset_names:
-                                if name in file:
-                                    dataset_name = name
-                                    break
+                if not os.path.exists(match_dir):
+                    continue
+                
+                logger.info(f"Searching in directory: {match_dir}")
+                
+                # Look for _processed directories or dataset_name directories
+                for dataset_name in dataset_names:
+                    # Try both naming patterns
+                    processed_dir_patterns = [
+                        os.path.join(match_dir, f"{dataset_name}_processed"),
+                        os.path.join(match_dir, dataset_name),
+                        os.path.join(match_dir, "processed", f"{dataset_name}_processed"),
+                        os.path.join(match_dir, "processed", dataset_name)
+                    ]
+                    
+                    for dir_pattern in processed_dir_patterns:
+                        if os.path.isdir(dir_pattern):
+                            # Check if this looks like a dataset directory
+                            # Datasets saved with .save_to_disk() typically have dataset_info.json and .arrow files
+                            has_dataset_info = os.path.exists(os.path.join(dir_pattern, "dataset_info.json"))
+                            has_arrow_files = bool(glob.glob(os.path.join(dir_pattern, "*.arrow")) or 
+                                                  glob.glob(os.path.join(dir_pattern, "**/*.arrow")))
                             
-                            if dataset_name:
-                                if dataset_name not in dataset_files:
-                                    dataset_files[dataset_name] = []
-                                dataset_files[dataset_name].append(file)
+                            if has_dataset_info or has_arrow_files:
+                                if dataset_name not in dataset_dirs:
+                                    dataset_dirs[dataset_name] = []
+                                if dir_pattern not in dataset_dirs[dataset_name]:
+                                    dataset_dirs[dataset_name].append(dir_pattern)
+                                    logger.info(f"Found dataset directory for {dataset_name}: {dir_pattern}")
+                                    if has_dataset_info:
+                                        logger.info(f"  - Contains dataset_info.json")
+                                    if has_arrow_files:
+                                        arrow_files = glob.glob(os.path.join(dir_pattern, "*.arrow")) + \
+                                                     glob.glob(os.path.join(dir_pattern, "**/*.arrow"))
+                                        logger.info(f"  - Contains {len(arrow_files)} Arrow files")
         elif os.path.exists(temp_dir):
-            # Use find command for deeper search (more reliable than glob)
+            logger.info(f"Searching in directory: {temp_dir}")
+            
+            # Use find command for deeper search of processed directories
             try:
-                cmd = ["find", temp_dir, "-name", "*.jsonl", "-type", "f"]
+                # Look for dataset_info.json which indicates a dataset directory
+                cmd = ["find", temp_dir, "-name", "dataset_info.json", "-type", "f"]
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode == 0:
-                    files = result.stdout.strip().split("\n")
-                    for file in files:
+                    info_files = result.stdout.strip().split("\n")
+                    for file in info_files:
                         if not file:  # Skip empty lines
                             continue
-                            
+                        
+                        # Get the directory containing the dataset_info.json
+                        dir_path = os.path.dirname(file)
+                        
+                        # Try to determine dataset name from directory path
+                        dataset_name = None
+                        for name in dataset_names:
+                            if name in dir_path:
+                                dataset_name = name
+                                break
+                        
+                        if dataset_name:
+                            if dataset_name not in dataset_dirs:
+                                dataset_dirs[dataset_name] = []
+                            if dir_path not in dataset_dirs[dataset_name]:
+                                dataset_dirs[dataset_name].append(dir_path)
+                                logger.info(f"Found dataset directory for {dataset_name}: {dir_path}")
+                                logger.info(f"  - Contains dataset_info.json")
+                
+                # Also look for .arrow files
+                cmd = ["find", temp_dir, "-name", "*.arrow", "-type", "f"]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    arrow_files = result.stdout.strip().split("\n")
+                    for file in arrow_files:
+                        if not file:  # Skip empty lines
+                            continue
+                        
+                        # Get the directory containing the arrow file
+                        dir_path = os.path.dirname(file)
+                        
                         # Try to determine dataset name from file path
                         dataset_name = None
                         for name in dataset_names:
-                            if name in file:
+                            if name in dir_path or name in file:
                                 dataset_name = name
                                 break
-                            
+                        
                         if dataset_name:
-                            if dataset_name not in dataset_files:
-                                dataset_files[dataset_name] = []
-                            dataset_files[dataset_name].append(file)
+                            if dataset_name not in dataset_dirs:
+                                dataset_dirs[dataset_name] = []
+                            if dir_path not in dataset_dirs[dataset_name]:
+                                dataset_dirs[dataset_name].append(dir_path)
+                                logger.info(f"Found dataset directory for {dataset_name}: {dir_path}")
+                                logger.info(f"  - Contains arrow file: {os.path.basename(file)}")
             except Exception as e:
                 logger.warning(f"Error running find command: {e}")
-                # Fall back to glob
-                for pattern in patterns:
-                    files = glob.glob(os.path.join(temp_dir, pattern), recursive=True)
-                    for file in files:
-                        # Try to determine dataset name from file path
-                        dataset_name = None
-                        for name in dataset_names:
-                            if name in file:
-                                dataset_name = name
-                                break
-                            
-                        if dataset_name:
-                            if dataset_name not in dataset_files:
-                                dataset_files[dataset_name] = []
-                            dataset_files[dataset_name].append(file)
     
-    # Count files found
-    total_files = sum(len(files) for files in dataset_files.values())
-    logger.info(f"Found {total_files} dataset files for {len(dataset_files)} datasets")
+    # Count directories found
+    total_dirs = sum(len(dirs) for dirs in dataset_dirs.values())
+    logger.info(f"Found {total_dirs} dataset directories for {len(dataset_dirs)} datasets")
     
     # Print found datasets
-    for dataset_name, files in dataset_files.items():
-        logger.info(f"Found {len(files)} files for dataset {dataset_name}")
+    for dataset_name, dirs in dataset_dirs.items():
+        if dirs:
+            logger.info(f"Found {len(dirs)} directories for dataset {dataset_name}: {dirs}")
     
-    return dataset_files
+    return dataset_dirs
 
-def recover_datasets(dataset_files, recovery_dir, drive_folder):
+def recover_datasets(dataset_dirs, recovery_dir, drive_folder):
     """Recover datasets by copying files to a recovery directory and syncing to Drive."""
-    if not dataset_files:
-        logger.warning("No dataset files found to recover")
+    if not dataset_dirs:
+        logger.warning("No dataset directories found to recover")
         return {}
     
     # Create recovery directory
@@ -198,48 +232,81 @@ def recover_datasets(dataset_files, recovery_dir, drive_folder):
     recovered_datasets = {}
     
     # Copy files to recovery directory
-    for dataset_name, files in dataset_files.items():
+    for dataset_name, dirs in dataset_dirs.items():
+        if not dirs:
+            continue
+            
         logger.info(f"Recovering dataset {dataset_name}...")
         
         # Create dataset directory
         dataset_dir = os.path.join(recovery_dir, f"{dataset_name}_processed")
         os.makedirs(dataset_dir, exist_ok=True)
         
-        # Copy files
-        for file in files:
+        # Copy each found directory
+        for dir_path in dirs:
             try:
-                # Get base filename
-                filename = os.path.basename(file)
-                target_file = os.path.join(dataset_dir, filename)
+                # Calculate stats for logging
+                file_count = 0
+                size_mb = 0
+                arrow_count = 0
+                for root, _, files in os.walk(dir_path):
+                    for file in files:
+                        file_count += 1
+                        if file.endswith('.arrow'):
+                            arrow_count += 1
+                        try:
+                            size_mb += os.path.getsize(os.path.join(root, file)) / (1024 * 1024)
+                        except:
+                            pass
                 
-                # Copy file
-                shutil.copy2(file, target_file)
-                logger.info(f"Copied {file} to {target_file}")
+                logger.info(f"Copying {file_count} files ({arrow_count} Arrow files, {size_mb:.2f} MB) from {dir_path} to {dataset_dir}")
+                
+                # Copy directory contents
+                for item in os.listdir(dir_path):
+                    source = os.path.join(dir_path, item)
+                    dest = os.path.join(dataset_dir, item)
+                    
+                    if os.path.isdir(source):
+                        # Copy directory and contents
+                        shutil.copytree(source, dest, dirs_exist_ok=True)
+                        logger.info(f"Copied directory: {item}")
+                    else:
+                        # Copy file
+                        shutil.copy2(source, dest)
+                        if item == 'dataset_info.json':
+                            logger.info(f"Copied dataset_info.json")
+                        elif item.endswith('.arrow'):
+                            logger.info(f"Copied Arrow file: {item}")
                 
                 # Track recovered datasets
                 if dataset_name not in recovered_datasets:
                     recovered_datasets[dataset_name] = []
-                recovered_datasets[dataset_name].append(target_file)
+                recovered_datasets[dataset_name].append(dir_path)
+                logger.info(f"Successfully copied dataset {dataset_name} from {dir_path}")
             except Exception as e:
-                logger.error(f"Error copying file {file}: {e}")
+                logger.error(f"Error copying from {dir_path}: {e}")
     
     # Sync recovered datasets to Google Drive
     if drive_utils_imported:
-        logger.info(f"Syncing recovered datasets to Google Drive folder '{drive_folder}'")
-        for dataset_name, files in recovered_datasets.items():
-            if files:
+        for dataset_name, dirs in recovered_datasets.items():
+            if dirs:
                 dataset_dir = os.path.join(recovery_dir, f"{dataset_name}_processed")
-                success = sync_to_drive(
-                    dataset_dir,
-                    drive_folder,
-                    delete_source=False,
-                    update_only=False
-                )
                 
-                if success:
-                    logger.info(f"Successfully synced recovered dataset {dataset_name} to Drive")
-                else:
-                    logger.error(f"Failed to sync recovered dataset {dataset_name} to Drive")
+                # Check if the dataset directory exists and has content
+                if os.path.exists(dataset_dir) and os.listdir(dataset_dir):
+                    logger.info(f"Syncing recovered dataset {dataset_name} to Google Drive folder '{drive_folder}'")
+                    
+                    success = sync_to_drive(
+                        dataset_dir,
+                        drive_folder,
+                        delete_source=False,
+                        update_only=False
+                    )
+                    
+                    if success:
+                        logger.info(f"Successfully synced recovered dataset {dataset_name} to Drive")
+                    else:
+                        logger.error(f"Failed to sync recovered dataset {dataset_name} to Drive")
     else:
         logger.warning("Google Drive sync not available, datasets only recovered locally")
     
@@ -272,10 +339,10 @@ def main():
         )
     
     # Find dataset files
-    dataset_files = find_dataset_files()
+    dataset_dirs = find_dataset_files()
     
     # Recover datasets
-    recovered_datasets = recover_datasets(dataset_files, args.recovery_dir, args.drive_folder)
+    recovered_datasets = recover_datasets(dataset_dirs, args.recovery_dir, args.drive_folder)
     
     # Print summary
     logger.info("\n--- Recovery Summary ---")
@@ -283,14 +350,16 @@ def main():
     logger.info(f"Google Drive Folder: {args.drive_folder}")
     logger.info(f"Recovered {len(recovered_datasets)} datasets")
     
-    for dataset_name, files in recovered_datasets.items():
-        logger.info(f"  - {dataset_name}: {len(files)} files")
+    for dataset_name, dirs in recovered_datasets.items():
+        logger.info(f"  - {dataset_name}: {len(dirs)} directories")
     
     if recovered_datasets:
         logger.info("\nRecovery completed successfully!")
     else:
         logger.warning("\nNo datasets were recovered. Your datasets might be lost or in a different location.")
-        logger.warning("Try manually finding .jsonl files with 'find /tmp -name \"*.jsonl\"' command")
+        logger.warning("Try manually finding arrow files or dataset directories with:")
+        logger.warning("  find /tmp -name \"dataset_info.json\" -type f")
+        logger.warning("  find /tmp -name \"*.arrow\" -type f")
     
     return 0
 

@@ -4,6 +4,8 @@ Fix Dataset Sync Script
 
 This script finds and syncs datasets that were previously processed but not successfully 
 synced to Google Drive. It can also scan temporary directories for processed datasets.
+Specifically looks for HuggingFace datasets saved in Arrow format with dataset_info.json
+and .arrow files.
 """
 
 import os
@@ -140,13 +142,27 @@ def find_processed_datasets(paths_to_check):
         if not processed_dirs:
             logger.info("No datasets found yet, trying more aggressive search...")
             try:
+                # Search for dataset_info.json files and .arrow files which are indicators of HuggingFace datasets
                 for root, dirs, files in os.walk(base_path):
+                    has_dataset_info = "dataset_info.json" in files
+                    has_arrow_files = any(f.endswith('.arrow') for f in files)
+                    
+                    if has_dataset_info or has_arrow_files:
+                        # This is likely a dataset directory
+                        logger.info(f"Found potential dataset directory: {root}")
+                        if has_dataset_info:
+                            logger.info(f"  - Contains dataset_info.json")
+                        if has_arrow_files:
+                            arrow_files = [f for f in files if f.endswith('.arrow')]
+                            logger.info(f"  - Contains {len(arrow_files)} Arrow files: {arrow_files}")
+                        processed_dirs.append(root)
+                        
                     for d in dirs:
                         # Check if directory name contains dataset name
                         for dataset_name in dataset_names:
                             if dataset_name.lower() in d.lower():
                                 full_path = os.path.join(root, d)
-                                logger.info(f"Found potential dataset directory: {full_path}")
+                                logger.info(f"Found potential dataset directory by name: {full_path}")
                                 processed_dirs.append(full_path)
             except Exception as e:
                 logger.warning(f"Error during aggressive search: {e}")
@@ -157,7 +173,20 @@ def find_processed_datasets(paths_to_check):
             if name.endswith("_processed"):
                 name = name[:-10]  # Remove "_processed" suffix
             dataset_dirs[name] = dir_path
-            logger.info(f"Added dataset: {name} at {dir_path}")
+            
+            # Log what we found in this directory
+            try:
+                arrow_files = glob.glob(os.path.join(dir_path, "*.arrow")) + \
+                             glob.glob(os.path.join(dir_path, "**/*.arrow"))
+                has_dataset_info = os.path.exists(os.path.join(dir_path, "dataset_info.json"))
+                
+                logger.info(f"Added dataset: {name} at {dir_path}")
+                if has_dataset_info:
+                    logger.info(f"  - Contains dataset_info.json")
+                if arrow_files:
+                    logger.info(f"  - Contains {len(arrow_files)} Arrow files")
+            except Exception as e:
+                logger.warning(f"Error checking dataset contents: {e}")
     
     logger.info(f"Total datasets found: {len(dataset_dirs)}")
     return dataset_dirs
@@ -177,11 +206,23 @@ def sync_datasets_to_drive(dataset_dirs, drive_folder, delete_source=False):
         try:
             # Calculate stats for logging
             try:
-                num_files = sum([len(files) for _, _, files in os.walk(path)])
-                size_mb = sum(os.path.getsize(os.path.join(root, file)) 
-                             for root, _, files in os.walk(path) 
-                             for file in files) / (1024 * 1024)
-                logger.info(f"Syncing dataset {name} ({num_files} files, {size_mb:.2f} MB)")
+                total_files = 0
+                arrow_files = 0
+                other_files = 0
+                size_mb = 0
+                for root, _, files in os.walk(path):
+                    for file in files:
+                        total_files += 1
+                        if file.endswith('.arrow'):
+                            arrow_files += 1
+                        else:
+                            other_files += 1
+                        try:
+                            size_mb += os.path.getsize(os.path.join(root, file)) / (1024 * 1024)
+                        except Exception:
+                            pass
+                
+                logger.info(f"Syncing dataset {name} ({total_files} files, {arrow_files} Arrow files, {size_mb:.2f} MB)")
             except Exception as e:
                 logger.warning(f"Error calculating directory stats: {e}")
                 logger.info(f"Syncing dataset {name}")
