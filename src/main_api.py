@@ -234,10 +234,12 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
     # Add datasets if specified
     if datasets:
         if isinstance(datasets, list):
-            datasets_str = ",".join(datasets)
+            # Add each dataset individually to ensure proper parsing
+            for dataset in datasets:
+                cmd += f" --datasets {dataset}"
         else:
-            datasets_str = datasets
-        cmd += f" --datasets {datasets_str}"
+            # Handle single dataset case
+            cmd += f" --datasets {datasets}"
     
     # Add drive-related flags if specified
     if use_drive:
