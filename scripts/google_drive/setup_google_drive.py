@@ -121,57 +121,71 @@ def create_credentials_template():
 
 def check_credentials():
     """Check if credentials file exists and has correct format."""
+    # Define default credential paths in case we can't import them
+    default_credential_paths = [
+        "credentials.json",  # Current directory
+        os.path.join(os.path.expanduser("~"), "credentials.json"),  # User's home directory
+        "/notebooks/credentials.json",  # Paperspace path
+        os.path.join(os.getcwd(), "credentials.json"),  # Current working directory
+        # Project root (assuming we're in scripts/google_drive)
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "credentials.json")
+    ]
+    
+    credential_paths = []
+    # Try to import from google_drive_manager
     try:
         from src.utils.google_drive_manager import CREDENTIALS_PATHS
-        
-        # Try to find existing credentials file
-        for path in CREDENTIALS_PATHS:
-            if os.path.exists(path):
-                # Check if it's properly formatted
-                try:
-                    with open(path, 'r') as f:
-                        creds = json.load(f)
-                    
-                    # Check if it has the template comment
-                    if "_comment" in creds:
-                        logger.warning(f"Found credentials template at {path} but it hasn't been filled in yet")
-                        return None
-                    
-                    # Check for required fields
-                    client_type = None
-                    if 'installed' in creds:
-                        client_type = 'installed'
-                    elif 'web' in creds:
-                        client_type = 'web'
-                    
-                    if not client_type:
-                        logger.warning(f"Invalid credentials format at {path}")
-                        return None
-                    
-                    # Check for OOB redirect URI
-                    redirect_uris = creds.get(client_type, {}).get('redirect_uris', [])
-                    has_oob = any('oob' in uri for uri in redirect_uris)
-                    
-                    if not has_oob:
-                        logger.warning(f"Credentials at {path} doesn't include OOB redirect URI")
-                        logger.warning("This is required for headless authentication")
-                        logger.warning("Please add 'urn:ietf:wg:oauth:2.0:oob' to the redirect_uris list")
-                        return None
-                    
-                    logger.info(f"Found valid credentials at {path}")
-                    return path
-                    
-                except (json.JSONDecodeError, KeyError) as e:
-                    logger.warning(f"Error parsing credentials at {path}: {e}")
-                    return None
-        
-        # No valid credentials found, create template
-        logger.info("No credentials.json file found, creating template")
-        return create_credentials_template()
+        credential_paths = CREDENTIALS_PATHS
+        logger.info("Using credential paths from google_drive_manager")
+    except ImportError as e:
+        logger.warning(f"Could not import CREDENTIALS_PATHS: {e}")
+        credential_paths = default_credential_paths
+        logger.info("Using default credential paths")
     
-    except ImportError:
-        logger.error("Could not import google_drive_manager module")
-        return None
+    # Try to find existing credentials file
+    for path in credential_paths:
+        if os.path.exists(path):
+            # Check if it's properly formatted
+            try:
+                with open(path, 'r') as f:
+                    creds = json.load(f)
+                
+                # Check if it has the template comment
+                if "_comment" in creds:
+                    logger.warning(f"Found credentials template at {path} but it hasn't been filled in yet")
+                    return None
+                
+                # Check for required fields
+                client_type = None
+                if 'installed' in creds:
+                    client_type = 'installed'
+                elif 'web' in creds:
+                    client_type = 'web'
+                
+                if not client_type:
+                    logger.warning(f"Invalid credentials format at {path}")
+                    return None
+                
+                # Check for OOB redirect URI
+                redirect_uris = creds.get(client_type, {}).get('redirect_uris', [])
+                has_oob = any('oob' in uri for uri in redirect_uris)
+                
+                if not has_oob:
+                    logger.warning(f"Credentials at {path} doesn't include OOB redirect URI")
+                    logger.warning("This is required for headless authentication")
+                    logger.warning("Please add 'urn:ietf:wg:oauth:2.0:oob' to the redirect_uris list")
+                    return None
+                
+                logger.info(f"Found valid credentials at {path}")
+                return path
+                
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"Error parsing credentials at {path}: {e}")
+                return None
+    
+    # No valid credentials found, create template
+    logger.info("No credentials.json file found, creating template")
+    return create_credentials_template()
 
 def setup_google_drive():
     """Guide the user through Google Drive setup."""
@@ -183,8 +197,16 @@ def setup_google_drive():
     
     # Import the drive manager
     try:
-        from src.utils.google_drive_manager import test_authentication, test_drive_mounting
-    except ImportError as e:
+        # First try to import from src.utils
+        try:
+            from src.utils.google_drive_manager import test_authentication, test_drive_mounting
+        except ImportError:
+            # Try from local redirect
+            from scripts.src.utils.google_drive_manager import test_authentication, test_drive_mounting
+        except Exception as e:
+            logger.error(f"Error importing Google Drive manager: {str(e)}")
+            raise
+    except Exception as e:
         logger.error(f"Error importing Google Drive manager: {str(e)}")
         logger.info("Make sure the src/utils/google_drive_manager.py file exists and all dependencies are installed.")
         logger.info("You can install dependencies with: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
@@ -254,25 +276,8 @@ def main():
         print_rclone_instructions()
         return 0
     
-    # Load and set configuration
-    try:
-        from src.utils.google_drive_manager import _drive_manager as drive_manager, configure_sync_method
-        # Set the base directory
-        if args.base_dir:
-            configure_sync_method(base_dir=args.base_dir)
-            logger.info(f"Set Drive base directory to: {args.base_dir}")
-    except ImportError:
-        # Try alternative import
-        try:
-            from src.utils.google_drive_manager import drive_manager, configure_sync_method
-            # Set the base directory
-            if args.base_dir:
-                configure_sync_method(base_dir=args.base_dir)
-                logger.info(f"Set Drive base directory to: {args.base_dir}")
-        except Exception as e:
-            logger.error(f"Error configuring Drive base directory: {e}")
-    except Exception as e:
-        logger.error(f"Error configuring Drive base directory: {e}")
+    # Set the base directory directly without calling configure_sync_method
+    logger.info(f"Using Drive base directory: {args.base_dir}")
         
     # Run the setup
     success = setup_google_drive()

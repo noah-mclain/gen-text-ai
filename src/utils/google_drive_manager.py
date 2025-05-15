@@ -32,6 +32,15 @@ except ImportError as e:
     logger.warning(f"Google API libraries not available: {e}")
     logger.warning("Install with: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
 
+# Define potential paths for credentials file
+CREDENTIALS_PATHS = [
+    "credentials.json",  # Current directory
+    os.path.join(os.path.expanduser("~"), "credentials.json"),  # User's home directory
+    "/notebooks/credentials.json",  # Paperspace path
+    os.path.join(os.getcwd(), "credentials.json"),  # Current working directory
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "credentials.json")  # Project root
+]
+
 # Define Drive folders structure
 DRIVE_FOLDERS = {
     "models": "models",
@@ -61,6 +70,7 @@ class DriveManager:
         self.service = None
         self.token_path = token_path
         self.credentials_path = credentials_path
+        self.authenticated = False
         
         # Make sure Google API is available
         if not GOOGLE_API_AVAILABLE:
@@ -93,13 +103,29 @@ class DriveManager:
                 if creds and creds.expired and creds.refresh_token:
                     creds.refresh(Request())
                 else:
-                    # Check if credentials file exists
-                    if not os.path.exists(self.credentials_path):
-                        logger.error(f"Credentials file not found: {self.credentials_path}")
+                    # Try all possible credential paths
+                    credential_file_found = False
+                    
+                    # First try the configured path
+                    if os.path.exists(self.credentials_path):
+                        credential_path = self.credentials_path
+                        credential_file_found = True
+                    else:
+                        # Check all other possible paths
+                        for path in CREDENTIALS_PATHS:
+                            if os.path.exists(path):
+                                credential_path = path
+                                credential_file_found = True
+                                logger.info(f"Found credentials file at: {path}")
+                                break
+                    
+                    if not credential_file_found:
+                        logger.error("Credentials file not found. Please create a credentials.json file.")
+                        logger.error(f"Looked in: {[self.credentials_path] + CREDENTIALS_PATHS}")
                         return False
                         
                     flow = InstalledAppFlow.from_client_secrets_file(
-                        self.credentials_path, SCOPES)
+                        credential_path, SCOPES)
                     creds = flow.run_local_server(port=0)
                 
                 # Save the credentials for the next run
@@ -113,9 +139,11 @@ class DriveManager:
             self._setup_drive_structure()
             
             logger.info("Successfully authenticated with Google Drive")
+            self.authenticated = True
             return True
         except Exception as e:
             logger.error(f"Error authenticating with Google Drive: {e}")
+            self.authenticated = False
             return False
     
     def _setup_drive_structure(self):

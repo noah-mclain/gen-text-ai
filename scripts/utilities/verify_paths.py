@@ -160,13 +160,21 @@ def check_imports():
 
 def check_credentials():
     """Check if credentials file exists and is valid, and if HF token is set."""
-    credentials_path = "credentials.json"
+    # Define potential credential paths
+    credential_paths = [
+        "credentials.json",  # Current directory
+        os.path.join(os.path.expanduser("~"), "credentials.json"),  # User's home directory
+        "/notebooks/credentials.json",  # Paperspace path
+        os.path.join(os.getcwd(), "credentials.json"),  # Current working directory
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "credentials.json")  # Project root
+    ]
     
     results = {
         "exists": False,
         "valid": False,
         "hf_token": False,
-        "hf_token_source": None
+        "hf_token_source": None,
+        "paths_checked": credential_paths
     }
     
     # First check if HF_TOKEN is in environment variables
@@ -175,49 +183,86 @@ def check_credentials():
         results["hf_token"] = True
         results["hf_token_source"] = "environment"
     
-    # Then check credentials file
-    if not os.path.exists(credentials_path):
-        logger.warning(f"✗ Credentials file not found: {credentials_path}")
+    # Check all potential credential paths
+    for credentials_path in credential_paths:
+        if os.path.exists(credentials_path):
+            logger.info(f"Found credentials file at: {credentials_path}")
+            results["exists"] = True
+            
+            try:
+                with open(credentials_path, 'r') as f:
+                    credentials = json.load(f)
+                
+                results["valid"] = True
+                logger.info(f"✓ Credentials file at {credentials_path} is valid JSON")
+                
+                # Check if it's just a template
+                if "_comment" in credentials:
+                    logger.warning(f"Credentials file at {credentials_path} appears to be a template")
+                    results["valid"] = False
+                    results["error"] = "Template file needs to be filled with actual credentials"
+                    continue
+                
+                # Only check for HF token in credentials if not already found in environment
+                if not results["hf_token"]:
+                    # Check for HF token
+                    hf_token = None
+                    
+                    if "huggingface" in credentials and "token" in credentials["huggingface"]:
+                        hf_token = credentials["huggingface"]["token"]
+                    elif "hf_token" in credentials:
+                        hf_token = credentials["hf_token"]
+                    elif "api_keys" in credentials and "huggingface" in credentials["api_keys"]:
+                        hf_token = credentials["api_keys"]["huggingface"]
+                    
+                    if hf_token:
+                        results["hf_token"] = True
+                        results["hf_token_source"] = "credentials"
+                        logger.info(f"✓ Found Hugging Face token in credentials")
+                    else:
+                        logger.info(f"No Hugging Face token found in credentials (using environment variable)")
+                
+                # Successfully found a valid credentials file, no need to check others
+                break
+            except Exception as e:
+                logger.error(f"✗ Error reading credentials file {credentials_path}: {e}")
+                continue
+    
+    # If no credentials file found, log all paths we checked
+    if not results["exists"]:
+        logger.warning(f"✗ Credentials file not found in any of the following locations:")
+        for path in credential_paths:
+            logger.warning(f"  - {path}")
         
         # If HF token is already found in environment, still consider it a "success"
         if results["hf_token"]:
-            results["exists"] = True  # We're considering the absence of credentials file OK if HF_TOKEN env var exists
-            return results
-            
-        return results
-    
-    results["exists"] = True
-    
-    try:
-        with open(credentials_path, 'r') as f:
-            credentials = json.load(f)
-        
-        results["valid"] = True
-        logger.info(f"✓ Credentials file is valid JSON")
-        
-        # Only check for HF token in credentials if not already found in environment
-        if not results["hf_token"]:
-            # Check for HF token
-            hf_token = None
-            
-            if "huggingface" in credentials and "token" in credentials["huggingface"]:
-                hf_token = credentials["huggingface"]["token"]
-            elif "hf_token" in credentials:
-                hf_token = credentials["hf_token"]
-            elif "api_keys" in credentials and "huggingface" in credentials["api_keys"]:
-                hf_token = credentials["api_keys"]["huggingface"]
-            
-            if hf_token:
-                results["hf_token"] = True
-                results["hf_token_source"] = "credentials"
-                logger.info(f"✓ Found Hugging Face token in credentials")
-            else:
-                logger.info(f"No Hugging Face token found in credentials (using environment variable)")
-    
-    except Exception as e:
-        logger.error(f"✗ Error reading credentials file: {e}")
+            logger.info("HF_TOKEN is set in environment variables, so credentials file is not strictly required")
     
     return results
+
+def create_credentials_template(path="credentials.json"):
+    """Create a template credentials.json file."""
+    template = {
+        "_comment": "Replace this template with your actual OAuth credentials from Google Cloud Console",
+        "installed": {
+            "client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+            "project_id": "YOUR_PROJECT_ID",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_secret": "YOUR_CLIENT_SECRET",
+            "redirect_uris": ["http://localhost:8080", "urn:ietf:wg:oauth:2.0:oob"]
+        }
+    }
+    
+    try:
+        with open(path, 'w') as f:
+            json.dump(template, f, indent=2)
+        logger.info(f"Created credentials template at: {path}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create credentials template: {e}")
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description="Verify paths and configurations")
@@ -251,6 +296,19 @@ def main():
     # Check credentials
     logger.info("\nChecking credentials...")
     credentials_results = check_credentials()
+    
+    # Create credentials template if needed and --fix flag is set
+    if args.fix and not credentials_results["exists"]:
+        logger.info("Creating credentials template file...")
+        # Try to create in project root first
+        template_path = os.path.join(project_root, "credentials.json")
+        if not create_credentials_template(template_path):
+            # If failed, try current directory
+            create_credentials_template("credentials.json")
+        
+        # Re-run credentials check
+        logger.info("Re-checking credentials...")
+        credentials_results = check_credentials()
     
     # Print summary
     logger.info("\n=== SUMMARY ===")
