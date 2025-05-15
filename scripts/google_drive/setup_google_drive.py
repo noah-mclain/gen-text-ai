@@ -106,16 +106,39 @@ def create_credentials_template():
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
             "client_secret": "YOUR_CLIENT_SECRET",
-            "redirect_uris": ["http://localhost:8080", "urn:ietf:wg:oauth:2.0:oob"]
+            "redirect_uris": [
+                "http://localhost:8080", 
+                "urn:ietf:wg:oauth:2.0:oob"  # This is critical for headless authentication
+            ]
         }
     }
     
     with open(credentials_path, "w") as f:
         json.dump(template, f, indent=4)
     
+    print("\n" + "="*80)
+    print("CREDENTIALS TEMPLATE CREATED".center(80))
+    print("="*80)
+    print("""
+A template credentials.json file has been created at:
+""" + credentials_path + """
+
+YOU MUST EDIT THIS FILE before proceeding:
+
+1. Go to the Google Cloud Console: https://console.cloud.google.com/
+2. Create a new project or select an existing one
+3. Enable the Google Drive API
+4. Create OAuth credentials for a Desktop application
+5. Download the JSON file and replace the contents of credentials.json with it
+
+IMPORTANT: Make sure your credentials include the redirect URI:
+  urn:ietf:wg:oauth:2.0:oob
+
+This is required for headless authentication in environments like Paperspace.
+""")
+    print("="*80 + "\n")
+    
     logger.info(f"Created credentials template at {credentials_path}")
-    logger.info("Please replace the contents with your actual OAuth credentials")
-    logger.info("Make sure to include 'urn:ietf:wg:oauth:2.0:oob' in redirect_uris")
     
     return credentials_path
 

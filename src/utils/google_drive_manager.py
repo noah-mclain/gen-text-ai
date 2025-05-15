@@ -123,10 +123,43 @@ class DriveManager:
                         logger.error("Credentials file not found. Please create a credentials.json file.")
                         logger.error(f"Looked in: {[self.credentials_path] + CREDENTIALS_PATHS}")
                         return False
+                    
+                    # Create a flow with out-of-band (OOB) authorization for headless environments
+                    try:
+                        flow = InstalledAppFlow.from_client_secrets_file(
+                            credential_path, SCOPES, 
+                            redirect_uri='urn:ietf:wg:oauth:2.0:oob')
                         
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        credential_path, SCOPES)
-                    creds = flow.run_local_server(port=0)
+                        # Get the authorization URL
+                        auth_url, _ = flow.authorization_url(access_type='offline', include_granted_scopes='true')
+                        
+                        # Print instructions for the user
+                        print("\n" + "=" * 80)
+                        print("Google Drive Authentication - Headless Mode".center(80))
+                        print("=" * 80)
+                        print("\n1. Copy this authorization URL and open it in a browser:")
+                        print(f"\n{auth_url}\n")
+                        print("2. Sign in and grant permission")
+                        print("3. Copy the authorization code provided")
+                        print("=" * 80 + "\n")
+                        
+                        # Get the authorization code from the user
+                        code = input("Enter the authorization code: ").strip()
+                        
+                        # Exchange the authorization code for credentials
+                        flow.fetch_token(code=code)
+                        creds = flow.credentials
+                        
+                    except Exception as e:
+                        # Fall back to local server if OOB fails
+                        logger.warning(f"OOB authentication failed: {e}. Trying local server...")
+                        try:
+                            flow = InstalledAppFlow.from_client_secrets_file(
+                                credential_path, SCOPES)
+                            creds = flow.run_local_server(port=0)
+                        except Exception as local_e:
+                            logger.error(f"Local server authentication also failed: {local_e}")
+                            return False
                 
                 # Save the credentials for the next run
                 with open(self.token_path, 'w') as token:
