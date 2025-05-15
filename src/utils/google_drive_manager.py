@@ -595,7 +595,7 @@ def sync_to_drive(local_path, drive_folder_key, delete_source=False, update_only
     # Initialize drive manager if needed
     if drive_manager is None or not drive_manager.authenticated:
         logger.info("Drive manager not initialized, initializing now...")
-        drive_manager = get_drive_manager()
+        drive_manager = _drive_manager()
         if not drive_manager.authenticated:
             logger.error("Failed to initialize drive manager")
             return False
