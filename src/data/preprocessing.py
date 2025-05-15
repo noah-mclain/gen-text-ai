@@ -376,6 +376,7 @@ class DataPreprocessor:
         """
         from datasets import Dataset
         
+        # Check if this is actually a streaming dataset
         if not hasattr(dataset, 'iter') and not hasattr(dataset, '__iter__'):
             # Not a streaming dataset, return as is
             return dataset
@@ -386,16 +387,46 @@ class DataPreprocessor:
         samples = []
         count = 0
         
-        for sample in self._safe_dataset_iterator(dataset, max_samples):
-            samples.append(sample)
-            count += 1
-            if count >= max_samples:
-                break
-                
-        logger.info(f"Collected {len(samples)} samples from streaming dataset")
+        # Use a larger batch size for efficiency but not too large to cause memory issues
+        batch_size = 500
+        current_batch = []
         
-        # Convert to regular dataset
-        return Dataset.from_list(samples)
+        try:
+            for sample in self._safe_dataset_iterator(dataset, max_samples):
+                current_batch.append(sample)
+                count += 1
+                
+                # Process in batches to save memory
+                if len(current_batch) >= batch_size:
+                    samples.extend(current_batch)
+                    current_batch = []
+                    logger.info(f"Collected {len(samples)} samples so far from streaming dataset")
+                    
+                    # Free up memory periodically
+                    if count % 2000 == 0:
+                        self._cleanup_memory()
+                
+                if count >= max_samples:
+                    break
+                    
+            # Add any remaining samples in the last batch
+            if current_batch:
+                samples.extend(current_batch)
+                
+            logger.info(f"Successfully collected {len(samples)} samples from streaming dataset")
+            
+            # Convert to regular dataset
+            if samples:
+                return Dataset.from_list(samples)
+            else:
+                logger.warning("No samples collected from streaming dataset")
+                return Dataset.from_dict({"processed_text": [], "length": []})
+                
+        except Exception as e:
+            logger.error(f"Error converting streaming dataset to regular: {str(e)}")
+            # Return an empty dataset as fallback
+            logger.warning("Returning empty dataset as fallback after conversion error")
+            return Dataset.from_dict({"processed_text": [], "length": []})
 
     def process_codesearchnet(self, dataset: Union[Dataset, DatasetDict], 
                              streaming: bool = False, language: str = None, 

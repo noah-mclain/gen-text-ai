@@ -174,6 +174,22 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
     elif streaming:
         logger.info("Running in streaming mode: datasets will be loaded and processed in chunks to save memory")
     
+    # Create a stable non-temporary directory if not provided
+    if not temp_dir:
+        # Use a persistent directory with date stamp instead of a random temporary one
+        date_suffix = datetime.datetime.now().strftime("%Y-%m-%d")
+        temp_dir = os.path.join(project_root, f"temp_datasets_{date_suffix}")
+        os.makedirs(temp_dir, exist_ok=True)
+        logger.info(f"Created persistent dataset processing directory: {temp_dir}")
+        
+        # Create processed subdirectory
+        processed_dir = os.path.join(temp_dir, "processed")
+        os.makedirs(processed_dir, exist_ok=True)
+    else:
+        # Make sure the provided temp directory exists
+        os.makedirs(temp_dir, exist_ok=True)
+        logger.info(f"Using provided dataset processing directory: {temp_dir}")
+    
     # Verify config path exists or try alternative locations
     config_paths_to_try = [
         config_path,  # Try the provided path first
@@ -236,7 +252,7 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
     if skip_local_storage:
         cmd += " --skip_local_storage"
     
-    # Add custom temp directory if specified
+    # Add temp_dir to command so process_datasets.py uses our stable directory
     if temp_dir:
         cmd += f" --temp_dir {temp_dir}"
         

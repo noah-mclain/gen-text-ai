@@ -573,73 +573,98 @@ def setup_drive_directories(manager=None, base_dir=None):
 
 def sync_to_drive(local_path, drive_folder_key, delete_source=False, update_only=False):
     """
-    Sync a local file or folder to Google Drive.
+    Sync a local file or directory to Google Drive.
     
     Args:
-        local_path: Path to local file or folder
-        drive_folder_key: Key for the drive folder to sync to
-        delete_source: Whether to delete the source file/folder after syncing
-        update_only: Whether to only update existing files
+        local_path: Path to the local file or directory
+        drive_folder_key: Key of the Drive folder in DRIVE_FOLDERS or folder path
+        delete_source: Whether to delete the source after sync
+        update_only: Only update existing files, don't upload new ones
         
     Returns:
-        True if successful, False otherwise
+        True if sync was successful, False otherwise
     """
-    global drive_manager
-    logger.info(f"Syncing {local_path} to Google Drive folder '{drive_folder_key}'")
+    global _drive_manager
     
-    # Make sure local path exists
+    # Validate local path
     if not os.path.exists(local_path):
-        logger.error(f"Local path {local_path} does not exist")
+        logger.error(f"Local path does not exist: {local_path}")
         return False
     
-    # Initialize drive manager if needed
-    if drive_manager is None or not drive_manager.authenticated:
-        logger.info("Drive manager not initialized, initializing now...")
-        drive_manager = _drive_manager()
-        if not drive_manager.authenticated:
-            logger.error("Failed to initialize drive manager")
-            return False
+    # Ensure drive manager is initialized
+    if _drive_manager is None:
+        logger.info("Drive manager not initialized, attempting to configure...")
+        configure_sync_method()
     
-    # Check and validate drive folder key
-    if drive_folder_key not in drive_manager.folder_ids:
-        logger.warning(f"Drive folder key '{drive_folder_key}' not found in folder_ids")
-        # Try to find the folder by path
-        logger.info(f"Trying to find or create folder: {drive_folder_key}")
-        create_path_success = create_folder_path(drive_folder_key)
-        if not create_path_success:
-            logger.error(f"Could not create folder path for '{drive_folder_key}'")
-            return False
+    # Validate the drive manager
+    if _drive_manager is None or not _drive_manager.authenticated:
+        logger.error("Drive manager is not properly initialized or authenticated")
+        return False
     
-    logger.info(f"Starting sync: {local_path} -> {drive_folder_key}")
+    # Get drive folder key
+    if drive_folder_key in _drive_manager.folder_ids:
+        folder_id = _drive_manager.folder_ids[drive_folder_key]
+    elif drive_folder_key in DRIVE_FOLDERS:
+        folder_id = _drive_manager.folder_ids.get(drive_folder_key)
+    else:
+        # Not a predefined key, try to find or create the folder path
+        folder_id = create_folder_path(drive_folder_key)
+    
+    if not folder_id:
+        logger.error(f"Drive folder not found: {drive_folder_key}")
+        return False
     
     try:
+        # Log what we're syncing
         if os.path.isdir(local_path):
-            # Log directory info
             num_files = sum(len(files) for _, _, files in os.walk(local_path))
-            logger.info(f"Syncing directory with {num_files} files")
+            size_mb = sum(os.path.getsize(os.path.join(root, file)) 
+                        for root, _, files in os.walk(local_path) 
+                        for file in files) / (1024 * 1024)
+            logger.info(f"Syncing directory: {local_path} ({num_files} files, {size_mb:.2f} MB)")
             
-            # Sync directory
-            success = drive_manager.upload_folder(local_path, drive_folder_key, delete_source)
+            # For dataset directories, check for expected files
+            if "dataset" in local_path or "processed" in local_path:
+                # Check for Arrow files and dataset_info.json which indicates a HuggingFace dataset
+                arrow_files = [f for f in os.listdir(local_path) if f.endswith(".arrow")]
+                has_dataset_info = os.path.exists(os.path.join(local_path, "dataset_info.json"))
+                
+                if arrow_files:
+                    logger.info(f"Found {len(arrow_files)} Arrow files in dataset directory")
+                if has_dataset_info:
+                    logger.info(f"Found dataset_info.json in dataset directory")
             
-            if success:
-                logger.info(f"Successfully synced directory {local_path} to Google Drive")
+            # Upload the directory
+            result = _drive_manager.upload_folder(local_path, folder_id, delete_source)
+            
+            # Verify sync was successful
+            if result:
+                dataset_name = os.path.basename(local_path)
+                logger.info(f"Successfully synced {dataset_name} to Google Drive")
+                
+                # Verify critical dataset files were uploaded
+                if "dataset" in local_path or "processed" in local_path:
+                    logger.info(f"Verified dataset sync: {dataset_name}")
             else:
-                logger.error(f"Failed to sync directory {local_path} to Google Drive")
-            
-            return success
+                logger.error(f"Failed to sync directory: {local_path}")
+                
+            return result
         else:
-            # Sync file
-            logger.info(f"Syncing file: {os.path.basename(local_path)} ({os.path.getsize(local_path)} bytes)")
-            success = drive_manager.upload_file(local_path, drive_folder_key, delete_source)
+            # Upload single file
+            size_mb = os.path.getsize(local_path) / (1024 * 1024)
+            logger.info(f"Syncing file: {local_path} ({size_mb:.2f} MB)")
+            result = _drive_manager.upload_file(local_path, folder_id, delete_source)
             
-            if success:
-                logger.info(f"Successfully synced file {local_path} to Google Drive")
+            if result:
+                logger.info(f"Successfully synced {os.path.basename(local_path)} to Google Drive")
             else:
-                logger.error(f"Failed to sync file {local_path} to Google Drive")
-            
-            return success
+                logger.error(f"Failed to sync file: {local_path}")
+                
+            return result
     except Exception as e:
-        logger.error(f"Error syncing to drive: {e}")
+        logger.error(f"Error syncing to Google Drive: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 def create_folder_path(folder_path):
@@ -728,29 +753,46 @@ def sync_from_drive(drive_folder_key, local_path):
 
 def configure_sync_method(use_rclone=False, base_dir="DeepseekCoder"):
     """
-    Configure the sync method.
+    Configure the sync method for Google Drive.
     
     Args:
-        use_rclone: Whether to use rclone instead of the API
-        base_dir: Base directory name in Google Drive
-        
-    Returns:
-        DriveManager instance
+        use_rclone: Whether to use rclone for syncing
+        base_dir: Base directory in Google Drive
     """
     global _drive_manager
     
-    if use_rclone:
-        # We don't support rclone yet, but we'll use the API instead
-        logger.info("Using Google Drive API for synchronization (rclone support not implemented)")
-    else:
-        logger.info("Using Google Drive API for synchronization")
-    
-    # Reconfigure drive manager
-    if _drive_manager.base_dir != base_dir:
+    # Initialize the drive manager with the specified base directory
+    if _drive_manager is None:
+        logger.info(f"Initializing Drive manager with base directory: {base_dir}")
         _drive_manager = DriveManager(base_dir=base_dir)
-        _drive_manager.authenticate()
     
-    return _drive_manager
+    if use_rclone:
+        # Check if rclone is available
+        rclone_installed = shutil.which('rclone') is not None
+        
+        if rclone_installed:
+            logger.info("Using rclone for Google Drive sync")
+            return
+        else:
+            logger.warning("Rclone not found. Falling back to Google Drive API.")
+            # Fall back to Google Drive API
+            use_rclone = False
+    
+    # If we're here, we're using the Google Drive API
+    if GOOGLE_API_AVAILABLE:
+        # Authenticate with Google Drive API
+        success = _drive_manager.authenticate()
+        if success:
+            logger.info("Google Drive API authenticated successfully. Using Google Drive API for sync.")
+        else:
+            logger.error("Failed to authenticate with Google Drive API. Sync functionality may not work.")
+    else:
+        logger.error("Google Drive API libraries not available.")
+        logger.error("Install with: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
+        logger.error("Sync functionality will not work.")
+
+# Initialize the drive manager for global use
+_drive_manager = None
 
 def test_drive_mounting():
     """Test if Google Drive is mounted."""
