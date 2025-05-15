@@ -14,6 +14,7 @@ import sys
 import json
 import logging
 import argparse
+import subprocess
 from pathlib import Path
 
 # Configure logging
@@ -23,6 +24,32 @@ logger = logging.getLogger(__name__)
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
+
+# Ensure 'src' is in the path
+src_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src')
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
+# Also try notebooks path for Paperspace
+notebooks_path = "/notebooks"
+if os.path.exists(notebooks_path) and notebooks_path not in sys.path:
+    sys.path.insert(0, notebooks_path)
+
+def ensure_drive_manager():
+    """Ensure the proper Drive Manager implementation is available."""
+    # Run the ensure_drive_manager script
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ensure_drive_manager.py')
+    
+    if not os.path.exists(script_path):
+        logger.error(f"Could not find ensure_drive_manager.py at {script_path}")
+        return False
+    
+    try:
+        result = subprocess.run([sys.executable, script_path], check=True)
+        return result.returncode == 0
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to ensure drive manager: {e}")
+        return False
 
 def print_setup_instructions():
     """Print detailed instructions for setting up Google Cloud OAuth."""
@@ -218,21 +245,22 @@ def setup_google_drive():
     # Show setup instructions
     print_setup_instructions()
     
-    # Import the drive manager
+    # First ensure the Drive Manager is properly set up
+    print("\nVerifying Google Drive manager implementation...")
+    if not ensure_drive_manager():
+        print("\nFailed to set up Google Drive manager properly. Cannot continue.")
+        return False
+    
+    # Now we can import the properly configured Drive Manager
     try:
-        # First try to import from src.utils
-        try:
-            from src.utils.google_drive_manager import test_authentication, test_drive_mounting
-        except ImportError:
-            # Try from local redirect
-            from scripts.src.utils.google_drive_manager import test_authentication, test_drive_mounting
-        except Exception as e:
-            logger.error(f"Error importing Google Drive manager: {str(e)}")
-            raise
-    except Exception as e:
-        logger.error(f"Error importing Google Drive manager: {str(e)}")
-        logger.info("Make sure the src/utils/google_drive_manager.py file exists and all dependencies are installed.")
-        logger.info("You can install dependencies with: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
+        from src.utils.google_drive_manager import DriveManager, GOOGLE_API_AVAILABLE
+        if not GOOGLE_API_AVAILABLE:
+            logger.error("Google API libraries not available despite ensuring the Drive Manager")
+            logger.info("Please install the required packages with:")
+            logger.info("pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
+            return False
+    except ImportError as e:
+        logger.error(f"Error importing Google Drive manager after ensuring it: {str(e)}")
         return False
     
     # Check for credentials file
@@ -256,9 +284,12 @@ def setup_google_drive():
         print("Setup cancelled.")
         return False
     
+    # Create a DriveManager instance directly
+    drive_manager = DriveManager(credentials_path=valid_credentials)
+    
     # Attempt authentication
     print("\nStarting Google Drive authentication...")
-    success = test_authentication()
+    success = drive_manager.authenticate()
     
     if not success:
         print("\nAuthentication failed. There might be an issue with your credentials.")
@@ -273,7 +304,24 @@ def setup_google_drive():
     
     # Test access
     print("\nTesting Google Drive access...")
-    access_success = test_drive_mounting()
+    if drive_manager.authenticated:
+        print("\nSuccessfully authenticated to Google Drive!")
+        # Test creating a folder
+        try:
+            base_folder_id = drive_manager.folder_ids.get('base')
+            if base_folder_id:
+                print(f"\nBase folder '{drive_manager.base_dir}' exists with ID: {base_folder_id}")
+                print("Folder structure is properly set up.")
+                access_success = True
+            else:
+                print("\nAuthenticated but could not verify base folder. Drive structure may not be set up correctly.")
+                access_success = False
+        except Exception as e:
+            logger.error(f"Error checking folder structure: {e}")
+            access_success = False
+    else:
+        print("\nAuthentication succeeded but drive_manager reports not authenticated.")
+        access_success = False
     
     if not access_success:
         print("\nDrive access failed. Please make sure you granted appropriate permissions.")
