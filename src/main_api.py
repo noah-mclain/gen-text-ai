@@ -280,7 +280,7 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
                 
                 try:
                     # Sync to the processed_data folder on Google Drive
-                    if sync_to_drive(folder, "processed_data"):
+                    if sync_to_drive(folder, "data/processed"):
                         logger.info(f"Successfully synced {folder_name} to Google Drive")
                         sync_success_count += 1
                     else:

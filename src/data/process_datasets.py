@@ -125,7 +125,8 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
                     streaming: bool = False, no_cache: bool = False, 
                     use_drive_api: bool = False, credentials_path: Optional[str] = None,
                     drive_base_dir: Optional[str] = None, headless: bool = False,
-                    skip_local_storage: bool = False, verbose: bool = False):
+                    skip_local_storage: bool = False, verbose: bool = False,
+                    use_preprocessed_folder: bool = False):
     """Process datasets according to the configuration."""
     
     # Set logging level
@@ -310,14 +311,18 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         logger.info("Syncing processed datasets to Google Drive")
         try:
             # Sync the processed datasets to Drive
+            # Determine which folder to use based on the use_preprocessed_folder flag
+            drive_folder = "preprocessed" if use_preprocessed_folder else "data/processed"
+            logger.info(f"Using Google Drive folder: {drive_folder}")
+            
             for dataset_name in processed_datasets:
                 dataset_path = os.path.join(output_dir, f"{dataset_name}_processed")
                 if os.path.exists(dataset_path):
-                    # Sync to the "preprocessed" directory in Drive
-                    logger.info(f"Syncing dataset {dataset_name} to Drive")
+                    # Sync to the appropriate directory in Drive
+                    logger.info(f"Syncing dataset {dataset_name} to Drive folder {drive_folder}")
                     success = sync_to_drive(
                         dataset_path, 
-                        "preprocessed", 
+                        drive_folder, 
                         delete_source=skip_local_storage,
                         update_only=False  # We want to ensure all files are synced
                     )
@@ -365,6 +370,8 @@ def main():
                         help="Base directory on Google Drive")
     parser.add_argument("--headless", action="store_true",
                         help="Use headless authentication for environments without a browser")
+    parser.add_argument("--use_preprocessed_folder", action="store_true",
+                        help="Use 'preprocessed' folder instead of 'processed_data' for compatibility with training scripts")
     
     # Memory efficiency options
     parser.add_argument("--streaming", action="store_true",
@@ -376,6 +383,12 @@ def main():
     
     args = parser.parse_args()
     
+    # Auto-enable Drive API if running on Paperspace
+    is_paperspace = os.path.exists("/notebooks")
+    if is_paperspace and not (args.use_drive_api or args.use_drive):
+        logger.info("Detected Paperspace environment. Auto-enabling Google Drive integration.")
+        args.use_drive_api = True
+    
     process_datasets(
         args.config, 
         args.datasets, 
@@ -385,7 +398,9 @@ def main():
         args.credentials_path,
         args.drive_base_dir, 
         args.headless,
-        args.skip_local_storage
+        args.skip_local_storage,
+        verbose=False,
+        use_preprocessed_folder=args.use_preprocessed_folder
     )
 
 if __name__ == "__main__":

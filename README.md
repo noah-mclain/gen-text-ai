@@ -202,6 +202,41 @@ The integration supports:
 
 For detailed Google Drive setup instructions, see [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md).
 
+### Syncing Datasets to Google Drive
+
+After processing datasets, you can ensure they're synced to Google Drive using our sync utility:
+
+```bash
+# Sync all processed datasets to Google Drive (default: DeepseekCoder/data/processed/)
+python scripts/google_drive/sync_processed_datasets.py
+
+# Force sync without confirmation prompt
+python scripts/google_drive/sync_processed_datasets.py --force
+
+# Use 'preprocessed' folder for compatibility with training scripts
+python scripts/google_drive/sync_processed_datasets.py --use-preprocessed
+
+# Customize the drive folder and base directory
+python scripts/google_drive/sync_processed_datasets.py --drive-folder data/processed --drive-base-dir DeepseekCoder
+```
+
+When processing datasets, you can enable automatic Google Drive sync:
+
+```bash
+# Process datasets with automatic Google Drive sync (uses data/processed folder)
+python -m src.data.process_datasets --config config/dataset_config.json --use_drive_api --drive_base_dir DeepseekCoder
+
+# Process datasets and save to preprocessed folder for training script compatibility
+python -m src.data.process_datasets --config config/dataset_config.json --use_drive_api --drive_base_dir DeepseekCoder --use_preprocessed_folder
+```
+
+> **Note:** The codebase uses two different Google Drive folders for processed datasets:
+>
+> - `data/processed`: Used by default for storing processed datasets
+> - `preprocessed`: Used by training scripts (train_a6000_optimized.sh and train_text_flan_a6000.sh)
+>
+> Use the appropriate folder based on which scripts you're working with. When in doubt, use both options to ensure complete compatibility.
+
 ### Text Generation with FLAN-UL2
 
 To fine-tune the FLAN-UL2 model for text generation:
