@@ -45,7 +45,8 @@
   "code_alpaca": {
     "path": "sahil2801/CodeAlpaca-20k",
     "processor": "code_alpaca",
-    "split": "train"
+    "split": "train",
+    "enabled": true
   },
   "instruct_code": {
     "path": "ise-uiuc/Magicoder-OSS-Instruct-75K",
@@ -56,7 +57,8 @@
   "mbpp": {
     "path": "mbpp",
     "processor": "mbpp",
-    "split": "train"
+    "split": "train",
+    "enabled": true
   },
   "ds1000": {
     "path": "Salesforce/DS-1000",
@@ -168,12 +170,12 @@
     "max_samples": 30000,
     "max_processing_time": 300,
     "enabled": false,
-    "debug": true,
     "comment": "Disabled due to dataset processing issues"
   },
   "humaneval": {
     "path": "openai/openai_humaneval",
     "processor": "humaneval",
-    "split": "test"
+    "split": "test",
+    "enabled": true
   }
 }
