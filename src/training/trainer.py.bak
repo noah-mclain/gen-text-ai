@@ -124,7 +124,7 @@ except (ImportError, ModuleNotFoundError):
 
 # Try multiple import paths for Google Drive utilities
 try:
-    # First try the new path structure
+    # First try importing with the alias
     from src.utils.google_drive_manager import drive_manager, sync_to_drive, sync_from_drive
     
     def save_model_to_drive(model_path, remote_dir=None):
@@ -143,10 +143,10 @@ try:
         """Check if Google Drive is authenticated and available"""
         return drive_manager.authenticated
         
-except (ImportError, ModuleNotFoundError):
-    # Try the legacy imports
+except (ImportError, ModuleNotFoundError, AttributeError):
+    # Try importing the underscored version
     try:
-        from scripts.google_drive_manager import drive_manager, sync_to_drive, sync_from_drive
+        from src.utils.google_drive_manager import _drive_manager as drive_manager, sync_to_drive, sync_from_drive
         
         def save_model_to_drive(model_path, remote_dir=None):
             """Save model to Google Drive using the new utility functions"""
@@ -164,20 +164,40 @@ except (ImportError, ModuleNotFoundError):
             """Check if Google Drive is authenticated and available"""
             return drive_manager.authenticated
     except (ImportError, ModuleNotFoundError):
-        logger.warning("google_drive_manager not found. Creating fallback functions.")
-        
-        def save_model_to_drive(*args, **kwargs):
-            """Fallback function when drive_utils is not available"""
-            logger.warning("Google Drive integration not available - model not saved to drive.")
-            return False
+        # Try the legacy imports
+        try:
+            from scripts.google_drive_manager import drive_manager, sync_to_drive, sync_from_drive
             
-        def get_drive_path(local_path, drive_base_path, fallback_path=None):
-            """Fallback for getting Google Drive path"""
-            return fallback_path or local_path
+            def save_model_to_drive(model_path, remote_dir=None):
+                """Save model to Google Drive using the new utility functions"""
+                try:
+                    return sync_to_drive(model_path, remote_dir or "models")
+                except Exception as e:
+                    logger.error(f"Error saving model to Drive: {e}")
+                    return False
+                    
+            def get_drive_path(local_path, drive_base_path, fallback_path=None):
+                """Get the equivalent path on Google Drive"""
+                return drive_base_path + "/" + os.path.basename(local_path) if drive_manager.authenticated else (fallback_path or local_path)
+                
+            def is_drive_mounted():
+                """Check if Google Drive is authenticated and available"""
+                return drive_manager.authenticated
+        except (ImportError, ModuleNotFoundError):
+            logger.warning("google_drive_manager not found. Creating fallback functions.")
             
-        def is_drive_mounted():
-            """Fallback for checking if drive is mounted"""
-            return False
+            def save_model_to_drive(*args, **kwargs):
+                """Fallback function when drive_utils is not available"""
+                logger.warning("Google Drive integration not available - model not saved to drive.")
+                return False
+                
+            def get_drive_path(local_path, drive_base_path, fallback_path=None):
+                """Fallback for getting Google Drive path"""
+                return fallback_path or local_path
+                
+            def is_drive_mounted():
+                """Fallback for checking if drive is mounted"""
+                return False
 
 # Define custom callback classes
 class CodeEvalCallback(TrainerCallback):

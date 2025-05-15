@@ -34,7 +34,7 @@ if src_path not in sys.path:
 try:
     from src.utils.google_drive_manager import (
         DriveManager, test_authentication, sync_to_drive, sync_from_drive,
-        configure_sync_method, test_drive_mounting, _drive_manager,
+        configure_sync_method, test_drive_mounting, _drive_manager, drive_manager,
         DRIVE_FOLDERS, SCOPES, GOOGLE_API_AVAILABLE, setup_drive_directories
     )
     
@@ -52,41 +52,12 @@ __all__ = [
     'configure_sync_method', 
     'test_drive_mounting',
     '_drive_manager',
+    'drive_manager',
     'DRIVE_FOLDERS',
     'SCOPES',
     'GOOGLE_API_AVAILABLE',
     'setup_drive_directories'
 ]
 
-# Define functions to ensure they're available directly from this module
-def test_authentication():
-    """Test authentication with Google Drive."""
-    try:
-        return module.test_authentication()
-    except Exception as e:
-        logger.error(f"Error in test_authentication: {e}")
-        return False
-
-def sync_to_drive(local_path, drive_folder_key, delete_source=False, update_only=False):
-    """Sync files to Google Drive."""
-    try:
-        return module.sync_to_drive(local_path, drive_folder_key, delete_source, update_only)
-    except Exception as e:
-        logger.error(f"Error in sync_to_drive: {e}")
-        return False
-
-def sync_from_drive(drive_folder_key, local_path):
-    """Sync files from Google Drive."""
-    try:
-        return module.sync_from_drive(drive_folder_key, local_path)
-    except Exception as e:
-        logger.error(f"Error in sync_from_drive: {e}")
-        return False
-
-def configure_sync_method(use_rclone=False, base_dir="DeepseekCoder"):
-    """Configure the sync method."""
-    try:
-        return module.configure_sync_method(use_rclone, base_dir)
-    except Exception as e:
-        logger.error(f"Error in configure_sync_method: {e}")
-        return None 
+# The functions below are unnecessary since we're directly importing from the module
+# Removing them to avoid redefinition and confusion 

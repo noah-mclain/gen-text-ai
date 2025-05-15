@@ -256,11 +256,21 @@ def main():
     
     # Load and set configuration
     try:
-        from src.utils.google_drive_manager import drive_manager, configure_sync_method
+        from src.utils.google_drive_manager import _drive_manager as drive_manager, configure_sync_method
         # Set the base directory
         if args.base_dir:
             configure_sync_method(base_dir=args.base_dir)
             logger.info(f"Set Drive base directory to: {args.base_dir}")
+    except ImportError:
+        # Try alternative import
+        try:
+            from src.utils.google_drive_manager import drive_manager, configure_sync_method
+            # Set the base directory
+            if args.base_dir:
+                configure_sync_method(base_dir=args.base_dir)
+                logger.info(f"Set Drive base directory to: {args.base_dir}")
+        except Exception as e:
+            logger.error(f"Error configuring Drive base directory: {e}")
     except Exception as e:
         logger.error(f"Error configuring Drive base directory: {e}")
         

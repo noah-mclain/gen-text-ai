@@ -79,6 +79,11 @@ try:
         # Get all attributes from the module
         globals().update({name: getattr(module, name) for name in dir(module) 
                           if not name.startswith('_') or name == '__all__'})
+        # Ensure drive_manager is explicitly available
+        if hasattr(module, 'drive_manager'):
+            drive_manager = module.drive_manager
+        elif hasattr(module, '_drive_manager'):
+            drive_manager = module._drive_manager
         logger.debug(f"Successfully imported using absolute import from {import_path}")
     except ImportError:
         # Try direct import as fallback

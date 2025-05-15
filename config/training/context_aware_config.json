@@ -1,0 +1,100 @@
+{
+  "model": {
+    "base_model": "google/flan-t5-xxl",
+    "use_unsloth": true,
+    "use_4bit": true,
+    "use_nested_quant": true,
+    "bnb_4bit_compute_dtype": "bfloat16",
+    "use_gradient_checkpointing": true,
+    "xformers_attention": true
+  },
+  "peft": {
+    "lora_alpha": 16,
+    "lora_dropout": 0.05,
+    "r": 32,
+    "bias": "none",
+    "task_type": "SEQ_TO_SEQ_LM",
+    "target_modules": ["q", "k", "v", "o", "wi", "wo"]
+  },
+  "training": {
+    "output_dir": "models/flan-ut-20b-context-aware",
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 1,
+    "per_device_eval_batch_size": 1,
+    "gradient_accumulation_steps": 32,
+    "evaluation_strategy": "steps",
+    "eval_steps": 200,
+    "save_strategy": "steps",
+    "save_steps": 500,
+    "save_total_limit": 3,
+    "learning_rate": 8e-5,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.03,
+    "lr_scheduler_type": "cosine",
+    "logging_steps": 20,
+    "report_to": ["tensorboard"],
+    "seed": 42,
+    "fp16": false,
+    "bf16": true,
+    "push_to_hub": false,
+    "use_deepspeed": true,
+    "deepspeed": {
+      "zero_stage": 3,
+      "offload_optimizer": {
+        "device": "cpu",
+        "pin_memory": true
+      },
+      "offload_param": {
+        "device": "cpu",
+        "pin_memory": true
+      },
+      "zero3_init_flag": true,
+      "zero3_save_16bit_model": true
+    },
+    "max_grad_norm": 1.0,
+    "dataloader_num_workers": 2,
+    "group_by_length": true,
+    "optim": "adamw_torch",
+    "shuffle_dataset": true,
+    "max_steps": -1,
+    "ddp_find_unused_parameters": false,
+    "torch_compile": false,
+    "resume_from_checkpoint": true,
+    "load_best_model_at_end": true,
+    "metric_for_best_model": "eval_loss",
+    "greater_is_better": false
+  },
+  "dataset": {
+    "max_length": 1024,
+    "dataset_weights": {
+      "context_aware_conversation": 3.0,
+      "synthetic_persona": 2.0,
+      "gpteacher_general": 1.5,
+      "writingprompts": 1.0,
+      "pile": 0.5
+    },
+    "train_size": 0.9,
+    "val_size": 0.05,
+    "test_size": 0.05,
+    "streaming": true,
+    "use_cache": false,
+    "interleave_prob": 0.5,
+    "max_samples": {
+      "context_aware_conversation": 50000,
+      "synthetic_persona": 25000,
+      "gpteacher_general": 20000,
+      "writingprompts": 15000,
+      "pile": 10000
+    }
+  },
+  "hardware": {
+    "gpu": "A6000",
+    "vram_gb": 48,
+    "ram_gb": 45,
+    "cpu_cores": 8
+  },
+  "google_drive": {
+    "use_drive": true,
+    "base_dir": "FlanUTContext"
+  }
+}

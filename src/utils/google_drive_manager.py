@@ -472,6 +472,8 @@ class DriveManager:
 
 # Create a global instance
 _drive_manager = DriveManager()
+# Add an alias without underscore for external imports
+drive_manager = _drive_manager
 
 # Helper functions
 
