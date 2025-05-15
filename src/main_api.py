@@ -195,42 +195,111 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
             logger.error(f"Error: No configuration file found matching {config_path}")
             return False
     
+    # Configure Google Drive sync if requested
+    if use_drive and drive_base_dir:
+        try:
+            logger.info(f"Configuring Google Drive synchronization with base directory: {drive_base_dir}")
+            drive_folders = setup_drive_directories(base_dir=drive_base_dir)
+            if drive_folders:
+                logger.info(f"Successfully configured Google Drive with folders: {list(drive_folders.keys())}")
+            else:
+                logger.warning("Drive directory setup failed or returned empty folders dictionary")
+                logger.warning("Will continue with local processing only")
+                use_drive = False
+        except Exception as e:
+            logger.error(f"Error setting up Google Drive: {e}")
+            logger.warning("Will continue with local processing only")
+            use_drive = False
+    
     # Check if we need to use absolute path or relative path based on environment
     if os.path.exists("src/data/process_datasets.py"):
         cmd = f"python -m src.data.process_datasets --config {found_config}"
-    elif os.path.exists("data/process_datasets.py"):
-        cmd = f"python -m data.process_datasets --config {found_config}"
     else:
-        # Fallback to direct script execution
-        cmd = f"python src/data/process_datasets.py --config {found_config}"
+        cmd = f"python -m src.data.process_datasets --config {found_config}"
     
-    if datasets:
-        cmd += f" --datasets {' '.join(datasets)}"
-    
+    # Add streaming flag if specified
     if streaming:
         cmd += " --streaming"
     
+    # Add no_cache flag if specified
     if no_cache:
         cmd += " --no_cache"
     
-    if use_drive_api:
-        cmd += f" --use_drive_api --credentials_path {credentials_path} --drive_base_dir {drive_base_dir}"
-        if headless:
-            cmd += " --headless"
-    elif use_drive:
-        cmd += f" --use_drive --drive_base_dir {drive_base_dir}"
-        if headless:
-            cmd += " --headless"
+    # Add datasets if specified
+    if datasets:
+        if isinstance(datasets, list):
+            datasets_str = ",".join(datasets)
+        else:
+            datasets_str = datasets
+        cmd += f" --datasets {datasets_str}"
     
-    # Add the skip_local_storage parameter
+    # Add drive-related flags if specified
+    if use_drive:
+        cmd += " --use_drive"
+        if drive_base_dir:
+            cmd += f" --drive_base_dir {drive_base_dir}"
+    
+    # Add headless flag if specified
+    if headless:
+        cmd += " --headless"
+    
+    # Add skip_local_storage flag if specified
     if skip_local_storage:
         cmd += " --skip_local_storage"
     
-    # Always set PYTHONPATH to include current directory to ensure imports work
-    pythonpath_cmd = f"PYTHONPATH={os.getcwd()}:$PYTHONPATH "
-    cmd = pythonpath_cmd + cmd
+    # Run the command
+    success = run_command(cmd, "Processing datasets")
     
-    return run_command(cmd, "Processing datasets")
+    if not success:
+        logger.error("Dataset processing failed")
+        return False
+    
+    # Sync processed datasets to Google Drive if requested
+    if success and use_drive and drive_base_dir:
+        try:
+            logger.info("Synchronizing processed datasets to Google Drive...")
+            processed_data_dir = os.path.join(project_root, "data", "processed")
+            
+            # Create list of processed datasets to sync
+            processed_folders = []
+            for item in os.listdir(processed_data_dir):
+                item_path = os.path.join(processed_data_dir, item)
+                if os.path.isdir(item_path) and item.endswith("_processed"):
+                    processed_folders.append(item_path)
+            
+            logger.info(f"Found {len(processed_folders)} processed datasets to sync")
+            
+            # Configure Google Drive sync method with the base directory
+            configure_sync_method(base_dir=drive_base_dir)
+            
+            # Sync each processed dataset
+            sync_success_count = 0
+            for folder in processed_folders:
+                folder_name = os.path.basename(folder)
+                logger.info(f"Syncing {folder_name} to Google Drive...")
+                
+                try:
+                    # Sync to the processed_data folder on Google Drive
+                    if sync_to_drive(folder, "processed_data"):
+                        logger.info(f"Successfully synced {folder_name} to Google Drive")
+                        sync_success_count += 1
+                    else:
+                        logger.warning(f"Failed to sync {folder_name} to Google Drive")
+                except Exception as e:
+                    logger.error(f"Error syncing {folder_name} to Google Drive: {e}")
+            
+            logger.info(f"Synchronized {sync_success_count} of {len(processed_folders)} datasets to Google Drive")
+            
+            if sync_success_count == 0 and len(processed_folders) > 0:
+                logger.warning("No datasets were successfully synced to Google Drive. Check your credentials and permissions.")
+                return True  # Still return True as dataset processing was successful
+            
+        except Exception as e:
+            logger.error(f"Error synchronizing to Google Drive: {e}")
+            logger.warning("Datasets were processed successfully but could not be synced to Google Drive")
+            return True  # Still return True as dataset processing was successful
+    
+    return True
 
 def train_model(config_path, data_dir, use_drive_api=False, use_drive=False, 
               credentials_path=None, drive_base_dir=None, headless=False):

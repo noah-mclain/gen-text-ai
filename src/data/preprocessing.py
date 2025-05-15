@@ -160,25 +160,28 @@ class DataPreprocessor:
         max_errors = 100  # Maximum number of errors before stopping iteration
         
         # Set max_samples to a reasonable default if None
+        dataset_size = len(dataset) if hasattr(dataset, '__len__') else None
         if max_samples is None:
             # If we can determine dataset size, use that with a cap
-            if hasattr(dataset, '__len__'):
-                max_samples = min(len(dataset), 100000)  # Cap at 100K samples to prevent memory issues
-                logger.info(f"Processing up to {max_samples} examples (dataset size: {len(dataset)})")
+            if dataset_size is not None:
+                max_samples = min(dataset_size, 100000)  # Cap at 100K samples to prevent memory issues
+                logger.info(f"Processing up to {max_samples} examples (dataset size: {dataset_size})")
             else:
                 max_samples = 50000  # A more conservative default for unknown size datasets
                 logger.info(f"Processing up to {max_samples} examples (dataset size unknown)")
             
             # Inform user they can override
-            logger.info(f"To process more or fewer examples, specify max_samples in your configuration")
+            logger.info(f"To change this limit, specify max_samples in your dataset config")
         
         # Create iterator with progress tracking
         try:
             iterator = iter(dataset)
             
+            # Set total to the actual dataset size if known, otherwise use max_samples
+            total = min(max_samples, dataset_size) if dataset_size is not None else max_samples
+            
             # Use leave=True to maintain only a single progress bar
-            with tqdm(total=min(max_samples, len(dataset) if hasattr(dataset, '__len__') else max_samples), 
-                     desc="Processing examples", leave=True, position=0) as pbar:
+            with tqdm(total=total, desc="Processing examples", leave=True, position=0) as pbar:
                 while count < max_samples:
                     try:
                         example = next(iterator)
@@ -745,6 +748,20 @@ class DataPreprocessor:
         """Process MBPP dataset."""
         logger.info("Processing MBPP dataset...")
         
+        # Get actual dataset size for proper logging
+        dataset_size = len(dataset) if hasattr(dataset, '__len__') else "unknown"
+        logger.info(f"MBPP dataset size: {dataset_size} examples")
+        
+        # If max_samples is None or greater than dataset size, process all examples
+        if max_samples is None or (hasattr(dataset, '__len__') and max_samples > len(dataset)):
+            if hasattr(dataset, '__len__'):
+                max_samples = len(dataset)
+                logger.info(f"Processing all {max_samples} examples from MBPP dataset")
+            else:
+                # Default to a large number if we can't determine size
+                max_samples = 2000
+                logger.info(f"Using max_samples={max_samples} for MBPP dataset with unknown size")
+        
         # For streaming mode, process one example at a time to avoid issues
         if streaming:
             processed_examples = []
@@ -907,6 +924,20 @@ class DataPreprocessor:
                          streaming: bool = False, max_samples: Optional[int] = None) -> Union[Dataset, DatasetDict]:
         """Process HumanEval dataset."""
         logger.info("Processing HumanEval dataset...")
+        
+        # Get actual dataset size for proper logging
+        dataset_size = len(dataset) if hasattr(dataset, '__len__') else "unknown"
+        logger.info(f"HumanEval dataset size: {dataset_size} examples")
+        
+        # If max_samples is None or greater than dataset size, process all examples
+        if max_samples is None or (hasattr(dataset, '__len__') and max_samples > len(dataset)):
+            if hasattr(dataset, '__len__'):
+                max_samples = len(dataset)
+                logger.info(f"Processing all {max_samples} examples from HumanEval dataset")
+            else:
+                # Default to a reasonable number if we can't determine size
+                max_samples = 500
+                logger.info(f"Using max_samples={max_samples} for HumanEval dataset with unknown size")
         
         # For streaming mode, process one example at a time to avoid issues
         if streaming:

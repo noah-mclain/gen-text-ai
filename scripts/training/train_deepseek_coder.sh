@@ -18,7 +18,7 @@ CONFIG="config/training_config.json"
 DATASET_CONFIG="config/dataset_config.json"
 FEATURES_DIR="data/processed/features/deepseek_coder"
 DATA_DIR="data/processed"
-USE_DRIVE=true
+        USE_DRIVE=true
 DRIVE_BASE_DIR="DeepseekCoder"
 DEVICE="cuda"
 USE_DEEPSPEED=false
@@ -92,7 +92,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --push_to_hub)
-            PUSH_TO_HUB=true
+    PUSH_TO_HUB=true
             shift
             ;;
         --train_only)

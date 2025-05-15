@@ -200,17 +200,20 @@ class DriveManager:
         if parent_id:
             query += f" and '{parent_id}' in parents"
         
-        results = self.service.files().list(
-            q=query,
-            spaces='drive',
-            fields='files(id, name)'
-        ).execute()
-        
-        items = results.get('files', [])
-        
-        if items:
-            return items[0]['id']
-        else:
+        try:
+            results = self.service.files().list(
+                q=query,
+                spaces='drive',
+                fields='files(id, name)'
+            ).execute()
+            
+            items = results.get('files', [])
+            
+            if items:
+                return items[0]['id']
+            return None
+        except Exception as e:
+            logger.error(f"Error finding file ID for {file_name}: {e}")
             return None
     
     def upload_file(self, local_path, drive_folder_key, delete_source=False):
