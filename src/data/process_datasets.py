@@ -42,19 +42,19 @@ except (ImportError, ValueError):
 # Try multiple import paths to handle reorganized structure
 drive_utils_imported = False
 
-# Try scripts.google_drive path first (new structure)
+# Try direct import from src.utils first (main implementation)
 try:
-    from scripts.google_drive.google_drive_manager import sync_to_drive, configure_sync_method
-    logger.info("Successfully imported Drive manager from scripts.google_drive")
+    from src.utils.google_drive_manager import sync_to_drive, configure_sync_method
+    logger.info("Successfully imported Drive manager from src.utils.google_drive_manager")
     drive_utils_imported = True
 except ImportError:
     pass
 
-# If not imported yet, try src.utils path
+# If not imported yet, try scripts.google_drive path 
 if not drive_utils_imported:
     try:
-        from src.utils.google_drive_manager import sync_to_drive, configure_sync_method
-        logger.info("Successfully imported Drive manager from src.utils")
+        from scripts.google_drive.google_drive_manager import sync_to_drive, configure_sync_method
+        logger.info("Successfully imported Drive manager from scripts.google_drive.google_drive_manager")
         drive_utils_imported = True
     except ImportError:
         pass
@@ -88,21 +88,21 @@ try:
     # Try different import paths for set_hf_token
     hf_token_set = False
     
-    # First try scripts.utilities path
+    # First try src.utils path (main implementation)
     try:
-        from scripts.utilities.set_hf_token import set_hf_token
+        from src.utils.set_hf_token import set_hf_token
         set_hf_token()
-        logger.info("Set HF_TOKEN from credentials using scripts.utilities path")
+        logger.info("Set HF_TOKEN from credentials using src.utils path")
         hf_token_set = True
     except ImportError:
         pass
     
-    # If not set yet, try src.utils path
+    # If not set yet, try scripts.utilities path
     if not hf_token_set:
         try:
-            from src.utils.set_hf_token import set_hf_token
+            from scripts.utilities.set_hf_token import set_hf_token
             set_hf_token()
-            logger.info("Set HF_TOKEN from credentials using src.utils path")
+            logger.info("Set HF_TOKEN from credentials using scripts.utilities path")
             hf_token_set = True
         except ImportError:
             pass
@@ -283,13 +283,13 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
         logger.info(f"Configured Drive sync using {'rclone' if use_rclone else 'Google Drive API'}")
 
     # If skipping local storage, create a temporary directory for processing
-    if skip_local_storage and use_drive_api:
+    if skip_local_storage and (use_drive_api or drive_utils_imported):
         import tempfile
         temp_dir = tempfile.mkdtemp(prefix="dataset_processing_")
         logger.info(f"Using temporary directory for processing: {temp_dir}")
         output_dir = os.path.join(temp_dir, "processed")
         os.makedirs(output_dir, exist_ok=True)
-
+    
     # Process the datasets - measure time for logging
     start_time = time.time()
     logger.info(f"Starting dataset processing at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -307,7 +307,7 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
             logger.info(f"  - {name}")
 
     # Upload processed datasets if using Drive API
-    if use_drive_api:
+    if use_drive_api or drive_utils_imported:
         logger.info("Syncing processed datasets to Google Drive")
         try:
             # Sync the processed datasets to Drive
@@ -315,33 +315,63 @@ def process_datasets(config_path: str, datasets: Optional[List[str]] = None,
             drive_folder = "preprocessed" if use_preprocessed_folder else "data/processed"
             logger.info(f"Using Google Drive folder: {drive_folder}")
             
+            # Track sync successes to know when it's safe to delete temp directory
+            sync_successes = 0
+            sync_failures = 0
+            
             for dataset_name in processed_datasets:
-                dataset_path = os.path.join(output_dir, f"{dataset_name}_processed")
-                if os.path.exists(dataset_path):
-                    # Sync to the appropriate directory in Drive
-                    logger.info(f"Syncing dataset {dataset_name} to Drive folder {drive_folder}")
+                # Check both possible naming patterns for dataset directories
+                dataset_paths = [
+                    os.path.join(output_dir, f"{dataset_name}_processed"),
+                    os.path.join(output_dir, dataset_name)
+                ]
+                
+                # Find the actual path that exists
+                dataset_path = None
+                for path in dataset_paths:
+                    if os.path.exists(path):
+                        dataset_path = path
+                        break
+                
+                if dataset_path:
+                    # Log directory details
+                    num_files = sum([len(files) for _, _, files in os.walk(dataset_path)])
+                    size_mb = sum(os.path.getsize(os.path.join(root, file)) for root, _, files in os.walk(dataset_path) for file in files) / (1024 * 1024)
+                    logger.info(f"Syncing dataset {dataset_name} ({num_files} files, {size_mb:.2f} MB) to Drive folder {drive_folder}")
+                    
+                    # Do not delete source yet - we'll delete everything at once at the end if skip_local_storage is True
                     success = sync_to_drive(
                         dataset_path, 
                         drive_folder, 
-                        delete_source=skip_local_storage,
-                        update_only=False  # We want to ensure all files are synced
+                        delete_source=False,  # We'll handle deletion manually
+                        update_only=False     # We want to ensure all files are synced
                     )
 
                     if success:
                         logger.info(f"Successfully synced dataset {dataset_name} to Drive")
+                        sync_successes += 1
                     else:
                         logger.error(f"Failed to sync dataset {dataset_name} to Drive")
-
-            # If using a temporary directory, clean it up
+                        sync_failures += 1
+                else:
+                    logger.warning(f"Could not find directory for dataset {dataset_name}")
+            
+            # Now it's safe to delete the temp directory if all syncs were successful
             if skip_local_storage and 'temp_dir' in locals():
-                import shutil
-                try:
-                    shutil.rmtree(temp_dir)
-                    logger.info(f"Cleaned up temporary directory: {temp_dir}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up temporary directory: {e}")
+                if sync_failures == 0 and sync_successes > 0:
+                    import shutil
+                    try:
+                        shutil.rmtree(temp_dir)
+                        logger.info(f"Cleaned up temporary directory: {temp_dir}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up temporary directory: {e}")
+                else:
+                    logger.warning(f"Not cleaning up temporary directory due to {sync_failures} sync failures")
+                    logger.info(f"Temporary directory location: {temp_dir}")
         except Exception as e:
             logger.error(f"Error syncing datasets to Google Drive: {str(e)}")
+            if 'temp_dir' in locals():
+                logger.info(f"Not cleaning temporary directory due to error: {temp_dir}")
 
     logger.info(f"Processed {len(processed_datasets)} datasets")
     return processed_datasets

@@ -18,8 +18,8 @@ fi
 
 # Ensure xformers and Unsloth are properly configured
 echo "===== CONFIGURING XFORMERS AND UNSLOTH ====="
-if [ -f "scripts/fix_xformers_env.py" ]; then
-    python scripts/fix_xformers_env.py
+if [ -f "scripts/environment/fix_xformers_env.py" ]; then
+    python scripts/environment/fix_xformers_env.py
     if [ $? -ne 0 ]; then
         echo "⚠️ Warning: xformers configuration encountered issues. Performance may be reduced."
     else

@@ -2,10 +2,11 @@
 """
 Google Drive Manager Redirect
 
-This file ensures that all imports of google_drive_manager from the scripts directory
-are directed to the main implementation in src/utils/google_drive_manager.py.
+This file redirects all imports from scripts.google_drive.google_drive_manager to 
+the main implementation in src.utils.google_drive_manager.
 
-This avoids duplication of code and ensures consistency across the project.
+IMPORTANT: The main implementation is maintained in src/utils/google_drive_manager.py.
+Do not modify this file directly - any changes should be made to the main implementation.
 """
 
 import os
@@ -18,30 +19,31 @@ import shutil
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Add various possible paths to sys.path to handle different environments
+# Add project root to sys.path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 scripts_dir = os.path.dirname(current_dir)
 project_root = os.path.dirname(scripts_dir)
-sys.path.append(str(project_root))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    logger.debug(f"Added project root to Python path: {project_root}")
 
-# Add the src directory to sys.path
-src_path = os.path.join(project_root, 'src')
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
-    logger.info(f"Added src directory to Python path: {src_path}")
-
-# Import directly from src.utils.google_drive_manager
+# Import all components from the main implementation
 try:
-    from src.utils.google_drive_manager import (
-        DriveManager, test_authentication, sync_to_drive, sync_from_drive,
-        configure_sync_method, test_drive_mounting, _drive_manager, drive_manager,
-        DRIVE_FOLDERS, SCOPES, GOOGLE_API_AVAILABLE, setup_drive_directories
-    )
+    # Import everything from the main implementation
+    from src.utils.google_drive_manager import *
     
-    logger.info("Successfully imported from src.utils.google_drive_manager")
+    # Log success with the file location for clarity
+    main_impl_path = os.path.join(project_root, 'src', 'utils', 'google_drive_manager.py')
+    if os.path.exists(main_impl_path):
+        logger.debug(f"Successfully imported from main implementation: {main_impl_path}")
+    else:
+        logger.debug("Successfully imported from src.utils.google_drive_manager (path not verified)")
 except ImportError as e:
     logger.error(f"Failed to import from src.utils.google_drive_manager: {e}")
-    sys.exit(1)
+    logger.error("Please ensure the main implementation exists at src/utils/google_drive_manager.py")
+    
+    # Re-raise the exception to fail loudly - this ensures developers address the issue
+    raise ImportError(f"Cannot import from src.utils.google_drive_manager: {e}") from e
 
 # Make all imported components available at the module level
 __all__ = [

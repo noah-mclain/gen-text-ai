@@ -5,15 +5,18 @@ echo "🚀 Starting efficient dataset processing workflow"
 echo "💾 Using streaming mode to save memory"
 echo "🔄 Will sync to Google Drive and delete local copies"
 
-# Process using the config file directly - this will process all enabled datasets
-echo "📊 Processing all enabled datasets from config file"
+# Process datasets using the process_datasets script with all needed options
+# This will:
+# 1. Process datasets in streaming mode to save memory
+# 2. Save processed datasets to a temporary directory
+# 3. Sync them to Google Drive
+# 4. Delete the local copies to save disk space
 
 python src/main_api.py \
   --mode process \
   --streaming \
   --no_cache \
   --skip_local_storage \
-  --dataset_config config/dataset_config.json \
   --use_drive \
   --drive_base_dir DeepseekCoder
 

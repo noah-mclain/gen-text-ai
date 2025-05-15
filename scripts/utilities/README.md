@@ -1,6 +1,33 @@
-# Utilities Scripts
+# Utilities for Gen-Text-AI
 
-This directory contains utility scripts for managing and maintaining the codebase.
+This directory contains utility scripts for the Gen-Text-AI project.
+
+## Hugging Face Token Utility
+
+The `set_hf_token.py` file in this directory is a **redirect** to the main implementation in:
+
+```
+src/utils/set_hf_token.py
+```
+
+This is the authoritative implementation and should be the only one maintained.
+
+## Directory Structure
+
+The project maintains utilities in the following locations:
+
+- **Main Utilities**: `src/utils/` - This is the primary location for utility modules
+- **Script Utilities**: `scripts/utilities/` - Contains standalone utility scripts
+
+## Best Practices
+
+Always import directly from the main utils package:
+
+```python
+from src.utils.set_hf_token import set_hf_token
+```
+
+This directory exists only for backward compatibility with existing imports.
 
 ## Prompt Enhancer
 
