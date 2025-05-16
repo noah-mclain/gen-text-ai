@@ -27,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Add the project root directory to sys.path
-project_root = Path(__file__).resolve().parent
+project_root = Path(__file__).resolve().parent.parent.parent  # Go up two levels to project root
 sys.path.append(str(project_root))
 
 def check_credentials_file(credentials_path):
@@ -94,12 +94,21 @@ def setup_drive_integration(credentials_path, headless=False):
     """Set up Google Drive integration using the credentials file."""
     try:
         # Import Drive manager after checking credentials
-        from src.utils.google_drive_manager import (
-            DriveManager,
-            test_authentication, 
-            test_drive_mounting,
-            setup_drive_directories
-        )
+        try:
+            from src.utils.google_drive_manager import (
+                DriveManager,
+                test_authentication, 
+                test_drive_mounting,
+                setup_drive_directories
+            )
+        except ImportError:
+            # Try with alternative import path
+            from utils.google_drive_manager import (
+                DriveManager,
+                test_authentication, 
+                test_drive_mounting,
+                setup_drive_directories
+            )
         
         # Attempt to authenticate
         logger.info("🔑 Starting Google Drive authentication...")
@@ -122,7 +131,11 @@ def setup_drive_integration(credentials_path, headless=False):
                 logger.info("🗂️ Setting up directory structure in Google Drive...")
                 
                 # Try setting up directories
-                from src.utils.google_drive_manager import configure_sync_method
+                try:
+                    from src.utils.google_drive_manager import configure_sync_method
+                except ImportError:
+                    from utils.google_drive_manager import configure_sync_method
+                    
                 configure_sync_method(base_dir="GenTextAI")
                 
                 # Consider the setup successful if we got this far
@@ -136,10 +149,18 @@ def setup_drive_integration(credentials_path, headless=False):
                     imported_modules = set(sys.modules.keys())
                     
                     # Import the test module
-                    from tests.utils.test_google_drive import (
-                        test_authentication as test_auth_func,
-                        test_file_operations
-                    )
+                    try:
+                        from tests.utils.test_google_drive import (
+                            test_authentication as test_auth_func,
+                            test_file_operations
+                        )
+                    except ImportError:
+                        # Try alternate path
+                        sys.path.append(str(project_root / "tests"))
+                        from utils.test_google_drive import (
+                            test_authentication as test_auth_func,
+                            test_file_operations
+                        )
                     
                     # Run basic tests if available
                     auth_success = test_auth_func() if 'test_auth_func' in locals() else True

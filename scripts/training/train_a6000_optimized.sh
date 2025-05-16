@@ -3,17 +3,64 @@
 # This script is configured for maximum performance with multi-language support
 # Now with feature extraction from preprocessed datasets
 
-# Ensure the feature extractor module is properly set up
-echo "===== CHECKING FEATURE EXTRACTOR SETUP ====="
-if [ -f "scripts/ensure_feature_extractor.py" ]; then
-    python scripts/ensure_feature_extractor.py
+# Run the comprehensive training environment fix script
+echo "===== FIXING TRAINING ENVIRONMENT ====="
+if [ -f "scripts/utilities/fix_training_environment.py" ]; then
+    python scripts/utilities/fix_training_environment.py
     if [ $? -ne 0 ]; then
-        echo "⚠️ Warning: Feature extractor setup check failed. Some features may not work properly."
+        echo "⚠️ Warning: Training environment fix encountered issues. Some features may not work properly."
     else
-        echo "✅ Feature extractor setup verified."
+        echo "✅ Training environment fixed successfully."
     fi
 else
-    echo "⚠️ Warning: Feature extractor setup script not found. Will proceed without verification."
+    echo "⚠️ Warning: Training environment fix script not found. Will proceed with individual fixes."
+    
+    # Ensure the feature extractor module is properly set up
+    echo "===== CHECKING FEATURE EXTRACTOR SETUP ====="
+    if [ -f "scripts/utilities/ensure_feature_extractor.py" ]; then
+        python scripts/utilities/ensure_feature_extractor.py
+        if [ $? -ne 0 ]; then
+            echo "⚠️ Warning: Feature extractor setup check failed. Some features may not work properly."
+        else
+            echo "✅ Feature extractor setup verified."
+        fi
+    else
+        echo "⚠️ Warning: Feature extractor setup script not found. Will proceed without verification."
+    fi
+
+    # Create necessary symlinks for training files
+    if [ -f "scripts/utilities/create_training_symlinks.py" ]; then
+        python scripts/utilities/create_training_symlinks.py
+        if [ $? -ne 0 ]; then
+            echo "⚠️ Warning: Failed to create training symlinks. Some scripts may not be found."
+        else
+            echo "✅ Training symlinks created successfully."
+        fi
+    fi
+
+    # Fix feature extractor path
+    if [ -f "scripts/utilities/fix_feature_extractor_path.py" ]; then
+        python scripts/utilities/fix_feature_extractor_path.py
+        if [ $? -ne 0 ]; then
+            echo "⚠️ Warning: Failed to fix feature extractor path. Feature extraction may fail."
+        else
+            echo "✅ Feature extractor path fixed successfully."
+        fi
+    fi
+
+    # Set up Google Drive integration
+    if [ -f "scripts/google_drive/setup_google_drive.py" ]; then
+        python scripts/google_drive/setup_google_drive.py
+        if [ $? -ne 0 ]; then
+            echo "Google Drive authentication setup failed. Will proceed without Drive integration."
+            export SKIP_DRIVE="--skip_drive"
+        else
+            echo "✅ Google Drive authentication setup successful."
+        fi
+    else
+        echo "Google Drive authentication setup failed. Will proceed without Drive integration."
+        export SKIP_DRIVE="--skip_drive"
+    fi
 fi
 
 # Ensure xformers and Unsloth are properly configured
@@ -378,6 +425,17 @@ fi
 echo "Cleaning cache directories..."
 rm -rf ~/.cache/huggingface/datasets/downloads/completed.lock
 
+# Fix dataset loading for Arrow format
+if [ -f "scripts/utilities/fix_dataset_loading.py" ]; then
+    echo "===== FIXING DATASET LOADING FOR ARROW FORMAT ====="
+    python scripts/utilities/fix_dataset_loading.py
+    if [ $? -ne 0 ]; then
+        echo "⚠️ Warning: Failed to fix dataset loading. Training may use incomplete features."
+    else
+        echo "✅ Dataset loading fixed successfully!"
+    fi
+fi
+
 # ===== FEATURE EXTRACTION STEP =====
 if [ "$EXTRACT_FEATURES" = true ]; then
     echo "===== STARTING FEATURE EXTRACTION ====="
@@ -409,22 +467,41 @@ except Exception as e:
     echo "Features will be saved to: $FEATURES_DIR"
     
     # Run the feature extraction script
-    python scripts/prepare_datasets_for_training.py \
-        --model_name "$BASE_MODEL" \
-        --config "config/training_config.json" \
-        --dataset_config "config/dataset_config.json" \
-        --output_dir "$FEATURES_DIR" \
-        --text_column "$TEXT_COLUMN" \
-        --max_length "$MAX_LENGTH" \
-        --batch_size 1000 \
-        --num_proc 4 \
-        $ENCODER_DECODER_FLAG \
-        $DRIVE_FE_FLAG
+    # First try the project path
+    if [ -f "scripts/datasets/prepare_datasets_for_training.py" ]; then
+        python scripts/datasets/prepare_datasets_for_training.py \
+            --model_name "$BASE_MODEL" \
+            --config "config/training_config.json" \
+            --dataset_config "config/dataset_config.json" \
+            --output_dir "$FEATURES_DIR" \
+            --text_column "$TEXT_COLUMN" \
+            --max_length "$MAX_LENGTH" \
+            --batch_size 1000 \
+            --num_proc 4 \
+            $ENCODER_DECODER_FLAG \
+            $DRIVE_FE_FLAG
+    # If not found, try the notebooks path
+    elif [ -f "/notebooks/scripts/prepare_datasets_for_training.py" ]; then
+        python /notebooks/scripts/prepare_datasets_for_training.py \
+            --model_name "$BASE_MODEL" \
+            --config "config/training_config.json" \
+            --dataset_config "config/dataset_config.json" \
+            --output_dir "$FEATURES_DIR" \
+            --text_column "$TEXT_COLUMN" \
+            --max_length "$MAX_LENGTH" \
+            --batch_size 1000 \
+            --num_proc 4 \
+            $ENCODER_DECODER_FLAG \
+            $DRIVE_FE_FLAG
+    else
+        echo "⚠️ Error: prepare_datasets_for_training.py not found. Feature extraction will be skipped."
+        EXTRACT_FEATURES=false
+    fi
     
     # Check if feature extraction was successful
-    if [ $? -ne 0 ]; then
+    if [ $? -ne 0 ] && [ "$EXTRACT_FEATURES" = true ]; then
         echo "⚠️ Feature extraction encountered errors. Training may use incomplete features."
-    else
+    elif [ "$EXTRACT_FEATURES" = true ]; then
         echo "✅ Feature extraction completed successfully!"
     fi
     
@@ -456,7 +533,13 @@ echo "===== ENABLING DATASETS IN CONFIG (EXCLUDING THE_STACK) ====="
 python -c "
 import json
 import sys
+import os
+
 try:
+    # Get the skip_drive value from environment
+    skip_drive = os.environ.get('SKIP_DRIVE', 'False')
+    
+    # Load the dataset config
     with open('config/dataset_config.json', 'r') as f:
         config = json.load(f)
     
@@ -1175,4 +1258,4 @@ for data_dir in ['data/processed', '/notebooks/data/processed']:
         else:
             logger.info(f'❌ No matching directory found for {expected_name}')
 "
-fi 
+fi
