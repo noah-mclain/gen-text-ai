@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Define paths
 notebooks_path = Path("/notebooks")
 feature_extractor_content = """
-"""Feature Extractor for Preprocessed Datasets
+""Feature Extractor for Preprocessed Datasets
 
 This module provides utilities for extracting features from preprocessed datasets 
 stored on Google Drive, preparing them for training models like DeepSeek-Coder.
@@ -312,7 +312,6 @@ class FeatureExtractor:
         except Exception as e:
             logger.error(f"Error extracting features: {str(e)}")
             return None
-"""
 
 def create_feature_extractor():
     """Create the feature_extractor.py file in the Paperspace environment."""
