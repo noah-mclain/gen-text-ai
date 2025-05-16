@@ -21,11 +21,56 @@ else
         python scripts/utilities/ensure_feature_extractor.py
         if [ $? -ne 0 ]; then
             echo "⚠️ Warning: Feature extractor setup check failed. Some features may not work properly."
+            
+            # Add direct fix for Paperspace feature extractor
+            if [[ -d "/notebooks" ]]; then
+                echo "Paperspace environment detected. Attempting direct feature extractor fix..."
+                if [ -f "scripts/fix_paperspace_feature_extractor.sh" ]; then
+                    bash scripts/fix_paperspace_feature_extractor.sh
+                    if [ $? -eq 0 ]; then
+                        echo "✅ Feature extractor fixed using direct method."
+                    else
+                        echo "⚠️ Direct feature extractor fix failed."
+                    fi
+                else
+                    echo "⚠️ Feature extractor fix script not found. Creating fallback fix..."
+                    # Create the target directory
+                    mkdir -p /notebooks/src/data/processors
+                    
+                    # Try copying feature extractor directly
+                    if [ -f "src/data/processors/feature_extractor.py" ]; then
+                        cp src/data/processors/feature_extractor.py /notebooks/src/data/processors/
+                        echo "✅ Feature extractor copied directly to Paperspace."
+                    fi
+                fi
+            fi
         else
             echo "✅ Feature extractor setup verified."
         fi
     else
         echo "⚠️ Warning: Feature extractor setup script not found. Will proceed without verification."
+        
+        # Add direct fix for Paperspace environment
+        if [[ -d "/notebooks" ]]; then
+            echo "Paperspace environment detected. Checking feature extractor..."
+            if [[ ! -f "/notebooks/src/data/processors/feature_extractor.py" ]]; then
+                echo "Feature extractor not found. Attempting to fix..."
+                
+                # If fix script exists, use it
+                if [ -f "scripts/fix_paperspace_feature_extractor.sh" ]; then
+                    bash scripts/fix_paperspace_feature_extractor.sh
+                else
+                    # Create directory and copy the feature extractor file
+                    mkdir -p /notebooks/src/data/processors
+                    if [ -f "src/data/processors/feature_extractor.py" ]; then
+                        cp src/data/processors/feature_extractor.py /notebooks/src/data/processors/
+                        echo "✅ Feature extractor copied directly to Paperspace."
+                    fi
+                fi
+            else
+                echo "✅ Feature extractor already exists in Paperspace."
+            fi
+        fi
     fi
 
     # Create necessary symlinks for training files

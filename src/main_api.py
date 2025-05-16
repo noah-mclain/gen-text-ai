@@ -49,6 +49,78 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 # Enable safe PyTorch fallback mode
 os.environ["PYTORCH_ALLOW_NET_FALLBACK"] = "1"
 
+# Function to fix feature extractor in Paperspace environment
+def fix_feature_extractor():
+    """Ensure feature extractor module exists in Paperspace environment."""
+    # Only run in Paperspace environment
+    if not os.path.exists('/notebooks'):
+        return
+    
+    logger.info("Paperspace environment detected. Checking feature extractor...")
+    
+    # Define paths
+    target_file = "/notebooks/src/data/processors/feature_extractor.py"
+    target_dir = os.path.dirname(target_file)
+    
+    # Check if the file already exists
+    if os.path.exists(target_file):
+        logger.info("Feature extractor already exists in Paperspace.")
+        return
+    
+    logger.info("Feature extractor not found. Attempting to fix...")
+    
+    # Try to run the fix script first
+    fix_script = os.path.join(project_root, "scripts", "fix_paperspace_feature_extractor.sh")
+    if os.path.exists(fix_script):
+        logger.info("Using fix script...")
+        try:
+            result = subprocess.run(
+                ["bash", fix_script], 
+                check=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT,
+                universal_newlines=True
+            )
+            logger.info("Fix script output:\n" + result.stdout)
+            if os.path.exists(target_file):
+                logger.info("✅ Feature extractor fixed successfully using script.")
+                return
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Fix script failed: {e.output}")
+    
+    # If the script didn't work or doesn't exist, try direct copy
+    logger.info("Attempting direct copy of feature extractor...")
+    
+    # Create target directory
+    os.makedirs(target_dir, exist_ok=True)
+    
+    # Try to find the source file
+    source_file = os.path.join(project_root, "src", "data", "processors", "feature_extractor.py")
+    if os.path.exists(source_file):
+        try:
+            import shutil
+            shutil.copy2(source_file, target_file)
+            logger.info(f"✅ Successfully copied feature extractor from {source_file} to {target_file}")
+            
+            # Create symlink to make it accessible in site-packages
+            site_packages_dir = "/notebooks/jar_env/lib/python3.11/site-packages/src/data/processors"
+            os.makedirs(site_packages_dir, exist_ok=True)
+            site_packages_file = os.path.join(site_packages_dir, "feature_extractor.py")
+            
+            # Remove existing symlink if it exists
+            if os.path.islink(site_packages_file):
+                os.unlink(site_packages_file)
+                
+            # Create symlink
+            os.symlink(target_file, site_packages_file)
+            logger.info(f"✅ Created symlink at {site_packages_file}")
+            return
+        except Exception as e:
+            logger.warning(f"Error copying feature extractor: {e}")
+    
+    # If we got here, all methods failed
+    logger.error("Failed to fix feature extractor in Paperspace. Feature extraction may fail.")
+
 # Check for GPU and PyTorch compatibility
 try:
     import torch
@@ -167,6 +239,9 @@ def process_datasets(config_path, datasets=None, streaming=False, no_cache=False
                     drive_base_dir=None, headless=False, skip_local_storage=False,
                     temp_dir=None):
     """Process datasets for fine-tuning."""
+    
+    # Fix feature extractor in Paperspace environment if needed
+    fix_feature_extractor()
     
     # Log memory-saving options
     if skip_local_storage and (use_drive_api or use_drive):

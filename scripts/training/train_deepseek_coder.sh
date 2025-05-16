@@ -234,6 +234,17 @@ if [ "$FEATURES_ONLY" = true ]; then
     exit 0
 fi
 
+# Check and fix feature extractor in Paperspace
+if [[ -d "/notebooks" ]]; then
+    echo "Paperspace environment detected. Checking feature extractor..."
+    if [[ ! -f "/notebooks/src/data/processors/feature_extractor.py" ]]; then
+        echo "Feature extractor not found. Attempting to fix..."
+        bash scripts/fix_paperspace_feature_extractor.sh || echo "Warning: Feature extractor fix may have failed"
+    else
+        echo "Feature extractor already exists in Paperspace."
+    fi
+fi
+
 # Build additional flags for training
 QUANTIZE_FLAG=""
 if [ "$USE_4BIT" = true ]; then
