@@ -110,6 +110,41 @@ def fix_feature_extractor():
             shutil.copy(found_files[0], feature_extractor_file)
             logger.info(f"Copied feature extractor to {feature_extractor_file}")
         else:
+            # Try to use the copy_feature_extractor script
+            try:
+                copy_script_path = current_dir / "copy_feature_extractor.py"
+                if copy_script_path.exists():
+                    logger.info("Attempting to run copy_feature_extractor.py script...")
+                    result = subprocess.run([sys.executable, str(copy_script_path)], 
+                                          capture_output=True, text=True, check=False)
+                    if result.returncode == 0:
+                        logger.info("Successfully copied feature extractor using copy script")
+                        return True
+                    else:
+                        logger.warning(f"Copy script failed: {result.stderr}")
+                else:
+                    logger.warning("Copy feature extractor script not found")
+            except Exception as e:
+                logger.error(f"Error running copy script: {e}")
+            
+            # Try to create the feature extractor directly in Paperspace
+            try:
+                ensure_script_path = current_dir / "ensure_paperspace_feature_extractor.py"
+                if ensure_script_path.exists():
+                    logger.info("Attempting to create feature extractor directly in Paperspace...")
+                    result = subprocess.run([sys.executable, str(ensure_script_path)], 
+                                          capture_output=True, text=True, check=False)
+                    if result.returncode == 0:
+                        logger.info("Successfully created feature extractor in Paperspace")
+                        return True
+                    else:
+                        logger.warning(f"Feature extractor creation failed: {result.stderr}")
+                else:
+                    logger.warning("Ensure feature extractor script not found")
+            except Exception as e:
+                logger.error(f"Error creating feature extractor: {e}")
+            
+            # If we get here, we couldn't find or copy the feature extractor
             logger.error("Could not find feature_extractor.py anywhere in the project")
             return False
     
@@ -120,6 +155,12 @@ def fix_feature_extractor():
     
     # If in Paperspace, also create the directory there
     if in_paperspace:
+        # Create feature extractor directory
+        paperspace_feature_extractor_dir = Path("/notebooks") / "src" / "data" / "processors"
+        paperspace_feature_extractor_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Created Paperspace feature extractor directory: {paperspace_feature_extractor_dir}")
+        
+        # Create features directory
         paperspace_features_dir = Path("/notebooks") / "data" / "processed" / "features" / "deepseek_coder"
         paperspace_features_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Created Paperspace features directory: {paperspace_features_dir}")

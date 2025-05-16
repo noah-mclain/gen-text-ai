@@ -1,4 +1,33 @@
 {
   "workbench.colorTheme": "Bearded Theme Aquarelle Lilac",
-  "python.analysis.extraPaths": ["./scripts/src/utils", "./scripts/utilities"]
+  "python.analysis.extraPaths": ["./scripts/src/utils", "./scripts/utilities"],
+  "cSpell.words": [
+    "accum",
+    "bfloat",
+    "checkpointing",
+    "codeparrot",
+    "codesearchnet",
+    "CUDA",
+    "deepseek",
+    "dtype",
+    "expanduser",
+    "findall",
+    "huggingface",
+    "humaneval",
+    "isdir",
+    "kwargs",
+    "levelname",
+    "listdir",
+    "mbpp",
+    "PAPERSPACE",
+    "pathlib",
+    "predetected",
+    "PYTHONPATH",
+    "redownloading",
+    "startswith",
+    "tqdm",
+    "unsloth",
+    "wandb",
+    "XFORMERS"
+  ]
 }
